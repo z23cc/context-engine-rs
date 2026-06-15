@@ -1,0 +1,1404 @@
+{
+  "fixture_root": "/Users/USER/WorkSpace/context-engine-rs/crates/ctx-core/tests/fixtures",
+  "operations": [
+    "tools_list",
+    "file_search_literal",
+    "file_search_regex",
+    "file_search_path",
+    "read_file_whole",
+    "read_file_slice",
+    "get_file_tree",
+    "get_code_structure"
+  ],
+  "repoprompt_headless": {
+    "config_roots_add": {
+      "returncode": 0,
+      "stdout": "{\n  \"action\" : \"added\",\n  \"root\" : {\n    \"added_at\" : \"2026-06-15T03:33:18Z\",\n    \"id\" : \"B183E777-63DC-47F3-AF8C-E744BD195896\",\n    \"name\" : \"fixture\",\n    \"path\" : \"\\/Users\\/duange\\/WorkSpace\\/context-engine-rs\\/crates\\/ctx-core\\/tests\\/fixtures\",\n    \"resolved_path\" : \"\\/Users\\/duange\\/WorkSpace\\/context-engine-rs\\/crates\\/ctx-core\\/tests\\/fixtures\"\n  }\n}\n",
+      "stderr": ""
+    },
+    "cmd": [
+      "/Users/USER/WorkSpace/repoprompt-ce/.claude/worktrees/headless-eval/.build/arm64-apple-macosx/debug/repoprompt-headless",
+      "--state-dir",
+      "<temp-state-dir>",
+      "serve"
+    ],
+    "responses": [
+      {
+        "result": {
+          "headless": {
+            "configuredRootCount": 1,
+            "stateDirectory": "/var/folders/v2/qtp1mnlj6jb3jsq6dfwltgh80000gn/T/ctx-parity-headless-ngilnrb1",
+            "safeToolsEnabled": true
+          },
+          "protocolVersion": "2024-11-05",
+          "capabilities": {
+            "tools": {}
+          },
+          "serverInfo": {
+            "name": "RepoPrompt Headless",
+            "version": "1.0.6"
+          },
+          "instructions": "RepoPrompt Headless is running the standalone read-oriented safe profile over direct stdio. Configure allowed roots with `repoprompt-headless config roots add /absolute/path --name NAME`. Only bind_context, constrained manage_workspaces, manage_selection, workspace_context, get_file_tree, get_code_structure, read_file, file_search, and prompt are enabled."
+        },
+        "jsonrpc": "2.0",
+        "id": 1
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "tools": [
+            {
+              "name": "bind_context",
+              "description": "List, inspect, or bind the single headless session to a configured workspace.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace id or name for bind."
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "list",
+                      "get",
+                      "status",
+                      "bind"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "description": "Manage headless workspaces without adding arbitrary filesystem roots.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace id or name."
+                  },
+                  "name": {
+                    "description": "Workspace name.",
+                    "type": "string"
+                  },
+                  "new_name": {
+                    "type": "string",
+                    "description": "New workspace name for rename."
+                  },
+                  "action": {
+                    "type": "string",
+                    "description": "Alias for op."
+                  },
+                  "roots": {
+                    "type": "array",
+                    "description": "Configured root ids/names/paths to include.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "op": {
+                    "enum": [
+                      "list",
+                      "get",
+                      "create",
+                      "select",
+                      "switch",
+                      "rename"
+                    ],
+                    "type": "string"
+                  }
+                }
+              },
+              "name": "manage_workspaces"
+            },
+            {
+              "description": "Read or mutate the active workspace selection using allowed root-contained paths only.",
+              "name": "manage_selection",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "view": {
+                    "type": "string",
+                    "enum": [
+                      "summary",
+                      "files",
+                      "content",
+                      "codemaps"
+                    ]
+                  },
+                  "op": {
+                    "enum": [
+                      "get",
+                      "preview",
+                      "add",
+                      "remove",
+                      "set",
+                      "clear"
+                    ],
+                    "type": "string"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "slices": {
+                    "type": "array"
+                  },
+                  "mode": {
+                    "enum": [
+                      "full",
+                      "slices",
+                      "codemap_only"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Single-path alias.",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            {
+              "inputSchema": {
+                "additionalProperties": true,
+                "type": "object",
+                "properties": {
+                  "include": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "prompt, selection, code, tokens, files, tree"
+                  },
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "snapshot",
+                      "export"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Export path; relative paths stay under state Exports/."
+                  },
+                  "path_display": {
+                    "type": "string",
+                    "enum": [
+                      "relative",
+                      "full"
+                    ]
+                  }
+                }
+              },
+              "description": "Render or export the active workspace prompt/selection/code/files/tree context.",
+              "name": "workspace_context"
+            },
+            {
+              "name": "get_file_tree",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "auto",
+                      "full",
+                      "folders",
+                      "selected"
+                    ],
+                    "type": "string"
+                  },
+                  "max_depth": {
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "files",
+                      "roots"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "annotations": {
+                "readOnlyHint": true
+              },
+              "description": "Return an ASCII tree for configured roots, a subpath, or selected files."
+            },
+            {
+              "description": "Return lightweight headless code signatures for paths or selected files.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "paths",
+                      "selected"
+                    ],
+                    "type": "string"
+                  },
+                  "max_results": {
+                    "type": "integer"
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "name": "get_code_structure",
+              "annotations": {
+                "readOnlyHint": true
+              }
+            },
+            {
+              "description": "Read a UTF-8 file under configured roots with optional line slicing.",
+              "annotations": {
+                "readOnlyHint": true
+              },
+              "name": "read_file",
+              "inputSchema": {
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "start_line": {
+                    "type": "integer"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            {
+              "name": "file_search",
+              "inputSchema": {
+                "additionalProperties": true,
+                "type": "object",
+                "required": [
+                  "pattern"
+                ],
+                "properties": {
+                  "regex": {
+                    "type": "boolean"
+                  },
+                  "whole_word": {
+                    "type": "boolean"
+                  },
+                  "count_only": {
+                    "type": "boolean"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "max_results": {
+                    "type": "integer"
+                  },
+                  "context_lines": {
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "path",
+                      "content",
+                      "both"
+                    ]
+                  },
+                  "filter": {
+                    "type": "object"
+                  }
+                }
+              },
+              "annotations": {
+                "readOnlyHint": true
+              },
+              "description": "Search paths and/or UTF-8 file contents under configured roots."
+            },
+            {
+              "description": "Get, set, append, clear, export, or list the built-in headless prompt preset.",
+              "name": "prompt",
+              "inputSchema": {
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "get",
+                      "set",
+                      "append",
+                      "clear",
+                      "export",
+                      "list_presets"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Export path; relative paths stay under state Exports/."
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "isError": false,
+          "structuredContent": {
+            "total_content_matches": 3,
+            "pattern": "needle",
+            "content_files_skipped": 0,
+            "catalog_entries_processed": 7,
+            "matcher_work_bytes": 1005,
+            "count_only": false,
+            "catalog_truncated": false,
+            "content_matches": [
+              {
+                "context": [
+                  {
+                    "text": "",
+                    "line": 23
+                  },
+                  {
+                    "text": "pub fn alpha_needle() -> &'static str {",
+                    "line": 24
+                  },
+                  {
+                    "line": 25,
+                    "text": "    \"needle alpha\""
+                  }
+                ],
+                "line": 24,
+                "text": "pub fn alpha_needle() -> &'static str {",
+                "relative_path": "alpha.rs",
+                "root": "fixture",
+                "path": "fixture/alpha.rs"
+              },
+              {
+                "context": [
+                  {
+                    "line": 24,
+                    "text": "pub fn alpha_needle() -> &'static str {"
+                  },
+                  {
+                    "text": "    \"needle alpha\"",
+                    "line": 25
+                  },
+                  {
+                    "text": "}",
+                    "line": 26
+                  }
+                ],
+                "relative_path": "alpha.rs",
+                "path": "fixture/alpha.rs",
+                "root": "fixture",
+                "line": 25,
+                "text": "    \"needle alpha\""
+              },
+              {
+                "line": 2,
+                "root": "fixture",
+                "relative_path": "notes.txt",
+                "path": "fixture/notes.txt",
+                "text": "needle text line",
+                "context": [
+                  {
+                    "text": "first line",
+                    "line": 1
+                  },
+                  {
+                    "line": 2,
+                    "text": "needle text line"
+                  },
+                  {
+                    "line": 3,
+                    "text": "final line"
+                  }
+                ]
+              }
+            ],
+            "regex_subject_byte_limit": 65536,
+            "elapsed_milliseconds": 9,
+            "total_matches_is_lower_bound": false,
+            "path_totals_complete": true,
+            "omitted": 0,
+            "path_matches": [],
+            "returned_matches": 3,
+            "content_bytes_scanned": 1005,
+            "catalog_skipped_entries": 0,
+            "total_path_matches": 0,
+            "omitted_is_lower_bound": false,
+            "elapsed_time_limit_milliseconds": 3000,
+            "content_file_limit": 2048,
+            "budget_exhaustion_reason": null,
+            "total_matches": 3,
+            "content_files_scanned": 6,
+            "catalog_scan_count": 1,
+            "totals_complete": true,
+            "totals_are_lower_bounds": false,
+            "catalog_entries_considered": 8,
+            "mode": "both",
+            "whole_word": false,
+            "content_byte_limit": 67108864,
+            "matcher_work_byte_limit": 33554432,
+            "catalog_entries_scanned": 8,
+            "regex": false,
+            "content_files_attempted": 6,
+            "budget_exhausted": false,
+            "catalog_entry_limit": 20000,
+            "content_bytes_considered": 1005,
+            "content_totals_complete": true
+          },
+          "content": [
+            {
+              "text": "## Search Results \u2705\n- **Pattern**: `needle`\n- **Mode**: `both`\n- **Total matches**: 3\n- **Path matches**: 0\n- **Content matches**: 3\n- **Returned matches**: 3\n- **Omitted by max_results**: 0\n- **Catalog entries scanned**: 8\n- **Catalog entries processed**: 7\n- **Catalog entry limit**: 20000 across 1 scan(s)\n- **Content files read**: 6 / 2048\n- **Content bytes read**: 1005 / 67108864\n- **Matcher work bytes**: 1005 / 33554432\n- **Elapsed budget**: 9 ms / 3000 ms\n\n### Content Matches\n- `fixture/alpha.rs:24` pub fn alpha_needle() -> &'static str {\n- `fixture/alpha.rs:25`     \"needle alpha\"\n- `fixture/notes.txt:2` needle text line",
+              "type": "text"
+            }
+          ]
+        }
+      },
+      {
+        "result": {
+          "isError": false,
+          "content": [
+            {
+              "text": "## Search Results \u2705\n- **Pattern**: `pub\\s+(struct|enum)`\n- **Mode**: `content`\n- **Total matches**: 2\n- **Path matches**: 0\n- **Content matches**: 2\n- **Returned matches**: 2\n- **Omitted by max_results**: 0\n- **Catalog entries scanned**: 8\n- **Catalog entries processed**: 7\n- **Catalog entry limit**: 20000 across 1 scan(s)\n- **Content files read**: 6 / 2048\n- **Content bytes read**: 1005 / 67108864\n- **Matcher work bytes**: 1005 / 33554432\n- **Elapsed budget**: 3 ms / 3000 ms\n\n### Content Matches\n- `fixture/alpha.rs:1` pub struct Alpha {\n- `fixture/alpha.rs:5` pub enum Mode {",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "returned_matches": 2,
+            "totals_are_lower_bounds": false,
+            "regex": true,
+            "content_bytes_scanned": 1005,
+            "catalog_scan_count": 1,
+            "matcher_work_byte_limit": 33554432,
+            "pattern": "pub\\s+(struct|enum)",
+            "path_matches": [],
+            "catalog_skipped_entries": 0,
+            "mode": "content",
+            "omitted": 0,
+            "catalog_entries_considered": 8,
+            "content_files_skipped": 0,
+            "content_byte_limit": 67108864,
+            "omitted_is_lower_bound": false,
+            "catalog_entries_processed": 7,
+            "content_files_attempted": 6,
+            "whole_word": false,
+            "catalog_entry_limit": 20000,
+            "content_bytes_considered": 1005,
+            "totals_complete": true,
+            "total_matches_is_lower_bound": false,
+            "content_files_scanned": 6,
+            "budget_exhaustion_reason": null,
+            "catalog_truncated": false,
+            "elapsed_time_limit_milliseconds": 3000,
+            "catalog_entries_scanned": 8,
+            "content_matches": [
+              {
+                "context": [
+                  {
+                    "line": 1,
+                    "text": "pub struct Alpha {"
+                  },
+                  {
+                    "line": 2,
+                    "text": "    pub value: i32,"
+                  }
+                ],
+                "line": 1,
+                "text": "pub struct Alpha {",
+                "relative_path": "alpha.rs",
+                "root": "fixture",
+                "path": "fixture/alpha.rs"
+              },
+              {
+                "context": [
+                  {
+                    "line": 4,
+                    "text": ""
+                  },
+                  {
+                    "text": "pub enum Mode {",
+                    "line": 5
+                  },
+                  {
+                    "text": "    Fast,",
+                    "line": 6
+                  }
+                ],
+                "relative_path": "alpha.rs",
+                "path": "fixture/alpha.rs",
+                "root": "fixture",
+                "line": 5,
+                "text": "pub enum Mode {"
+              }
+            ],
+            "total_content_matches": 2,
+            "path_totals_complete": true,
+            "total_path_matches": 0,
+            "matcher_work_bytes": 1005,
+            "count_only": false,
+            "content_totals_complete": true,
+            "content_file_limit": 2048,
+            "budget_exhausted": false,
+            "regex_subject_byte_limit": 65536,
+            "total_matches": 2,
+            "elapsed_milliseconds": 3
+          }
+        },
+        "id": 4,
+        "jsonrpc": "2.0"
+      },
+      {
+        "result": {
+          "isError": false,
+          "content": [
+            {
+              "text": "## Search Results \u2705\n- **Pattern**: `nested`\n- **Mode**: `path`\n- **Total matches**: 2\n- **Path matches**: 2\n- **Content matches**: 0\n- **Returned matches**: 2\n- **Omitted by max_results**: 0\n- **Catalog entries scanned**: 8\n- **Catalog entries processed**: 7\n- **Catalog entry limit**: 20000 across 1 scan(s)\n- **Content files read**: 0 / 2048\n- **Content bytes read**: 0 / 67108864\n- **Matcher work bytes**: 62 / 33554432\n- **Elapsed budget**: 0 ms / 3000 ms\n\n### Path Matches\n- `fixture/nested/beta.rs`\n- `fixture/nested/info.txt`",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "returned_matches": 2,
+            "totals_are_lower_bounds": false,
+            "regex": false,
+            "content_bytes_scanned": 0,
+            "catalog_scan_count": 1,
+            "matcher_work_byte_limit": 33554432,
+            "pattern": "nested",
+            "path_matches": [
+              {
+                "path": "fixture/nested/beta.rs",
+                "relative_path": "nested/beta.rs",
+                "root": "fixture"
+              },
+              {
+                "relative_path": "nested/info.txt",
+                "root": "fixture",
+                "path": "fixture/nested/info.txt"
+              }
+            ],
+            "catalog_skipped_entries": 0,
+            "mode": "path",
+            "omitted": 0,
+            "catalog_entries_considered": 8,
+            "content_files_skipped": 0,
+            "content_byte_limit": 67108864,
+            "omitted_is_lower_bound": false,
+            "catalog_entries_processed": 7,
+            "content_files_attempted": 0,
+            "whole_word": false,
+            "catalog_entry_limit": 20000,
+            "content_bytes_considered": 0,
+            "totals_complete": true,
+            "total_matches_is_lower_bound": false,
+            "content_files_scanned": 0,
+            "budget_exhaustion_reason": null,
+            "catalog_truncated": false,
+            "elapsed_time_limit_milliseconds": 3000,
+            "catalog_entries_scanned": 8,
+            "content_matches": [],
+            "total_content_matches": 0,
+            "path_totals_complete": true,
+            "total_path_matches": 2,
+            "matcher_work_bytes": 62,
+            "count_only": false,
+            "content_totals_complete": true,
+            "content_file_limit": 2048,
+            "budget_exhausted": false,
+            "regex_subject_byte_limit": 65536,
+            "total_matches": 2,
+            "elapsed_milliseconds": 0
+          }
+        },
+        "id": 5,
+        "jsonrpc": "2.0"
+      },
+      {
+        "result": {
+          "isError": false,
+          "content": [
+            {
+              "text": "## File Read \u2705\n- **Path**: `fixture/notes.txt`\n- **Lines**: 1\u20133 of 3\n\n\n```txt\nfirst line\nneedle text line\nfinal line\n\n```",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "path": "/Users/USER/WorkSpace/context-engine-rs/crates/ctx-core/tests/fixtures/notes.txt",
+            "content": "first line\nneedle text line\nfinal line\n",
+            "first_line": 1,
+            "display_path": "fixture/notes.txt",
+            "last_line": 3,
+            "message": null,
+            "total_lines": 3
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 6
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "isError": false,
+          "content": [
+            {
+              "text": "## File Read \u2705\n- **Path**: `fixture/notes.txt`\n- **Lines**: 2\u20132 of 3\n\n\n```txt\nneedle text line\n\n```",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "path": "/Users/USER/WorkSpace/context-engine-rs/crates/ctx-core/tests/fixtures/notes.txt",
+            "content": "needle text line\n",
+            "first_line": 2,
+            "display_path": "fixture/notes.txt",
+            "last_line": 2,
+            "message": null,
+            "total_lines": 3
+          }
+        }
+      },
+      {
+        "result": {
+          "isError": false,
+          "content": [
+            {
+              "text": "## File Tree \u2705\n- **Roots**: 1\n- **Mode**: auto\n- **Truncated**: false\n\n```text\nfixture\n\u251c\u2500\u2500 nested/\n\u2502   \u251c\u2500\u2500 beta.rs\n\u2502   \u2514\u2500\u2500 info.txt\n\u251c\u2500\u2500 alpha.rs\n\u251c\u2500\u2500 delta.js\n\u251c\u2500\u2500 gamma.py\n\u2514\u2500\u2500 notes.txt\n```",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "tree": "fixture\n\u251c\u2500\u2500 nested/\n\u2502   \u251c\u2500\u2500 beta.rs\n\u2502   \u2514\u2500\u2500 info.txt\n\u251c\u2500\u2500 alpha.rs\n\u251c\u2500\u2500 delta.js\n\u251c\u2500\u2500 gamma.py\n\u2514\u2500\u2500 notes.txt",
+            "was_truncated": false,
+            "uses_legend": false,
+            "roots_count": 1
+          }
+        },
+        "id": 8,
+        "jsonrpc": "2.0"
+      },
+      {
+        "result": {
+          "isError": true,
+          "content": [
+            {
+              "text": "get_code_structure with scope=paths requires paths.",
+              "type": "text"
+            }
+          ]
+        },
+        "id": 9,
+        "jsonrpc": "2.0"
+      }
+    ],
+    "stderr": "RepoPrompt Headless 1.0.6 (build 7) serving direct stdio MCP with the read-oriented safe tool profile.\n"
+  },
+  "rust": {
+    "cmd": [
+      "/Users/USER/WorkSpace/context-engine-rs/target/debug/ctx-mcp",
+      "serve",
+      "--root",
+      "/Users/USER/WorkSpace/context-engine-rs/crates/ctx-core/tests/fixtures"
+    ],
+    "responses": [
+      {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "capabilities": {
+            "tools": {
+              "listChanged": false
+            }
+          },
+          "protocolVersion": "2024-11-05",
+          "serverInfo": {
+            "name": "ctx-mcp",
+            "version": "0.1.0"
+          }
+        }
+      },
+      {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "tools": [
+            {
+              "description": "Search allowed roots by path and/or file content.",
+              "inputSchema": {
+                "properties": {
+                  "context_lines": {
+                    "default": 2,
+                    "type": "integer"
+                  },
+                  "max_content_bytes": {
+                    "default": 67108864,
+                    "type": "integer"
+                  },
+                  "max_content_files": {
+                    "default": 2048,
+                    "type": "integer"
+                  },
+                  "max_results": {
+                    "default": 50,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "default": "both",
+                    "enum": [
+                      "path",
+                      "content",
+                      "both"
+                    ],
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "regex": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "whole_word": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "type": "object"
+              },
+              "name": "file_search"
+            },
+            {
+              "description": "Read a file from allowed roots with optional line range.",
+              "inputSchema": {
+                "properties": {
+                  "end_line": {
+                    "type": "integer"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "start_line": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "name": "read_file"
+            },
+            {
+              "description": "Return a compact tree for allowed roots.",
+              "inputSchema": {
+                "properties": {
+                  "max_depth": {
+                    "default": 3,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "get_file_tree"
+            },
+            {
+              "description": "Return lightweight top-level code symbols for supported source files.",
+              "inputSchema": {
+                "properties": {
+                  "paths": {
+                    "description": "Optional file or directory paths relative to an allowed root. Empty means whole catalog.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "get_code_structure"
+            }
+          ]
+        }
+      },
+      {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"content_matches\": [\n    {\n      \"column\": 1,\n      \"context\": [\n        {\n          \"line\": 1,\n          \"text\": \"first line\"\n        },\n        {\n          \"line\": 2,\n          \"text\": \"needle text line\"\n        },\n        {\n          \"line\": 3,\n          \"text\": \"final line\"\n        }\n      ],\n      \"display_path\": \"fixtures/notes.txt\",\n      \"line\": 2,\n      \"path\": \"notes.txt\",\n      \"root_id\": \"root-0\",\n      \"score\": 9998,\n      \"text\": \"needle text line\"\n    },\n    {\n      \"column\": 14,\n      \"context\": [\n        {\n          \"line\": 23,\n          \"text\": \"\"\n        },\n        {\n          \"line\": 24,\n          \"text\": \"pub fn alpha_needle() -> &'static str {\"\n        },\n        {\n          \"line\": 25,\n          \"text\": \"    \\\"needle alpha\\\"\"\n        }\n      ],\n      \"display_path\": \"fixtures/alpha.rs\",\n      \"line\": 24,\n      \"path\": \"alpha.rs\",\n      \"root_id\": \"root-0\",\n      \"score\": 9976,\n      \"text\": \"pub fn alpha_needle() -> &'static str {\"\n    },\n    {\n      \"column\": 6,\n      \"context\": [\n        {\n          \"line\": 24,\n          \"text\": \"pub fn alpha_needle() -> &'static str {\"\n        },\n        {\n          \"line\": 25,\n          \"text\": \"    \\\"needle alpha\\\"\"\n        },\n        {\n          \"line\": 26,\n          \"text\": \"}\"\n        }\n      ],\n      \"display_path\": \"fixtures/alpha.rs\",\n      \"line\": 25,\n      \"path\": \"alpha.rs\",\n      \"root_id\": \"root-0\",\n      \"score\": 9975,\n      \"text\": \"    \\\"needle alpha\\\"\"\n    }\n  ],\n  \"diagnostics\": [],\n  \"path_matches\": [],\n  \"totals\": {\n    \"binary_files_skipped\": 0,\n    \"budget\": {\n      \"exhausted\": false,\n      \"max_content_bytes\": 67108864,\n      \"max_content_files\": 2048,\n      \"max_results\": 20\n    },\n    \"content_byte_limit\": 67108864,\n    \"content_bytes_scanned\": 1005,\n    \"content_file_limit\": 2048,\n    \"content_files_scanned\": 6,\n    \"content_matches\": 3,\n    \"omitted\": 0,\n    \"path_matches\": 0,\n    \"scanned_files\": 6,\n    \"totals_are_lower_bound\": false\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "content_matches": [
+              {
+                "column": 1,
+                "context": [
+                  {
+                    "line": 1,
+                    "text": "first line"
+                  },
+                  {
+                    "line": 2,
+                    "text": "needle text line"
+                  },
+                  {
+                    "line": 3,
+                    "text": "final line"
+                  }
+                ],
+                "display_path": "fixtures/notes.txt",
+                "line": 2,
+                "path": "notes.txt",
+                "root_id": "root-0",
+                "score": 9998,
+                "text": "needle text line"
+              },
+              {
+                "column": 14,
+                "context": [
+                  {
+                    "line": 23,
+                    "text": ""
+                  },
+                  {
+                    "line": 24,
+                    "text": "pub fn alpha_needle() -> &'static str {"
+                  },
+                  {
+                    "line": 25,
+                    "text": "    \"needle alpha\""
+                  }
+                ],
+                "display_path": "fixtures/alpha.rs",
+                "line": 24,
+                "path": "alpha.rs",
+                "root_id": "root-0",
+                "score": 9976,
+                "text": "pub fn alpha_needle() -> &'static str {"
+              },
+              {
+                "column": 6,
+                "context": [
+                  {
+                    "line": 24,
+                    "text": "pub fn alpha_needle() -> &'static str {"
+                  },
+                  {
+                    "line": 25,
+                    "text": "    \"needle alpha\""
+                  },
+                  {
+                    "line": 26,
+                    "text": "}"
+                  }
+                ],
+                "display_path": "fixtures/alpha.rs",
+                "line": 25,
+                "path": "alpha.rs",
+                "root_id": "root-0",
+                "score": 9975,
+                "text": "    \"needle alpha\""
+              }
+            ],
+            "diagnostics": [],
+            "path_matches": [],
+            "totals": {
+              "binary_files_skipped": 0,
+              "budget": {
+                "exhausted": false,
+                "max_content_bytes": 67108864,
+                "max_content_files": 2048,
+                "max_results": 20
+              },
+              "content_byte_limit": 67108864,
+              "content_bytes_scanned": 1005,
+              "content_file_limit": 2048,
+              "content_files_scanned": 6,
+              "content_matches": 3,
+              "omitted": 0,
+              "path_matches": 0,
+              "scanned_files": 6,
+              "totals_are_lower_bound": false
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"content_matches\": [\n    {\n      \"column\": 1,\n      \"context\": [\n        {\n          \"line\": 1,\n          \"text\": \"pub struct Alpha {\"\n        },\n        {\n          \"line\": 2,\n          \"text\": \"    pub value: i32,\"\n        }\n      ],\n      \"display_path\": \"fixtures/alpha.rs\",\n      \"line\": 1,\n      \"path\": \"alpha.rs\",\n      \"root_id\": \"root-0\",\n      \"score\": 9999,\n      \"text\": \"pub struct Alpha {\"\n    },\n    {\n      \"column\": 1,\n      \"context\": [\n        {\n          \"line\": 4,\n          \"text\": \"\"\n        },\n        {\n          \"line\": 5,\n          \"text\": \"pub enum Mode {\"\n        },\n        {\n          \"line\": 6,\n          \"text\": \"    Fast,\"\n        }\n      ],\n      \"display_path\": \"fixtures/alpha.rs\",\n      \"line\": 5,\n      \"path\": \"alpha.rs\",\n      \"root_id\": \"root-0\",\n      \"score\": 9995,\n      \"text\": \"pub enum Mode {\"\n    }\n  ],\n  \"diagnostics\": [],\n  \"path_matches\": [],\n  \"totals\": {\n    \"binary_files_skipped\": 0,\n    \"budget\": {\n      \"exhausted\": false,\n      \"max_content_bytes\": 67108864,\n      \"max_content_files\": 2048,\n      \"max_results\": 20\n    },\n    \"content_byte_limit\": 67108864,\n    \"content_bytes_scanned\": 1005,\n    \"content_file_limit\": 2048,\n    \"content_files_scanned\": 6,\n    \"content_matches\": 2,\n    \"omitted\": 0,\n    \"path_matches\": 0,\n    \"scanned_files\": 6,\n    \"totals_are_lower_bound\": false\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "content_matches": [
+              {
+                "column": 1,
+                "context": [
+                  {
+                    "line": 1,
+                    "text": "pub struct Alpha {"
+                  },
+                  {
+                    "line": 2,
+                    "text": "    pub value: i32,"
+                  }
+                ],
+                "display_path": "fixtures/alpha.rs",
+                "line": 1,
+                "path": "alpha.rs",
+                "root_id": "root-0",
+                "score": 9999,
+                "text": "pub struct Alpha {"
+              },
+              {
+                "column": 1,
+                "context": [
+                  {
+                    "line": 4,
+                    "text": ""
+                  },
+                  {
+                    "line": 5,
+                    "text": "pub enum Mode {"
+                  },
+                  {
+                    "line": 6,
+                    "text": "    Fast,"
+                  }
+                ],
+                "display_path": "fixtures/alpha.rs",
+                "line": 5,
+                "path": "alpha.rs",
+                "root_id": "root-0",
+                "score": 9995,
+                "text": "pub enum Mode {"
+              }
+            ],
+            "diagnostics": [],
+            "path_matches": [],
+            "totals": {
+              "binary_files_skipped": 0,
+              "budget": {
+                "exhausted": false,
+                "max_content_bytes": 67108864,
+                "max_content_files": 2048,
+                "max_results": 20
+              },
+              "content_byte_limit": 67108864,
+              "content_bytes_scanned": 1005,
+              "content_file_limit": 2048,
+              "content_files_scanned": 6,
+              "content_matches": 2,
+              "omitted": 0,
+              "path_matches": 0,
+              "scanned_files": 6,
+              "totals_are_lower_bound": false
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"content_matches\": [],\n  \"diagnostics\": [],\n  \"path_matches\": [\n    {\n      \"display_path\": \"fixtures/nested/beta.rs\",\n      \"path\": \"nested/beta.rs\",\n      \"root_id\": \"root-0\",\n      \"score\": 2066\n    },\n    {\n      \"display_path\": \"fixtures/nested/info.txt\",\n      \"path\": \"nested/info.txt\",\n      \"root_id\": \"root-0\",\n      \"score\": 2065\n    }\n  ],\n  \"totals\": {\n    \"binary_files_skipped\": 0,\n    \"budget\": {\n      \"exhausted\": false,\n      \"max_content_bytes\": 67108864,\n      \"max_content_files\": 2048,\n      \"max_results\": 20\n    },\n    \"content_byte_limit\": 67108864,\n    \"content_bytes_scanned\": 0,\n    \"content_file_limit\": 2048,\n    \"content_files_scanned\": 0,\n    \"content_matches\": 0,\n    \"omitted\": 0,\n    \"path_matches\": 2,\n    \"scanned_files\": 6,\n    \"totals_are_lower_bound\": false\n  }\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "content_matches": [],
+            "diagnostics": [],
+            "path_matches": [
+              {
+                "display_path": "fixtures/nested/beta.rs",
+                "path": "nested/beta.rs",
+                "root_id": "root-0",
+                "score": 2066
+              },
+              {
+                "display_path": "fixtures/nested/info.txt",
+                "path": "nested/info.txt",
+                "root_id": "root-0",
+                "score": 2065
+              }
+            ],
+            "totals": {
+              "binary_files_skipped": 0,
+              "budget": {
+                "exhausted": false,
+                "max_content_bytes": 67108864,
+                "max_content_files": 2048,
+                "max_results": 20
+              },
+              "content_byte_limit": 67108864,
+              "content_bytes_scanned": 0,
+              "content_file_limit": 2048,
+              "content_files_scanned": 0,
+              "content_matches": 0,
+              "omitted": 0,
+              "path_matches": 2,
+              "scanned_files": 6,
+              "totals_are_lower_bound": false
+            }
+          }
+        }
+      },
+      {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"content\": \"first line\\nneedle text line\\nfinal line\\n\",\n  \"display_path\": \"fixtures/notes.txt\",\n  \"first_line\": 1,\n  \"last_line\": 3,\n  \"path\": \"notes.txt\",\n  \"total_lines\": 3\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "content": "first line\nneedle text line\nfinal line\n",
+            "display_path": "fixtures/notes.txt",
+            "first_line": 1,
+            "last_line": 3,
+            "path": "notes.txt",
+            "total_lines": 3
+          }
+        }
+      },
+      {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"content\": \"needle text line\\n\",\n  \"display_path\": \"fixtures/notes.txt\",\n  \"first_line\": 2,\n  \"last_line\": 2,\n  \"path\": \"notes.txt\",\n  \"total_lines\": 3\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "content": "needle text line\n",
+            "display_path": "fixtures/notes.txt",
+            "first_line": 2,
+            "last_line": 2,
+            "path": "notes.txt",
+            "total_lines": 3
+          }
+        }
+      },
+      {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"omitted\": 0,\n  \"roots\": [\n    {\n      \"children\": [\n        {\n          \"children\": [\n            {\n              \"children\": [],\n              \"kind\": \"file\",\n              \"name\": \"beta.rs\",\n              \"path\": \"nested/beta.rs\"\n            },\n            {\n              \"children\": [],\n              \"kind\": \"file\",\n              \"name\": \"info.txt\",\n              \"path\": \"nested/info.txt\"\n            }\n          ],\n          \"kind\": \"directory\",\n          \"name\": \"nested\",\n          \"path\": \"nested\"\n        },\n        {\n          \"children\": [],\n          \"kind\": \"file\",\n          \"name\": \"alpha.rs\",\n          \"path\": \"alpha.rs\"\n        },\n        {\n          \"children\": [],\n          \"kind\": \"file\",\n          \"name\": \"delta.js\",\n          \"path\": \"delta.js\"\n        },\n        {\n          \"children\": [],\n          \"kind\": \"file\",\n          \"name\": \"gamma.py\",\n          \"path\": \"gamma.py\"\n        },\n        {\n          \"children\": [],\n          \"kind\": \"file\",\n          \"name\": \"notes.txt\",\n          \"path\": \"notes.txt\"\n        }\n      ],\n      \"kind\": \"directory\",\n      \"name\": \"fixtures\",\n      \"path\": \"\"\n    }\n  ],\n  \"roots_count\": 1,\n  \"tree\": \"fixtures\\n\u251c\u2500\u2500 nested/\\n\u2502   \u251c\u2500\u2500 beta.rs\\n\u2502   \u2514\u2500\u2500 info.txt\\n\u251c\u2500\u2500 alpha.rs\\n\u251c\u2500\u2500 delta.js\\n\u251c\u2500\u2500 gamma.py\\n\u2514\u2500\u2500 notes.txt\",\n  \"uses_legend\": false,\n  \"was_truncated\": false\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "omitted": 0,
+            "roots": [
+              {
+                "children": [
+                  {
+                    "children": [
+                      {
+                        "children": [],
+                        "kind": "file",
+                        "name": "beta.rs",
+                        "path": "nested/beta.rs"
+                      },
+                      {
+                        "children": [],
+                        "kind": "file",
+                        "name": "info.txt",
+                        "path": "nested/info.txt"
+                      }
+                    ],
+                    "kind": "directory",
+                    "name": "nested",
+                    "path": "nested"
+                  },
+                  {
+                    "children": [],
+                    "kind": "file",
+                    "name": "alpha.rs",
+                    "path": "alpha.rs"
+                  },
+                  {
+                    "children": [],
+                    "kind": "file",
+                    "name": "delta.js",
+                    "path": "delta.js"
+                  },
+                  {
+                    "children": [],
+                    "kind": "file",
+                    "name": "gamma.py",
+                    "path": "gamma.py"
+                  },
+                  {
+                    "children": [],
+                    "kind": "file",
+                    "name": "notes.txt",
+                    "path": "notes.txt"
+                  }
+                ],
+                "kind": "directory",
+                "name": "fixtures",
+                "path": ""
+              }
+            ],
+            "roots_count": 1,
+            "tree": "fixtures\n\u251c\u2500\u2500 nested/\n\u2502   \u251c\u2500\u2500 beta.rs\n\u2502   \u2514\u2500\u2500 info.txt\n\u251c\u2500\u2500 alpha.rs\n\u251c\u2500\u2500 delta.js\n\u251c\u2500\u2500 gamma.py\n\u2514\u2500\u2500 notes.txt",
+            "uses_legend": false,
+            "was_truncated": false
+          }
+        }
+      },
+      {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "{\n  \"diagnostics\": [],\n  \"files\": [\n    {\n      \"language\": \"rust\",\n      \"path\": \"alpha.rs\",\n      \"symbols\": [\n        {\n          \"kind\": \"struct\",\n          \"line\": 1,\n          \"name\": \"Alpha\"\n        },\n        {\n          \"kind\": \"enum\",\n          \"line\": 5,\n          \"name\": \"Mode\"\n        },\n        {\n          \"kind\": \"trait\",\n          \"line\": 10,\n          \"name\": \"Runnable\"\n        },\n        {\n          \"kind\": \"impl\",\n          \"line\": 14,\n          \"name\": \"Alpha\"\n        },\n        {\n          \"kind\": \"impl\",\n          \"line\": 20,\n          \"name\": \"Runnable for Alpha\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 24,\n          \"name\": \"alpha_needle\"\n        }\n      ]\n    },\n    {\n      \"language\": \"javascript\",\n      \"path\": \"delta.js\",\n      \"symbols\": [\n        {\n          \"kind\": \"function\",\n          \"line\": 1,\n          \"name\": \"jsEntry\"\n        },\n        {\n          \"kind\": \"class\",\n          \"line\": 5,\n          \"name\": \"Widget\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 9,\n          \"name\": \"runTask\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 10,\n          \"name\": \"exportedArrow\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 11,\n          \"name\": \"makeThing\"\n        },\n        {\n          \"kind\": \"class\",\n          \"line\": 17,\n          \"name\": \"ExportedThing\"\n        }\n      ]\n    },\n    {\n      \"language\": \"python\",\n      \"path\": \"gamma.py\",\n      \"symbols\": [\n        {\n          \"kind\": \"class\",\n          \"line\": 1,\n          \"name\": \"PyAlpha\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 6,\n          \"name\": \"py_helper\"\n        },\n        {\n          \"kind\": \"function\",\n          \"line\": 10,\n          \"name\": \"async_worker\"\n        }\n      ]\n    },\n    {\n      \"language\": \"rust\",\n      \"path\": \"nested/beta.rs\",\n      \"symbols\": [\n        {\n          \"kind\": \"type\",\n          \"line\": 1,\n          \"name\": \"BetaCount\"\n        },\n        {\n          \"kind\": \"const\",\n          \"line\": 3,\n          \"name\": \"BETA_LIMIT\"\n        },\n        {\n          \"kind\": \"static\",\n          \"line\": 5,\n          \"name\": \"BETA_NAME\"\n        },\n        {\n          \"kind\": \"mod\",\n          \"line\": 7,\n          \"name\": \"inner\"\n        },\n        {\n          \"kind\": \"macro\",\n          \"line\": 9,\n          \"name\": \"beta_macro\"\n        }\n      ]\n    }\n  ],\n  \"omitted\": 2\n}",
+              "type": "text"
+            }
+          ],
+          "structuredContent": {
+            "diagnostics": [],
+            "files": [
+              {
+                "language": "rust",
+                "path": "alpha.rs",
+                "symbols": [
+                  {
+                    "kind": "struct",
+                    "line": 1,
+                    "name": "Alpha"
+                  },
+                  {
+                    "kind": "enum",
+                    "line": 5,
+                    "name": "Mode"
+                  },
+                  {
+                    "kind": "trait",
+                    "line": 10,
+                    "name": "Runnable"
+                  },
+                  {
+                    "kind": "impl",
+                    "line": 14,
+                    "name": "Alpha"
+                  },
+                  {
+                    "kind": "impl",
+                    "line": 20,
+                    "name": "Runnable for Alpha"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 24,
+                    "name": "alpha_needle"
+                  }
+                ]
+              },
+              {
+                "language": "javascript",
+                "path": "delta.js",
+                "symbols": [
+                  {
+                    "kind": "function",
+                    "line": 1,
+                    "name": "jsEntry"
+                  },
+                  {
+                    "kind": "class",
+                    "line": 5,
+                    "name": "Widget"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 9,
+                    "name": "runTask"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 10,
+                    "name": "exportedArrow"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 11,
+                    "name": "makeThing"
+                  },
+                  {
+                    "kind": "class",
+                    "line": 17,
+                    "name": "ExportedThing"
+                  }
+                ]
+              },
+              {
+                "language": "python",
+                "path": "gamma.py",
+                "symbols": [
+                  {
+                    "kind": "class",
+                    "line": 1,
+                    "name": "PyAlpha"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 6,
+                    "name": "py_helper"
+                  },
+                  {
+                    "kind": "function",
+                    "line": 10,
+                    "name": "async_worker"
+                  }
+                ]
+              },
+              {
+                "language": "rust",
+                "path": "nested/beta.rs",
+                "symbols": [
+                  {
+                    "kind": "type",
+                    "line": 1,
+                    "name": "BetaCount"
+                  },
+                  {
+                    "kind": "const",
+                    "line": 3,
+                    "name": "BETA_LIMIT"
+                  },
+                  {
+                    "kind": "static",
+                    "line": 5,
+                    "name": "BETA_NAME"
+                  },
+                  {
+                    "kind": "mod",
+                    "line": 7,
+                    "name": "inner"
+                  },
+                  {
+                    "kind": "macro",
+                    "line": 9,
+                    "name": "beta_macro"
+                  }
+                ]
+              }
+            ],
+            "omitted": 2
+          }
+        }
+      }
+    ],
+    "stderr": ""
+  },
+  "summary": {
+    "file_search_literal": {
+      "rust": {
+        "path_matches": 0,
+        "content_matches": 3,
+        "returned_path_matches": 0,
+        "returned_content_matches": 3
+      },
+      "repoprompt_headless": {
+        "path_matches": 0,
+        "content_matches": 3,
+        "returned_path_matches": 0,
+        "returned_content_matches": 3
+      }
+    },
+    "file_search_regex": {
+      "rust": {
+        "path_matches": 0,
+        "content_matches": 2,
+        "returned_path_matches": 0,
+        "returned_content_matches": 2
+      },
+      "repoprompt_headless": {
+        "path_matches": 0,
+        "content_matches": 2,
+        "returned_path_matches": 0,
+        "returned_content_matches": 2
+      }
+    },
+    "file_search_path": {
+      "rust": {
+        "path_matches": 2,
+        "content_matches": 0,
+        "returned_path_matches": 2,
+        "returned_content_matches": 0
+      },
+      "repoprompt_headless": {
+        "path_matches": 2,
+        "content_matches": 0,
+        "returned_path_matches": 2,
+        "returned_content_matches": 0
+      }
+    },
+    "get_file_tree": {
+      "rust": {
+        "roots_count": 1,
+        "was_truncated": false
+      },
+      "repoprompt_headless": {
+        "roots_count": 1,
+        "was_truncated": false
+      }
+    },
+    "get_code_structure": {
+      "rust": {
+        "files": 4
+      }
+    }
+  }
+}

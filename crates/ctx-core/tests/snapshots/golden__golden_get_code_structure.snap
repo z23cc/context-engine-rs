@@ -1,0 +1,205 @@
+---
+source: crates/ctx-core/tests/golden.rs
+expression: response
+---
+{
+  "files": [
+    {
+      "path": "alpha.rs",
+      "language": "rust",
+      "symbols": [
+        {
+          "kind": "struct",
+          "name": "Alpha",
+          "line": 1
+        },
+        {
+          "kind": "enum",
+          "name": "Mode",
+          "line": 5
+        },
+        {
+          "kind": "trait",
+          "name": "Runnable",
+          "line": 10
+        },
+        {
+          "kind": "impl",
+          "name": "Alpha",
+          "line": 14
+        },
+        {
+          "kind": "impl",
+          "name": "Runnable for Alpha",
+          "line": 20
+        },
+        {
+          "kind": "function",
+          "name": "alpha_needle",
+          "line": 24
+        }
+      ]
+    },
+    {
+      "path": "delta.js",
+      "language": "javascript",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "jsEntry",
+          "line": 1
+        },
+        {
+          "kind": "class",
+          "name": "Widget",
+          "line": 5
+        },
+        {
+          "kind": "function",
+          "name": "runTask",
+          "line": 9
+        },
+        {
+          "kind": "function",
+          "name": "exportedArrow",
+          "line": 10
+        },
+        {
+          "kind": "function",
+          "name": "makeThing",
+          "line": 11
+        },
+        {
+          "kind": "class",
+          "name": "ExportedThing",
+          "line": 17
+        }
+      ]
+    },
+    {
+      "path": "gamma.py",
+      "language": "python",
+      "symbols": [
+        {
+          "kind": "class",
+          "name": "PyAlpha",
+          "line": 1
+        },
+        {
+          "kind": "function",
+          "name": "py_helper",
+          "line": 6
+        },
+        {
+          "kind": "function",
+          "name": "async_worker",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "path": "nested/beta.rs",
+      "language": "rust",
+      "symbols": [
+        {
+          "kind": "type",
+          "name": "BetaCount",
+          "line": 1
+        },
+        {
+          "kind": "const",
+          "name": "BETA_LIMIT",
+          "line": 3
+        },
+        {
+          "kind": "static",
+          "name": "BETA_NAME",
+          "line": 5
+        },
+        {
+          "kind": "mod",
+          "name": "inner",
+          "line": 7
+        },
+        {
+          "kind": "macro",
+          "name": "beta_macro",
+          "line": 9
+        }
+      ]
+    },
+    {
+      "path": "repo_map/js_consumer.js",
+      "language": "javascript",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "jsConsumer",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "repo_map/py_lib.py",
+      "language": "python",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "shared_py_helper",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "repo_map/python_consumer.py",
+      "language": "python",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "python_consumer",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "repo_map/rust_consumer.rs",
+      "language": "rust",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "rust_consumer",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "repo_map/rust_lib.rs",
+      "language": "rust",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "shared_rust_helper",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "path": "repo_map/shared.js",
+      "language": "javascript",
+      "symbols": [
+        {
+          "kind": "class",
+          "name": "SharedThing",
+          "line": 1
+        },
+        {
+          "kind": "function",
+          "name": "sharedFactory",
+          "line": 7
+        }
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "omitted": 2
+}

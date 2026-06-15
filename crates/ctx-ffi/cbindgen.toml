@@ -1,0 +1,22 @@
+language = "C"
+include_guard = "CTX_ENGINE_H"
+pragma_once = true
+usize_is_size_t = true
+documentation = true
+
+[parse]
+parse_deps = false
+
+[export]
+include = [
+  "CtxEngine",
+  "CtxCancel",
+  "ctx_engine_new",
+  "ctx_cancel_new",
+  "ctx_cancel_trigger",
+  "ctx_cancel_free",
+  "ctx_engine_handle_request",
+  "ctx_engine_handle_request_cancellable",
+  "ctx_engine_free_string",
+  "ctx_engine_free",
+]

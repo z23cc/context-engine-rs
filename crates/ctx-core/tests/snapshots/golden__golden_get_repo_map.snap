@@ -1,0 +1,151 @@
+---
+source: crates/ctx-core/tests/golden.rs
+expression: response
+---
+{
+  "files": [
+    {
+      "rank": 1,
+      "path": "repo_map/rust_lib.rs",
+      "display_path": "repo_map/rust_lib.rs",
+      "language": "rust",
+      "score": "0.64912281",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "shared_rust_helper",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "rank": 2,
+      "path": "repo_map/rust_consumer.rs",
+      "display_path": "repo_map/rust_consumer.rs",
+      "language": "rust",
+      "score": "0.35087719",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "rust_consumer",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "rank": 3,
+      "path": "alpha.rs",
+      "display_path": "alpha.rs",
+      "language": "rust",
+      "score": "0.00000000",
+      "symbols": [
+        {
+          "kind": "struct",
+          "name": "Alpha",
+          "line": 1
+        },
+        {
+          "kind": "enum",
+          "name": "Mode",
+          "line": 5
+        },
+        {
+          "kind": "trait",
+          "name": "Runnable",
+          "line": 10
+        },
+        {
+          "kind": "impl",
+          "name": "Alpha",
+          "line": 14
+        },
+        {
+          "kind": "impl",
+          "name": "Runnable for Alpha",
+          "line": 20
+        },
+        {
+          "kind": "function",
+          "name": "alpha_needle",
+          "line": 24
+        }
+      ]
+    },
+    {
+      "rank": 4,
+      "path": "delta.js",
+      "display_path": "delta.js",
+      "language": "javascript",
+      "score": "0.00000000",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "jsEntry",
+          "line": 1
+        },
+        {
+          "kind": "class",
+          "name": "Widget",
+          "line": 5
+        },
+        {
+          "kind": "function",
+          "name": "runTask",
+          "line": 9
+        },
+        {
+          "kind": "function",
+          "name": "exportedArrow",
+          "line": 10
+        },
+        {
+          "kind": "function",
+          "name": "makeThing",
+          "line": 11
+        },
+        {
+          "kind": "class",
+          "name": "ExportedThing",
+          "line": 17
+        }
+      ]
+    },
+    {
+      "rank": 5,
+      "path": "gamma.py",
+      "display_path": "gamma.py",
+      "language": "python",
+      "score": "0.00000000",
+      "symbols": [
+        {
+          "kind": "class",
+          "name": "PyAlpha",
+          "line": 1
+        },
+        {
+          "kind": "function",
+          "name": "py_helper",
+          "line": 6
+        },
+        {
+          "kind": "function",
+          "name": "async_worker",
+          "line": 10
+        }
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "totals": {
+    "scanned_files": 12,
+    "indexed_files": 10,
+    "symbols_indexed": 25,
+    "edges": 3,
+    "seed_files": 2,
+    "omitted_files": 7,
+    "max_files": 5,
+    "damping": "0.85",
+    "iterations": 30
+  },
+  "reference_heuristic": "language-scoped identifier heuristic; skips comments/strings and stopwords; not scope/import aware"
+}

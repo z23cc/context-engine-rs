@@ -1,0 +1,201 @@
+---
+source: crates/ctx-core/tests/golden.rs
+expression: "json!({ \"literal\": literal, \"regex\": regex, \"path\": path, })"
+---
+{
+  "literal": {
+    "content_matches": [
+      {
+        "column": 1,
+        "context": [
+          {
+            "line": 1,
+            "text": "first line"
+          },
+          {
+            "line": 2,
+            "text": "needle text line"
+          },
+          {
+            "line": 3,
+            "text": "final line"
+          }
+        ],
+        "display_path": "fixtures/notes.txt",
+        "line": 2,
+        "path": "notes.txt",
+        "root_id": "root-0",
+        "score": 1284211,
+        "text": "needle text line"
+      },
+      {
+        "column": 14,
+        "context": [
+          {
+            "line": 23,
+            "text": ""
+          },
+          {
+            "line": 24,
+            "text": "pub fn alpha_needle() -> &'static str {"
+          },
+          {
+            "line": 25,
+            "text": "    \"needle alpha\""
+          }
+        ],
+        "display_path": "fixtures/alpha.rs",
+        "line": 24,
+        "path": "alpha.rs",
+        "root_id": "root-0",
+        "score": 920755,
+        "text": "pub fn alpha_needle() -> &'static str {"
+      },
+      {
+        "column": 6,
+        "context": [
+          {
+            "line": 24,
+            "text": "pub fn alpha_needle() -> &'static str {"
+          },
+          {
+            "line": 25,
+            "text": "    \"needle alpha\""
+          },
+          {
+            "line": 26,
+            "text": "}"
+          }
+        ],
+        "display_path": "fixtures/alpha.rs",
+        "line": 25,
+        "path": "alpha.rs",
+        "root_id": "root-0",
+        "score": 920755,
+        "text": "    \"needle alpha\""
+      }
+    ],
+    "diagnostics": [],
+    "path_matches": [],
+    "totals": {
+      "binary_files_skipped": 0,
+      "budget": {
+        "exhausted": false,
+        "max_content_bytes": 67108864,
+        "max_content_files": 2048,
+        "max_results": 20
+      },
+      "content_byte_limit": 67108864,
+      "content_bytes_scanned": 1471,
+      "content_file_limit": 2048,
+      "content_files_scanned": 12,
+      "content_matches": 3,
+      "omitted": 0,
+      "path_matches": 0,
+      "scanned_files": 12,
+      "totals_are_lower_bound": false
+    }
+  },
+  "path": {
+    "content_matches": [],
+    "diagnostics": [],
+    "path_matches": [
+      {
+        "display_path": "fixtures/nested/beta.rs",
+        "path": "nested/beta.rs",
+        "root_id": "root-0",
+        "score": 1000153
+      },
+      {
+        "display_path": "fixtures/nested/info.txt",
+        "path": "nested/info.txt",
+        "root_id": "root-0",
+        "score": 1000152
+      }
+    ],
+    "totals": {
+      "binary_files_skipped": 0,
+      "budget": {
+        "exhausted": false,
+        "max_content_bytes": 67108864,
+        "max_content_files": 2048,
+        "max_results": 20
+      },
+      "content_byte_limit": 67108864,
+      "content_bytes_scanned": 0,
+      "content_file_limit": 2048,
+      "content_files_scanned": 0,
+      "content_matches": 0,
+      "omitted": 0,
+      "path_matches": 2,
+      "scanned_files": 12,
+      "totals_are_lower_bound": false
+    }
+  },
+  "regex": {
+    "content_matches": [
+      {
+        "column": 1,
+        "context": [
+          {
+            "line": 1,
+            "text": "pub struct Alpha {"
+          },
+          {
+            "line": 2,
+            "text": "    pub value: i32,"
+          }
+        ],
+        "display_path": "fixtures/alpha.rs",
+        "line": 1,
+        "path": "alpha.rs",
+        "root_id": "root-0",
+        "score": 47619,
+        "text": "pub struct Alpha {"
+      },
+      {
+        "column": 1,
+        "context": [
+          {
+            "line": 4,
+            "text": ""
+          },
+          {
+            "line": 5,
+            "text": "pub enum Mode {"
+          },
+          {
+            "line": 6,
+            "text": "    Fast,"
+          }
+        ],
+        "display_path": "fixtures/alpha.rs",
+        "line": 5,
+        "path": "alpha.rs",
+        "root_id": "root-0",
+        "score": 47619,
+        "text": "pub enum Mode {"
+      }
+    ],
+    "diagnostics": [],
+    "path_matches": [],
+    "totals": {
+      "binary_files_skipped": 0,
+      "budget": {
+        "exhausted": false,
+        "max_content_bytes": 67108864,
+        "max_content_files": 2048,
+        "max_results": 20
+      },
+      "content_byte_limit": 67108864,
+      "content_bytes_scanned": 1471,
+      "content_file_limit": 2048,
+      "content_files_scanned": 12,
+      "content_matches": 2,
+      "omitted": 0,
+      "path_matches": 0,
+      "scanned_files": 12,
+      "totals_are_lower_bound": false
+    }
+  }
+}

@@ -1,0 +1,22 @@
+---
+source: crates/ctx-core/tests/golden.rs
+expression: value
+---
+{
+  "slice": {
+    "content": "needle text line\n",
+    "display_path": "fixtures/notes.txt",
+    "first_line": 2,
+    "last_line": 2,
+    "path": "<absolute-path>",
+    "total_lines": 3
+  },
+  "whole": {
+    "content": "first line\nneedle text line\nfinal line\n",
+    "display_path": "fixtures/notes.txt",
+    "first_line": 1,
+    "last_line": 3,
+    "path": "<absolute-path>",
+    "total_lines": 3
+  }
+}

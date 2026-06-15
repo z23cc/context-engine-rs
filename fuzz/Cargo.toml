@@ -1,0 +1,42 @@
+[package]
+name = "ctx-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ctx-core]
+path = "../crates/ctx-core"
+
+[[bin]]
+name = "dispatch"
+path = "fuzz_targets/dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codemap_parsers"
+path = "fuzz_targets/codemap_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "search_matcher"
+path = "fuzz_targets/search_matcher.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repomap_tokenizer"
+path = "fuzz_targets/repomap_tokenizer.rs"
+test = false
+doc = false
+bench = false

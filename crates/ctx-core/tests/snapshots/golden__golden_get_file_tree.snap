@@ -1,0 +1,106 @@
+---
+source: crates/ctx-core/tests/golden.rs
+expression: value
+---
+{
+  "omitted": 0,
+  "roots": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [],
+              "kind": "file",
+              "name": "beta.rs",
+              "path": "nested/beta.rs"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "info.txt",
+              "path": "nested/info.txt"
+            }
+          ],
+          "kind": "directory",
+          "name": "nested",
+          "path": "nested"
+        },
+        {
+          "children": [
+            {
+              "children": [],
+              "kind": "file",
+              "name": "js_consumer.js",
+              "path": "repo_map/js_consumer.js"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "py_lib.py",
+              "path": "repo_map/py_lib.py"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "python_consumer.py",
+              "path": "repo_map/python_consumer.py"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "rust_consumer.rs",
+              "path": "repo_map/rust_consumer.rs"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "rust_lib.rs",
+              "path": "repo_map/rust_lib.rs"
+            },
+            {
+              "children": [],
+              "kind": "file",
+              "name": "shared.js",
+              "path": "repo_map/shared.js"
+            }
+          ],
+          "kind": "directory",
+          "name": "repo_map",
+          "path": "repo_map"
+        },
+        {
+          "children": [],
+          "kind": "file",
+          "name": "alpha.rs",
+          "path": "alpha.rs"
+        },
+        {
+          "children": [],
+          "kind": "file",
+          "name": "delta.js",
+          "path": "delta.js"
+        },
+        {
+          "children": [],
+          "kind": "file",
+          "name": "gamma.py",
+          "path": "gamma.py"
+        },
+        {
+          "children": [],
+          "kind": "file",
+          "name": "notes.txt",
+          "path": "notes.txt"
+        }
+      ],
+      "kind": "directory",
+      "name": "<fixture-root>",
+      "path": ""
+    }
+  ],
+  "roots_count": 1,
+  "tree": "<fixture-root>\n├── nested/\n│   ├── beta.rs\n│   └── info.txt\n├── repo_map/\n│   ├── js_consumer.js\n│   ├── py_lib.py\n│   ├── python_consumer.py\n│   ├── rust_consumer.rs\n│   ├── rust_lib.rs\n│   └── shared.js\n├── alpha.rs\n├── delta.js\n├── gamma.py\n└── notes.txt",
+  "uses_legend": false,
+  "was_truncated": false
+}
