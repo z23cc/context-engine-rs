@@ -17,7 +17,7 @@ use std::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "ctx-mcp", about = "Minimal snapshot-centered context engine")]
+#[command(name = "ctx-mcp", version, about = "Minimal snapshot-centered context engine")]
 struct Cli {
     #[command(subcommand)]
     command: CommandKind,

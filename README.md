@@ -14,6 +14,25 @@ The design keeps the engine centered on immutable `CatalogSnapshot` values. File
 system access is behind the `CatalogProvider` port, so the core does not depend
 on any GUI or live workspace store.
 
+## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install z23cc/tap/ctx-mcp
+ctx-mcp --version
+```
+
+Builds `ctx-mcp` from source (Homebrew pulls a temporary Rust toolchain) and puts
+it on your `PATH`. See [`packaging/homebrew`](packaging/homebrew/README.md) for how
+releases and versioning work.
+
+### From source
+
+```bash
+cargo install --path crates/ctx-mcp   # or: cargo build --release -p ctx-mcp
+```
+
 ## Run
 
 ```bash
@@ -237,7 +256,8 @@ native dispatch. Runnable example: `crates/ctx-wasm/examples/node-smoke.js`.
 
 `ctx-mcp` is an MCP server over stdio (JSON-RPC 2.0: `initialize` / `tools/list` /
 `tools/call`). It exposes all 8 tools and is **fail-closed** — pass the project root
-with `--root`. Build it first:
+with `--root`. Installed via Homebrew the binary is already on your `PATH` (use
+`"command": "ctx-mcp"`); otherwise build it first:
 
 ```bash
 cargo build --release -p ctx-mcp   # -> target/release/ctx-mcp

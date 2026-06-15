@@ -4,10 +4,11 @@ exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
-repository = ""
+repository = "https://github.com/z23cc/context-engine-rs"
 
 [workspace.dependencies]
 anyhow = "1"
