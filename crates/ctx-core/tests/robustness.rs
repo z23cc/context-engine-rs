@@ -173,7 +173,14 @@ fn boundary_corpus_uses_tempdir_and_degrades_gracefully() {
     }
 
     let (provider, snapshot) = provider_for(dir.path());
-    let tree = get_file_tree(&snapshot, 20);
+    let tree = get_file_tree(
+        &snapshot,
+        &ctx_core::FileTreeOptions {
+            mode: ctx_core::TreeMode::Full,
+            max_depth: Some(20),
+            path: None,
+        },
+    );
     assert!(!tree.roots.is_empty());
 
     let codemap = get_code_structure(&provider, &snapshot, &[]).expect("codemap response");

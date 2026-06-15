@@ -255,4 +255,7 @@ pub struct FileTreeResponse {
     pub was_truncated: bool,
     pub uses_legend: bool,
     pub omitted: usize,
+    /// Explains any `auto`-mode degradation or truncation (depth/folders/budget).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }

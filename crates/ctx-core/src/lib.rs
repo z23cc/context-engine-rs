@@ -47,7 +47,7 @@ pub use selection::{
 };
 pub use snapshot::CatalogSnapshot;
 pub use token::count_tokens;
-pub use tree::get_file_tree;
+pub use tree::{FileTreeOptions, TreeMode, get_file_tree};
 #[cfg(not(target_arch = "wasm32"))]
 pub use workspace::{
     ManageWorkspacesOp, ManageWorkspacesRequest, ManageWorkspacesResponse, WorkspaceInfo,

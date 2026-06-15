@@ -145,12 +145,14 @@ pub fn tool_specs() -> Value {
         }),
         json!({
             "name": "get_file_tree",
-            "description": "Return a compact tree for allowed roots.",
+            "description": "Return a compact ASCII directory tree for allowed roots. `auto` mode (default) adapts depth/breadth to a size budget; pass `path` to scope to a subdirectory on large repos.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "workspace": workspace_schema(),
-                    "max_depth": { "type": "integer", "default": 3 }
+                    "mode": { "type": "string", "enum": ["auto", "full", "folders"], "default": "auto", "description": "auto: fit a size budget (degrades depth->folders->top-level, with a note). full: everything (can be large). folders: directories only." },
+                    "max_depth": { "type": "integer", "description": "Maximum depth (root = 0)." },
+                    "path": { "type": "string", "description": "Scope the tree to this subdirectory (relative to a root)." }
                 }
             }
         }),
@@ -323,7 +325,12 @@ where
             let args: FileTreeArgs = serde_json::from_value(arguments)?;
             let snapshot = provider.snapshot_arc_cancellable(cancel)?;
             cancel.check_cancelled()?;
-            let response = get_file_tree(&snapshot, args.max_depth.unwrap_or(3));
+            let options = crate::FileTreeOptions {
+                mode: crate::TreeMode::from_arg(args.mode.as_deref()),
+                max_depth: args.max_depth,
+                path: args.path,
+            };
+            let response = get_file_tree(&snapshot, &options);
             return tool_response_text(&response);
         }
         "get_code_structure" => {
@@ -383,7 +390,12 @@ impl ToolText for crate::ReadFileResponse {
 
 impl ToolText for crate::FileTreeResponse {
     fn tool_text(&self) -> String {
-        self.tree.clone()
+        let note = self.note.as_deref().filter(|n| !n.is_empty());
+        match (self.tree.is_empty(), note) {
+            (false, Some(note)) => format!("{}\n\n(note: {note})", self.tree),
+            (true, Some(note)) => format!("(note: {note})"),
+            (_, None) => self.tree.clone(),
+        }
     }
 }
 
@@ -674,8 +686,12 @@ impl ReadFileArgs {
 
 #[derive(Debug, Deserialize)]
 struct FileTreeArgs {
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default, deserialize_with = "lenient_opt_usize")]
     max_depth: Option<usize>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -855,6 +871,7 @@ mod tests {
             was_truncated: false,
             uses_legend: false,
             omitted: 0,
+            note: None,
         };
         assert_eq!(response.tool_text(), "src/\n  lib.rs\n");
     }

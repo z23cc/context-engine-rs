@@ -177,7 +177,12 @@ fn golden_read_file_whole_and_slice() {
 #[test]
 fn golden_get_file_tree() {
     let (_provider, snapshot) = snapshot();
-    let mut value = serde_json::to_value(get_file_tree(&snapshot, 4)).expect("tree json");
+    let options = ctx_core::FileTreeOptions {
+        mode: ctx_core::TreeMode::Full,
+        max_depth: Some(4),
+        path: None,
+    };
+    let mut value = serde_json::to_value(get_file_tree(&snapshot, &options)).expect("tree json");
     normalize_root_names(&mut value);
     normalize_tree_ascii(&mut value);
     insta::assert_json_snapshot!(value);
