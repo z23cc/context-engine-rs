@@ -1,5 +1,6 @@
 ---
 source: crates/ctx-core/tests/golden.rs
+assertion_line: 206
 expression: response
 ---
 {
@@ -147,5 +148,5 @@ expression: response
     "damping": "0.85",
     "iterations": 30
   },
-  "reference_heuristic": "language-scoped identifier heuristic; skips comments/strings and stopwords; not scope/import aware"
+  "reference_heuristic": "AST node-level references (imports/calls/type/name/member nodes) matched by same-language top-level symbol name; import paths that resolve to catalog files get higher weight; not a full scope/type/alias/re-export resolver"
 }

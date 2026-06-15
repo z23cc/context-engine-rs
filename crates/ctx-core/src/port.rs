@@ -2,7 +2,7 @@
 
 use crate::{
     cancel::CancelToken,
-    codemap::{CodeSymbol, symbols_for_path},
+    codemap::{ParsedCodeFile, symbols_for_path},
     models::CtxError,
     selection::Selection,
     snapshot::CatalogSnapshot,
@@ -10,7 +10,7 @@ use crate::{
 use std::{path::Path, sync::Arc};
 
 /// Cached or freshly parsed lightweight code symbols for one source file.
-pub type CodeSymbolsResult = Result<Option<(String, Arc<Vec<CodeSymbol>>)>, String>;
+pub type CodeSymbolsResult = Result<Option<Arc<ParsedCodeFile>>, String>;
 
 /// Provider for immutable catalog snapshots and file bytes.
 ///
@@ -52,8 +52,7 @@ pub trait CatalogProvider {
     ) -> Result<CodeSymbolsResult, CtxError> {
         let bytes = self.read_bytes(path)?;
         let source = String::from_utf8_lossy(&bytes);
-        Ok(symbols_for_path(&source, rel_path)
-            .map(|maybe| maybe.map(|(language, symbols)| (language, Arc::new(symbols)))))
+        Ok(symbols_for_path(&source, rel_path).map(|maybe| maybe.map(Arc::new)))
     }
 
     fn display_path(&self, path: &Path) -> String {

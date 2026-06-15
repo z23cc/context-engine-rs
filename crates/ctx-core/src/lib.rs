@@ -53,6 +53,5 @@ pub use workspace_context::{
 #[doc(hidden)]
 pub mod fuzzing {
     pub use crate::codemap::fuzz_symbols_for_path as codemap_symbols_for_path;
-    pub use crate::repomap::fuzz_identifier_counts as repomap_identifier_counts;
     pub use crate::search::fuzz_match_content as search_match_content;
 }

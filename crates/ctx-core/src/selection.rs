@@ -236,7 +236,7 @@ fn token_estimate_for_entry<P: CatalogProvider>(
             Ok(count_tokens(&slice_text(&text, ranges)))
         }
         SelectionMode::CodemapOnly => {
-            let Some((language, symbols)) = provider
+            let Some(parsed) = provider
                 .code_symbols_for_path(&entry.abs_path, &entry.rel_path)?
                 .ok()
                 .flatten()
@@ -245,8 +245,8 @@ fn token_estimate_for_entry<P: CatalogProvider>(
             };
             let structure = FileCodeStructure {
                 path: entry.rel_path.clone(),
-                language,
-                symbols: symbols.as_ref().clone(),
+                language: parsed.language.clone(),
+                symbols: parsed.symbols.clone(),
             };
             let text = serde_json::to_string(&structure).expect("codemap summary serializes");
             Ok(count_tokens(&text))

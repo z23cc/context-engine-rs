@@ -310,11 +310,11 @@ fn render_codemap_file<P: CatalogProvider>(
 ) -> Result<RenderedFile, CtxError> {
     let (codemap_text, segment_tokens) =
         match provider.code_symbols_for_path(&selected.entry.abs_path, &selected.entry.rel_path)? {
-            Ok(Some((language, symbols))) => {
+            Ok(Some(parsed)) => {
                 let structure = FileCodeStructure {
                     path: selected.entry.rel_path.clone(),
-                    language,
-                    symbols: symbols.as_ref().clone(),
+                    language: parsed.language.clone(),
+                    symbols: parsed.symbols.clone(),
                 };
                 let text = render_codemap_signature(&structure);
                 let tokens = count_tokens(&text);

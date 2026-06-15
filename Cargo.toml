@@ -21,7 +21,7 @@ rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full", "printing", "extra-traits"] }
+syn = { version = "2", features = ["full", "printing", "extra-traits", "visit"] }
 quote = "1"
 oxc_parser = "0.135.0"
 oxc_ast = "0.135.0"

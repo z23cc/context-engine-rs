@@ -1,19 +1,18 @@
 //! PageRank-based repository map over the lightweight codemap.
 //!
 //! This module intentionally keeps the implementation pure Rust. It builds a
-//! symbol-definition index from the existing top-level codemap, tokenizes source
-//! files with an identifier-occurrence heuristic, then runs deterministic sparse
-//! personalized PageRank over the resulting file graph.
+//! symbol-definition index from the existing top-level codemap, then uses
+//! AST-derived reference nodes collected during that same parse pass to build a
+//! deterministic sparse personalized PageRank file graph.
 //!
-//! Important limitation: reference edges are **not** scope/import aware. A token
-//! named like a symbol defined in another file is treated as a reference to that
-//! symbol's defining file(s). Aider's production repo-map uses tree-sitter
-//! reference tags; this Rust slice approximates that behavior with identifier
-//! occurrences so it remains dependency-light and portable.
+//! Important limitation: reference edges are AST node-level name matches, not a
+//! full scope/type resolver. Calls, imports, identifier/member references, and
+//! type paths are matched by name against same-language top-level definitions;
+//! aliases, re-exports, and multi-definition disambiguation remain out of scope.
 
 use crate::{
     cancel::CancelToken,
-    codemap::CodeSymbol,
+    codemap::{CodeReference, CodeSymbol},
     models::{CatalogEntry, CtxError, Diagnostic},
     port::CatalogProvider,
     snapshot::CatalogSnapshot,
@@ -22,7 +21,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -30,6 +29,7 @@ const DAMPING: f64 = 0.85;
 const ITERATIONS: usize = 30;
 const DEFAULT_MAX_FILES: usize = 20;
 const MAX_SYMBOLS_PER_FILE: usize = 12;
+const IMPORT_EDGE_WEIGHT: f64 = 8.0;
 
 /// Request for `get_repo_map`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,7 +173,7 @@ pub fn get_repo_map_cancellable<P: CatalogProvider + Sync>(
             iterations: ITERATIONS,
         },
         reference_heuristic:
-            "language-scoped identifier heuristic; skips comments/strings and stopwords; not scope/import aware"
+            "AST node-level references (imports/calls/type/name/member nodes) matched by same-language top-level symbol name; import paths that resolve to catalog files get higher weight; not a full scope/type/alias/re-export resolver"
                 .to_string(),
     })
 }
@@ -211,29 +211,25 @@ fn analyze_file<P: CatalogProvider + Sync>(
     let bytes = provider.read_bytes(&entry.abs_path)?;
     cancel.check_cancelled()?;
     let source = String::from_utf8_lossy(&bytes);
-    let Some((language, symbols)) =
-        (match provider.code_symbols_for_path(&entry.abs_path, &entry.rel_path)? {
-            Ok(result) => result,
-            Err(message) => {
-                return Ok(FileAnalysisResult::Diagnostic(Diagnostic {
-                    path: Some(PathBuf::from(&entry.rel_path)),
-                    message,
-                }));
-            }
-        })
-    else {
+    let Some(parsed) = (match provider.code_symbols_for_path(&entry.abs_path, &entry.rel_path)? {
+        Ok(result) => result,
+        Err(message) => {
+            return Ok(FileAnalysisResult::Diagnostic(Diagnostic {
+                path: Some(PathBuf::from(&entry.rel_path)),
+                message,
+            }));
+        }
+    }) else {
         return Ok(FileAnalysisResult::Unsupported);
     };
-
-    let identifiers = identifier_counts_cancellable(&source, &language, cancel)?;
 
     Ok(FileAnalysisResult::Indexed(IndexedFile {
         path: entry.rel_path.clone(),
         display_path: display_path(snapshot, &entry.root_id, &entry.rel_path),
         abs_path: entry.abs_path.clone(),
-        language,
-        symbols: symbols.as_ref().clone(),
-        identifiers,
+        language: parsed.language.clone(),
+        symbols: parsed.symbols.clone(),
+        references: parsed.references.clone(),
         query_match: query.is_some_and(|needle| query_matches(&entry.rel_path, &source, needle)),
     }))
 }
@@ -252,7 +248,7 @@ struct IndexedFile {
     abs_path: PathBuf,
     language: String,
     symbols: Vec<CodeSymbol>,
-    identifiers: HashMap<String, usize>,
+    references: Vec<CodeReference>,
     query_match: bool,
 }
 
@@ -275,12 +271,26 @@ impl ReferenceGraph {
 
         for (referencer_idx, file) in files.iter().enumerate() {
             cancel.check_cancelled()?;
-            let mut identifiers: Vec<_> = file.identifiers.iter().collect();
-            identifiers.sort_by_key(|(identifier, _)| *identifier);
-            for (identifier, count) in identifiers {
+            let mut references = file.references.clone();
+            references
+                .sort_by(|left, right| reference_sort_key(left).cmp(&reference_sort_key(right)));
+            for reference in &references {
+                if is_reference_stopword(&reference.name, &file.language) {
+                    continue;
+                }
+
+                if reference.kind == "import"
+                    && let Some(definer_idx) =
+                        resolve_import_reference(files, referencer_idx, reference)
+                    && definer_idx != referencer_idx
+                {
+                    *edge_maps[referencer_idx].entry(definer_idx).or_insert(0.0) +=
+                        IMPORT_EDGE_WEIGHT;
+                }
+
                 let Some(definers) = definitions
                     .get(&file.language)
-                    .and_then(|by_name| by_name.get(identifier.as_str()))
+                    .and_then(|by_name| by_name.get(reference.name.as_str()))
                 else {
                     continue;
                 };
@@ -288,7 +298,7 @@ impl ReferenceGraph {
                     if *definer_idx == referencer_idx {
                         continue;
                     }
-                    *edge_maps[referencer_idx].entry(*definer_idx).or_insert(0.0) += *count as f64;
+                    *edge_maps[referencer_idx].entry(*definer_idx).or_insert(0.0) += 1.0;
                 }
             }
         }
@@ -346,6 +356,151 @@ fn definition_index(
     }
 
     definitions
+}
+
+fn reference_sort_key(reference: &CodeReference) -> (&str, &str, usize, Option<&str>) {
+    (
+        reference.kind.as_str(),
+        reference.name.as_str(),
+        reference.line,
+        reference.import_path.as_deref(),
+    )
+}
+
+fn resolve_import_reference(
+    files: &[IndexedFile],
+    referencer_idx: usize,
+    reference: &CodeReference,
+) -> Option<usize> {
+    let import_path = reference.import_path.as_deref()?;
+    let referencer = &files[referencer_idx];
+    match referencer.language.as_str() {
+        "rust" => resolve_rust_import(files, referencer, import_path),
+        "python" => resolve_python_import(files, referencer, import_path),
+        "javascript" => resolve_javascript_import(files, referencer, import_path),
+        _ => None,
+    }
+}
+
+fn resolve_rust_import(
+    files: &[IndexedFile],
+    referencer: &IndexedFile,
+    import_path: &str,
+) -> Option<usize> {
+    let mut parts: Vec<_> = import_path
+        .split("::")
+        .filter(|part| !part.is_empty())
+        .collect();
+    while matches!(parts.first(), Some(&"crate" | &"self")) {
+        parts.remove(0);
+    }
+    while matches!(parts.first(), Some(&"super")) {
+        parts.remove(0);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    let module_parts = &parts[..parts.len().saturating_sub(1)];
+    let candidates = if module_parts.is_empty() {
+        vec![format!("{}.rs", parts[0])]
+    } else {
+        let module = module_parts.join("/");
+        vec![format!("{module}.rs"), format!("{module}/mod.rs")]
+    };
+    resolve_relative_candidates(files, referencer, &candidates)
+}
+
+fn resolve_python_import(
+    files: &[IndexedFile],
+    referencer: &IndexedFile,
+    import_path: &str,
+) -> Option<usize> {
+    let parts: Vec<_> = import_path
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let module = if parts.len() > 1 {
+        &parts[..parts.len() - 1]
+    } else {
+        &parts[..]
+    }
+    .join("/");
+    let candidates = vec![format!("{module}.py"), format!("{module}/__init__.py")];
+    resolve_relative_candidates(files, referencer, &candidates)
+}
+
+fn resolve_javascript_import(
+    files: &[IndexedFile],
+    referencer: &IndexedFile,
+    import_path: &str,
+) -> Option<usize> {
+    if import_path.starts_with('.') {
+        let trimmed = import_path.trim_start_matches("./");
+        let candidates = javascript_import_candidates(trimmed);
+        return resolve_relative_candidates(files, referencer, &candidates);
+    }
+    None
+}
+
+fn javascript_import_candidates(path: &str) -> Vec<String> {
+    let extensions = ["js", "jsx", "mjs", "cjs", "ts", "tsx"];
+    if extensions
+        .iter()
+        .any(|ext| path.ends_with(&format!(".{ext}")))
+    {
+        return vec![path.to_string()];
+    }
+    let mut candidates = Vec::new();
+    for ext in extensions {
+        candidates.push(format!("{path}.{ext}"));
+    }
+    for ext in extensions {
+        candidates.push(format!("{path}/index.{ext}"));
+    }
+    candidates
+}
+
+fn resolve_relative_candidates(
+    files: &[IndexedFile],
+    referencer: &IndexedFile,
+    candidates: &[String],
+) -> Option<usize> {
+    let base = Path::new(&referencer.path)
+        .parent()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let mut normalized = BTreeSet::new();
+    for candidate in candidates {
+        normalized.insert(normalize_repo_path(candidate));
+        if !base.is_empty() {
+            normalized.insert(normalize_repo_path(&format!("{base}/{candidate}")));
+        }
+    }
+
+    files.iter().enumerate().find_map(|(idx, file)| {
+        normalized
+            .contains(&normalize_repo_path(&file.path))
+            .then_some(idx)
+    })
+}
+
+fn normalize_repo_path(path: &str) -> String {
+    let normalized_path = path.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in normalized_path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    parts.join("/")
 }
 
 fn page_rank_cancellable(
@@ -458,195 +613,6 @@ fn query_matches(path: &str, source: &str, query: &str) -> bool {
     }
     let query = query.to_ascii_lowercase();
     path.to_ascii_lowercase().contains(&query) || source.to_ascii_lowercase().contains(&query)
-}
-
-fn identifier_counts_cancellable(
-    source: &str,
-    language: &str,
-    cancel: &CancelToken,
-) -> Result<HashMap<String, usize>, CtxError> {
-    let bytes = source.as_bytes();
-    let mut counts = HashMap::new();
-    let mut idx = 0usize;
-
-    while idx < bytes.len() {
-        if idx.is_multiple_of(1024) {
-            cancel.check_cancelled()?;
-        }
-        if let Some(next_idx) = skip_non_code_span(bytes, idx, language) {
-            idx = next_idx;
-            continue;
-        }
-
-        if is_identifier_start(bytes[idx]) {
-            let start = idx;
-            idx += 1;
-            while idx < bytes.len() && is_identifier_continue(bytes[idx]) {
-                idx += 1;
-            }
-            let identifier = &source[start..idx];
-            if !is_reference_stopword(identifier, language) {
-                *counts.entry(identifier.to_string()).or_insert(0) += 1;
-            }
-            continue;
-        }
-
-        idx += 1;
-    }
-
-    Ok(counts)
-}
-
-#[cfg(fuzzing)]
-#[doc(hidden)]
-pub fn fuzz_identifier_counts(source: &str, language: &str) -> Result<usize, CtxError> {
-    identifier_counts_cancellable(source, language, &CancelToken::never())
-        .map(|counts| counts.len())
-}
-
-fn skip_non_code_span(bytes: &[u8], idx: usize, language: &str) -> Option<usize> {
-    match language {
-        "rust" => skip_rust_non_code_span(bytes, idx),
-        "python" => skip_python_non_code_span(bytes, idx),
-        "javascript" => skip_javascript_non_code_span(bytes, idx),
-        _ => None,
-    }
-}
-
-fn skip_rust_non_code_span(bytes: &[u8], idx: usize) -> Option<usize> {
-    if bytes[idx..].starts_with(b"//") {
-        return Some(skip_line(bytes, idx + 2));
-    }
-    if bytes[idx..].starts_with(b"/*") {
-        return Some(skip_block_comment(bytes, idx + 2));
-    }
-    if let Some(end) = rust_raw_string_end(bytes, idx) {
-        return Some(end);
-    }
-    if bytes[idx] == b'b'
-        && idx + 1 < bytes.len()
-        && let Some(end) = rust_raw_string_end(bytes, idx + 1)
-    {
-        return Some(end);
-    }
-    match bytes[idx] {
-        b'"' => Some(skip_quoted(bytes, idx, b'"')),
-        b'\'' => Some(skip_quoted(bytes, idx, b'\'')),
-        _ => None,
-    }
-}
-
-fn skip_python_non_code_span(bytes: &[u8], idx: usize) -> Option<usize> {
-    if bytes[idx] == b'#' {
-        return Some(skip_line(bytes, idx + 1));
-    }
-    python_string_end(bytes, idx)
-}
-
-fn skip_javascript_non_code_span(bytes: &[u8], idx: usize) -> Option<usize> {
-    if bytes[idx..].starts_with(b"//") {
-        return Some(skip_line(bytes, idx + 2));
-    }
-    if bytes[idx..].starts_with(b"/*") {
-        return Some(skip_block_comment(bytes, idx + 2));
-    }
-    match bytes[idx] {
-        b'"' => Some(skip_quoted(bytes, idx, b'"')),
-        b'\'' => Some(skip_quoted(bytes, idx, b'\'')),
-        b'`' => Some(skip_quoted(bytes, idx, b'`')),
-        _ => None,
-    }
-}
-
-fn skip_line(bytes: &[u8], mut idx: usize) -> usize {
-    while idx < bytes.len() && bytes[idx] != b'\n' {
-        idx += 1;
-    }
-    idx
-}
-
-fn skip_block_comment(bytes: &[u8], mut idx: usize) -> usize {
-    while idx + 1 < bytes.len() {
-        if bytes[idx..].starts_with(b"*/") {
-            return idx + 2;
-        }
-        idx += 1;
-    }
-    bytes.len()
-}
-
-fn skip_quoted(bytes: &[u8], mut idx: usize, quote: u8) -> usize {
-    idx += 1;
-    while idx < bytes.len() {
-        if bytes[idx] == b'\\' {
-            idx = (idx + 2).min(bytes.len());
-        } else if bytes[idx] == quote {
-            return idx + 1;
-        } else {
-            idx += 1;
-        }
-    }
-    bytes.len()
-}
-
-fn rust_raw_string_end(bytes: &[u8], idx: usize) -> Option<usize> {
-    if bytes.get(idx).copied() != Some(b'r') {
-        return None;
-    }
-    let mut marker_idx = idx + 1;
-    while bytes.get(marker_idx).copied() == Some(b'#') {
-        marker_idx += 1;
-    }
-    if bytes.get(marker_idx).copied() != Some(b'"') {
-        return None;
-    }
-
-    let hashes = marker_idx - idx - 1;
-    let mut scan = marker_idx + 1;
-    while scan < bytes.len() {
-        if bytes[scan] == b'"' && raw_hashes_match(bytes, scan + 1, hashes) {
-            return Some(scan + 1 + hashes);
-        }
-        scan += 1;
-    }
-    Some(bytes.len())
-}
-
-fn raw_hashes_match(bytes: &[u8], idx: usize, hashes: usize) -> bool {
-    idx + hashes <= bytes.len() && bytes[idx..idx + hashes].iter().all(|byte| *byte == b'#')
-}
-
-fn python_string_end(bytes: &[u8], idx: usize) -> Option<usize> {
-    const PREFIXES: [&[u8]; 9] = [b"fr", b"rf", b"br", b"rb", b"ur", b"r", b"u", b"b", b"f"];
-
-    for prefix in PREFIXES {
-        if idx + prefix.len() >= bytes.len() {
-            continue;
-        }
-        if bytes[idx..idx + prefix.len()].eq_ignore_ascii_case(prefix)
-            && matches!(bytes[idx + prefix.len()], b'\'' | b'"')
-        {
-            return Some(skip_python_quoted(bytes, idx + prefix.len()));
-        }
-    }
-
-    matches!(bytes[idx], b'\'' | b'"').then(|| skip_python_quoted(bytes, idx))
-}
-
-fn skip_python_quoted(bytes: &[u8], idx: usize) -> usize {
-    let quote = bytes[idx];
-    if idx + 2 < bytes.len() && bytes[idx + 1] == quote && bytes[idx + 2] == quote {
-        let mut scan = idx + 3;
-        while scan + 2 < bytes.len() {
-            if bytes[scan] == quote && bytes[scan + 1] == quote && bytes[scan + 2] == quote {
-                return scan + 3;
-            }
-            scan += 1;
-        }
-        bytes.len()
-    } else {
-        skip_quoted(bytes, idx, quote)
-    }
 }
 
 fn is_reference_stopword(identifier: &str, language: &str) -> bool {
@@ -818,19 +784,22 @@ mod tests {
     }
 
     #[test]
-    fn builds_reference_edges_from_identifier_occurrences() {
+    fn builds_reference_edges_from_ast_calls_and_type_paths() {
         let (_dir, provider, snapshot) = temp_provider(&[
-            ("target.rs", "pub struct Target;\n"),
+            (
+                "target.rs",
+                "pub struct Target;\npub fn make_target() -> usize { 1 }\n",
+            ),
             (
                 "caller.rs",
-                "pub fn caller() { let _ = Target; let _ = Target; }\n",
+                "pub fn caller(_value: Target) -> usize { make_target() + make_target() }\n",
             ),
             ("other.rs", "pub fn other() {}\n"),
         ]);
         let files = indexed_files(&provider, &snapshot);
         let graph = ReferenceGraph::build(&files);
 
-        assert_eq!(edge_weight(&graph, &files, "caller.rs", "target.rs"), 2.0);
+        assert_eq!(edge_weight(&graph, &files, "caller.rs", "target.rs"), 3.0);
     }
 
     #[test]
@@ -852,11 +821,11 @@ mod tests {
     #[test]
     fn ignores_high_document_frequency_symbols() {
         let (_dir, provider, snapshot) = temp_provider(&[
-            ("one.rs", "pub struct CommonThing;\n"),
-            ("two.rs", "pub struct CommonThing;\n"),
-            ("three.rs", "pub struct CommonThing;\n"),
-            ("four.rs", "pub struct CommonThing;\n"),
-            ("caller.rs", "pub fn caller() { let _ = CommonThing; }\n"),
+            ("one.rs", "pub fn CommonThing() {}\n"),
+            ("two.rs", "pub fn CommonThing() {}\n"),
+            ("three.rs", "pub fn CommonThing() {}\n"),
+            ("four.rs", "pub fn CommonThing() {}\n"),
+            ("caller.rs", "pub fn caller() { CommonThing(); }\n"),
         ]);
         let files = indexed_files(&provider, &snapshot);
         let graph = ReferenceGraph::build(&files);
@@ -872,7 +841,7 @@ mod tests {
     fn does_not_create_cross_language_edges_for_same_name() {
         let (_dir, provider, snapshot) = temp_provider(&[
             ("shared.js", "export class SharedThing {}\n"),
-            ("caller.rs", "pub fn caller() { let _ = SharedThing; }\n"),
+            ("caller.rs", "pub fn caller() { SharedThing(); }\n"),
         ]);
         let files = indexed_files(&provider, &snapshot);
         let graph = ReferenceGraph::build(&files);
@@ -883,10 +852,13 @@ mod tests {
     #[test]
     fn same_language_consumer_reference_ranks_definer_higher() {
         let (_dir, provider, snapshot) = temp_provider(&[
-            ("target.rs", "pub struct Target;\n"),
+            (
+                "target.rs",
+                "pub struct Target;\npub fn make_target() -> usize { 1 }\n",
+            ),
             (
                 "caller.rs",
-                "pub fn caller() { let _ = Target; let _ = Target; }\n",
+                "pub fn caller(_value: Target) -> usize { make_target() + make_target() }\n",
             ),
             ("isolated.rs", "pub fn isolated() {}\n"),
         ]);
@@ -894,7 +866,7 @@ mod tests {
             &provider,
             &snapshot,
             &RepoMapRequest {
-                query: Some("Target".to_string()),
+                query: Some("make_target".to_string()),
                 seed_paths: vec![PathBuf::from("caller.rs")],
                 max_files: 3,
             },
@@ -922,9 +894,9 @@ mod tests {
     #[test]
     fn pagerank_prefers_file_referenced_by_multiple_files() {
         let (_dir, provider, snapshot) = temp_provider(&[
-            ("target.rs", "pub struct Target;\n"),
-            ("caller_one.rs", "pub fn one() { let _ = Target; }\n"),
-            ("caller_two.rs", "pub fn two() { let _ = Target; }\n"),
+            ("target.rs", "pub fn make_target() -> usize { 1 }\n"),
+            ("caller_one.rs", "pub fn one() -> usize { make_target() }\n"),
+            ("caller_two.rs", "pub fn two() -> usize { make_target() }\n"),
         ]);
         let response =
             get_repo_map(&provider, &snapshot, &RepoMapRequest::default()).expect("repo map");
@@ -933,10 +905,58 @@ mod tests {
     }
 
     #[test]
-    fn personalized_pagerank_biases_seed_files() {
+    fn python_calls_imports_and_names_build_edges() {
+        let (_dir, provider, snapshot) = temp_provider(&[
+            (
+                "target.py",
+                "class Target:\n    pass\n\ndef make_target():\n    return Target()\n",
+            ),
+            (
+                "caller.py",
+                "from target import Target, make_target\n\ndef caller():\n    value = Target()\n    return make_target()\n",
+            ),
+        ]);
+        let files = indexed_files(&provider, &snapshot);
+        let graph = ReferenceGraph::build(&files);
+
+        assert!(edge_weight(&graph, &files, "caller.py", "target.py") >= IMPORT_EDGE_WEIGHT);
+    }
+
+    #[test]
+    fn javascript_import_require_calls_and_identifiers_build_edges() {
+        let (_dir, provider, snapshot) = temp_provider(&[
+            ("target.js", "export function makeTarget() { return 1; }\n"),
+            (
+                "caller.js",
+                "import { makeTarget } from './target';\nconst other = require('./target');\nexport function caller() { return makeTarget(); }\n",
+            ),
+        ]);
+        let files = indexed_files(&provider, &snapshot);
+        let graph = ReferenceGraph::build(&files);
+
+        assert!(edge_weight(&graph, &files, "caller.js", "target.js") >= IMPORT_EDGE_WEIGHT);
+    }
+
+    #[test]
+    fn import_path_resolution_adds_high_confidence_edge() {
         let (_dir, provider, snapshot) = temp_provider(&[
             ("target.rs", "pub struct Target;\n"),
-            ("caller.rs", "pub fn caller() { let _ = Target; }\n"),
+            (
+                "caller.rs",
+                "use crate::target::Target;\npub fn caller(value: Target) { let _ = value; }\n",
+            ),
+        ]);
+        let files = indexed_files(&provider, &snapshot);
+        let graph = ReferenceGraph::build(&files);
+
+        assert!(edge_weight(&graph, &files, "caller.rs", "target.rs") >= IMPORT_EDGE_WEIGHT);
+    }
+
+    #[test]
+    fn personalized_pagerank_biases_seed_files() {
+        let (_dir, provider, snapshot) = temp_provider(&[
+            ("target.rs", "pub fn make_target() -> usize { 1 }\n"),
+            ("caller.rs", "pub fn caller() -> usize { make_target() }\n"),
             ("isolated.rs", "pub fn isolated() {}\n"),
         ]);
         let response = get_repo_map(

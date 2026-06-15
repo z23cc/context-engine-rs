@@ -335,8 +335,8 @@ impl CatalogProvider for FsCatalogProvider {
 
         let bytes = fs::read(&allowed).map_err(|err| CtxError::io(&allowed, err))?;
         let source = String::from_utf8_lossy(&bytes);
-        let parsed: CodeSymbolsResult = symbols_for_path(&source, rel_path)
-            .map(|maybe| maybe.map(|(language, symbols)| (language, Arc::new(symbols))));
+        let parsed: CodeSymbolsResult =
+            symbols_for_path(&source, rel_path).map(|maybe| maybe.map(Arc::new));
         self.cache
             .codemap
             .write()
@@ -464,14 +464,12 @@ mod tests {
             .code_symbols_for_path(&path, "lib.rs")
             .expect("read")
             .expect("parse")
-            .expect("supported")
-            .1;
+            .expect("supported");
         let second = provider
             .code_symbols_for_path(&path, "lib.rs")
             .expect("read")
             .expect("parse")
-            .expect("supported")
-            .1;
+            .expect("supported");
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(provider.codemap_cache_len(), 1);
 
@@ -480,10 +478,9 @@ mod tests {
             .code_symbols_for_path(&path, "lib.rs")
             .expect("read")
             .expect("parse")
-            .expect("supported")
-            .1;
+            .expect("supported");
         assert!(!Arc::ptr_eq(&first, &stale));
-        assert_eq!(stale.len(), 2);
+        assert_eq!(stale.symbols.len(), 2);
 
         provider.invalidate();
         assert_eq!(provider.codemap_cache_len(), 0);
@@ -491,8 +488,7 @@ mod tests {
             .code_symbols_for_path(&path, "lib.rs")
             .expect("read")
             .expect("parse")
-            .expect("supported")
-            .1;
+            .expect("supported");
         assert!(!Arc::ptr_eq(&stale, &after_invalidate));
     }
 }

@@ -63,7 +63,7 @@ Completed alignment:
 Remaining alignment options:
 1. Additional headless budget classes and elapsed timing remain intentionally out of scope; elapsed stays out of Rust goldens.
 2. RepoPrompt still exposes more search-schema knobs; Rust currently includes the production-critical `whole_word` option only.
-3. Repo-map PageRank-style repository graph ranking is deferred-next; this change intentionally stops at path fuzzy relevance and content BM25 relevance.
+3. Repo-map now has a permanent PageRank-style repository graph; richer LSP-grade symbol resolution remains optional future work.
 
 ### `read_file`
 
@@ -126,14 +126,15 @@ Recommended alignment priority:
 |---|---|---|---|
 | Tool available | New permanent pure-Rust MCP tool | No direct headless tool with this schema; related repo intelligence lives in Context Builder | new capability; no forced parity |
 | Ranking model | Deterministic sparse PageRank over a cross-file symbol reference graph | Context Builder uses richer internal retrieval/context selection rather than exposing PageRank file scores | intentional |
-| Reference extraction | Codemap definitions plus language-scoped identifier references; skips comments/strings, stopwords, high-DF symbols, and cross-language same-name edges; not scope/import aware | RepoPrompt's repo intelligence is not directly comparable through a public repo-map tool | closer approximation |
+| Reference extraction | Codemap definitions plus AST node-level references from the same parse pass; import paths that resolve to catalog files add high-confidence edges; still filters stopwords, high-DF symbols, and cross-language same-name edges | RepoPrompt's repo intelligence is not directly comparable through a public repo-map tool | closer approximation |
 | Personalization | `query` path/content hits and explicit `seed_paths`; uniform restart when no seed matches | Context Builder accepts natural-language task prompts, not this low-level seed schema | intentional |
 | Dependencies | Pure Rust; no tree-sitter, `*-sys`, or C/C++ build dependency added | RepoPrompt app has its own syntax/indexing stack | intentional |
 
 Completed alignment/new work:
 1. Rust now exposes `get_repo_map` as a new MCP tool for ranked repository maps.
 2. This is a new Rust-engine capability, not a parity target; RepoPrompt headless has no direct equivalent tool surface.
-3. The heuristic is documented as identifier-occurrence based and not scope/import aware.
+3. Reference extraction moved from text identifier-occurrence heuristics to AST node-level refs (Rust `use`/calls/methods/types, Python imports/calls/names/attributes, JS/TS imports/`require()`/calls/identifiers/members).
+4. Scope/type resolution, alias following, re-export handling, and multi-definition disambiguation remain out of scope; this is more precise than text scanning but not LSP-grade resolution.
 4. Reference precision improved with comment/string-aware tokenization, stopword and high-document-frequency filtering, and same-language-only edges.
 5. `get_code_structure` and `get_repo_map` share the filesystem provider's `(mtime, size)` codemap parse cache; this is a performance optimization only.
 

@@ -131,12 +131,13 @@ cache hits only avoid reparsing and do not change tool output.
 ## Repo-map
 
 `get_repo_map` builds an Aider-inspired repository map from the same lightweight
-codemap while staying pure Rust and dependency-light. It indexes each supported
-Rust/Python/JavaScript/TypeScript file's top-level symbols, tokenizes each file
-for identifiers, adds weighted directed edges from a referencing file to any
-other same-language file that defines the referenced identifier, then runs deterministic sparse
-PageRank (`damping=0.85`, fixed 30 iterations). File nodes are sorted by path and
-PageRank summation is serialized so golden rankings remain portable.
+codemap while staying pure Rust and dependency-light. Each supported
+Rust/Python/JavaScript/TypeScript file is parsed once and the same AST pass emits
+both top-level definitions and reference nodes. Repo-map adds weighted directed
+edges from a referencing file to same-language files defining the referenced
+name, then runs deterministic sparse PageRank (`damping=0.85`, fixed 30
+iterations). File nodes are sorted by path and PageRank summation is serialized
+so golden rankings remain portable.
 
 Personalization is optional: `query` seeds files whose path or content match the
 literal query, and `seed_paths` seeds explicit relative or in-root absolute paths.
@@ -144,13 +145,18 @@ If no seed matches, PageRank uses a uniform restart distribution for global
 importance. `max_files` truncates the ranked response, and each returned file
 includes a fixed-precision PageRank score plus key codemap symbols.
 
-Reference edges are a **language-scoped identifier heuristic**. They are not
-scope/import aware, but the tokenizer skips comments and strings for Rust,
-Python, and JavaScript/TypeScript, filters language stopwords plus identifiers
-shorter than three characters, drops symbols defined in too many files, and only
-connects references to definitions in the same language. Aider uses tree-sitter
-reference tags for richer precision; this engine intentionally approximates that
-behavior without adding tree-sitter, native `*-sys`, or C/C++ build dependencies.
+Reference edges are **AST node-level same-language name matches** rather than
+raw text occurrences. Rust collects `use` imports, call/method-call expressions,
+and type paths; Python collects `import` / `from ... import`, calls, names, and
+attributes; JavaScript/TypeScript collects import declarations, `require()`
+calls, call expressions, identifiers, and static member names. Imports that
+resolve to another catalog file add a higher-confidence edge. Comments and
+strings are excluded naturally by parsing, while language stopwords, identifiers
+shorter than three characters, high document-frequency definitions, and
+cross-language same-name edges remain filtered. This is still not a full
+scope/type resolver: aliases, re-exports, and multi-definition disambiguation
+are intentionally out of scope. No tree-sitter, native `*-sys`, or C/C++ build
+dependencies are added.
 
 ## Golden snapshots and parity ledger
 
