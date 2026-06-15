@@ -60,6 +60,7 @@ jobs:
         if: ${{ startsWith(github.event.release.tag_name || inputs.tag, 'v') }}
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           SCOOP_DEPLOY_KEY: ${{ secrets.SCOOP_DEPLOY_KEY }}
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
