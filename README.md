@@ -90,6 +90,20 @@ that need mid-request interruption should use the C ABI cancellation surface.
 - `get_repo_map` — pure-Rust deterministic PageRank repo-map that ranks files
   by cross-file symbol-reference relevance, with optional `query` and
   `seed_paths` personalization and a `max_files` file budget.
+- `goto_definition` / `find_references` — deterministic, syntax-level symbol
+  navigation over the same tree-sitter tags (search-based, à la ctags / GitHub
+  code nav; no language server, no external process). Returns definition sites
+  (with signature) and reference sites (path/line/kind), with an optional
+  `language` filter. Not a scope/type resolver: results may include unrelated
+  same-name symbols and miss aliases/re-exports.
+- `edit` / `write` / `delete` / `move` — root-policy-gated file mutations. `edit`
+  has four modes (`replace`, `patch`, `apply_patch`, `hashline`); hashline binds
+  each change to a content tag so a stale edit is refused. Responses carry a
+  unified diff, tree-sitter syntax diagnostics, and a refreshed `[PATH#TAG]` view.
+- `ast_search` / `ast_edit` — deterministic structural search and rewrite via
+  tree-sitter queries (`@match` region, `${capture}` templates).
+- `git` — read-only `status` / `diff` / `log` / `blame` / `show` in the workspace
+  root.
 - `manage_selection` — persistent engine-owned selection state with
   `full` / `slices` / `codemap_only` modes and per-file token estimates.
 - `workspace_context` — assemble the current selection plus optional
@@ -242,7 +256,7 @@ Notes:
 ## Use with Claude Code / Codex (MCP)
 
 `ctx-mcp` is an MCP server over stdio (JSON-RPC 2.0: `initialize` / `tools/list` /
-`tools/call`). It exposes all 9 tools and is **fail-closed** — pass the project root
+`tools/call`). It exposes all 18 tools and is **fail-closed** — pass the project root
 with `--root`. Installed via Homebrew the binary is already on your `PATH` (use
 `"command": "ctx-mcp"`); otherwise build it first:
 
@@ -292,8 +306,9 @@ args = ["serve", "--root", "/abs/path/to/your/project"]
 ```
 
 Tools: `file_search`, `read_file`, `get_file_tree`, `get_code_structure`,
-`get_repo_map`, `manage_selection`, `manage_workspaces`, `workspace_context`,
-`build_context`.
+`get_repo_map`, `goto_definition`, `find_references`, `manage_selection`,
+`manage_workspaces`, `workspace_context`, `build_context`, `edit`, `write`,
+`delete`, `move`, `ast_search`, `ast_edit`, `git`.
 Pins MCP `protocolVersion` `2024-11-05` (clients negotiate accordingly). Codemap
 covers 11 languages via tree-sitter (Rust, Python, JS, TS, Go, Java, C, C++, C#,
 Ruby, PHP); building the binary requires a C toolchain.

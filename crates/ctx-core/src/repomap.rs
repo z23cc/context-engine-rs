@@ -254,14 +254,35 @@ enum FileAnalysisResult {
 }
 
 #[derive(Debug, Clone)]
-struct IndexedFile {
-    path: String,
-    display_path: String,
+pub(crate) struct IndexedFile {
+    pub(crate) path: String,
+    pub(crate) display_path: String,
     abs_path: PathBuf,
-    language: String,
-    symbols: Vec<CodeSymbol>,
-    references: Vec<CodeReference>,
+    pub(crate) language: String,
+    pub(crate) symbols: Vec<CodeSymbol>,
+    pub(crate) references: Vec<CodeReference>,
     query_match: bool,
+}
+
+/// Parse every supported file in the snapshot and return its indexed symbols and
+/// references. Shared by `get_repo_map` and the symbol-navigation tools so files
+/// are parsed once through the provider's codemap cache. Unsupported files and
+/// per-file parse diagnostics are dropped (navigation is best-effort, like the
+/// repo-map's own indexing).
+pub(crate) fn indexed_files_cancellable<P: CatalogProvider + Sync>(
+    provider: &P,
+    snapshot: &CatalogSnapshot,
+    cancel: &CancelToken,
+) -> Result<Vec<IndexedFile>, CtxError> {
+    let mut files: Vec<IndexedFile> = analyze_files_cancellable(provider, snapshot, None, cancel)?
+        .into_iter()
+        .filter_map(|analysis| match analysis {
+            FileAnalysisResult::Indexed(file) => Some(file),
+            _ => None,
+        })
+        .collect();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
 }
 
 #[derive(Debug)]

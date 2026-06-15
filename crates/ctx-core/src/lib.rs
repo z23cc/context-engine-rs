@@ -10,6 +10,7 @@ pub mod codemap;
 pub mod dispatch;
 pub mod edit;
 pub mod models;
+pub mod navigate;
 pub mod port;
 pub mod read;
 pub mod repomap;
@@ -37,6 +38,10 @@ pub use dispatch::{
     handle_tool_call_with_resolver, handle_tool_call_with_resolver_cancellable, tool_specs,
 };
 pub use models::*;
+pub use navigate::{
+    DefinitionResponse, NavigateRequest, ReferenceLocation, ReferencesResponse, SymbolLocation,
+    find_references, find_references_cancellable, goto_definition, goto_definition_cancellable,
+};
 pub use port::CatalogProvider;
 pub use read::read_file;
 pub use repomap::{RepoMapRequest, get_repo_map, get_repo_map_cancellable};

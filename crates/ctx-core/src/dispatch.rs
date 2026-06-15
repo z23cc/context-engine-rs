@@ -32,7 +32,7 @@ pub fn tool_specs() -> Value {
     let tools = vec![
         json!({
             "name": "edit",
-            "description": "Edit an existing file in one of four modes. For hashline, first call read_file with view=\"hashline\" to get the [PATH#TAG] header and line numbers.",
+            "description": "Edit an existing file in one of four modes. Required fields depend on mode: replace -> path + edits; patch -> path + entries; apply_patch -> patch; hashline -> patch. For hashline, first call read_file with view=\"hashline\" to get the [PATH#TAG] header and line numbers.",
             "inputSchema": {
                 "type": "object",
                 "required": ["mode"],
@@ -277,6 +277,35 @@ pub fn tool_specs() -> Value {
                 }
             }
         }),
+        json!({
+            "name": "goto_definition",
+            "description": "Find where a symbol is defined across the workspace (syntactic tree-sitter name match over 11 languages; deterministic, no language server). Returns each definition's path, line, kind, and signature. Not a scope/type resolver: results may include unrelated same-name symbols.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["symbol"],
+                "properties": {
+                    "workspace": workspace_schema(),
+                    "symbol": { "type": "string", "description": "Exact symbol name (case-sensitive)." },
+                    "language": { "type": "string", "description": "Optional display-language filter, e.g. rust, typescript, tsx, python." },
+                    "max_results": { "type": "integer", "default": 200 }
+                }
+            }
+        }),
+        json!({
+            "name": "find_references",
+            "description": "Find references to a symbol across the workspace (syntactic tree-sitter name match over 11 languages; deterministic, no language server). Returns each reference's path, line, and kind. Set include_definitions to also return the symbol's definitions. Not a scope/type resolver: results may include unrelated same-name symbols and miss aliases/re-exports.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["symbol"],
+                "properties": {
+                    "workspace": workspace_schema(),
+                    "symbol": { "type": "string", "description": "Exact symbol name (case-sensitive)." },
+                    "language": { "type": "string", "description": "Optional display-language filter, e.g. rust, typescript, tsx, python." },
+                    "include_definitions": { "type": "boolean", "default": false, "description": "Also return the symbol's definitions." },
+                    "max_results": { "type": "integer", "default": 200 }
+                }
+            }
+        }),
     ];
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -362,8 +391,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     if name == "manage_workspaces" {
         let args: crate::ManageWorkspacesRequest = serde_json::from_value(arguments)?;
-        let structured = serde_json::to_value(resolver.manage_workspaces(args)?)?;
-        return tool_response(structured);
+        return tool_response_text(&resolver.manage_workspaces(args)?);
     }
     let workspace = workspace_arg(&arguments)?;
     let provider = resolver.resolve_workspace(workspace)?;
@@ -386,10 +414,11 @@ where
             return tool_response_text(&response);
         }
         "build_context" => {
-            let args: crate::BuildContextRequest = serde_json::from_value(arguments)?;
+            let args: BuildContextArgs = serde_json::from_value(arguments)?;
+            let request = args.into_request();
             let snapshot = provider.snapshot_arc_cancellable(cancel)?;
             cancel.check_cancelled()?;
-            let response = build_context_cancellable(provider, &snapshot, &args, cancel)?;
+            let response = build_context_cancellable(provider, &snapshot, &request, cancel)?;
             cancel.check_cancelled()?;
             return tool_response_text(&response);
         }
@@ -609,6 +638,28 @@ where
                 get_repo_map_cancellable(provider, &snapshot, &args.into_request(), cancel)?;
             return tool_response_text(&response);
         }
+        "goto_definition" => {
+            let args: NavigateArgs = serde_json::from_value(arguments)?;
+            let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+            let response = crate::navigate::goto_definition_cancellable(
+                provider,
+                &snapshot,
+                &args.into_request(),
+                cancel,
+            )?;
+            return tool_response_text(&response);
+        }
+        "find_references" => {
+            let args: NavigateArgs = serde_json::from_value(arguments)?;
+            let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+            let response = crate::navigate::find_references_cancellable(
+                provider,
+                &snapshot,
+                &args.into_request(),
+                cancel,
+            )?;
+            return tool_response_text(&response);
+        }
         other => return Err(DispatchError::UnknownTool(other.to_string())),
     };
 
@@ -742,6 +793,81 @@ impl ToolText for crate::repomap::RepoMapResponse {
             out.push_str(&format!(
                 "({} files skipped; parse diagnostics in structuredContent)\n",
                 self.diagnostics.len()
+            ));
+        }
+        out
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ToolText for crate::workspace::ManageWorkspacesResponse {
+    fn tool_text(&self) -> String {
+        let mut out = String::new();
+        for ws in &self.workspaces {
+            let roots: Vec<String> = ws.roots.iter().map(|r| r.display().to_string()).collect();
+            out.push_str(&format!("{}\t{}\n", ws.name, roots.join(", ")));
+        }
+        if self.workspaces.is_empty() {
+            out.push_str("(no workspaces)\n");
+        }
+        if let Some(changed) = &self.changed {
+            out.push_str(&format!("changed: {changed}\n"));
+        }
+        out
+    }
+}
+
+impl ToolText for crate::navigate::DefinitionResponse {
+    fn tool_text(&self) -> String {
+        if self.definitions.is_empty() {
+            return format!("(no definitions for {})\n", self.symbol);
+        }
+        let mut out = String::new();
+        for def in &self.definitions {
+            match &def.signature {
+                Some(sig) => out.push_str(&format!(
+                    "{}:{} {} {}\n",
+                    def.display_path, def.line, def.kind, sig
+                )),
+                None => out.push_str(&format!("{}:{} {}\n", def.display_path, def.line, def.kind)),
+            }
+        }
+        if self.truncated {
+            out.push_str(&format!(
+                "(showing {} of {})\n",
+                self.definitions.len(),
+                self.total
+            ));
+        }
+        out
+    }
+}
+
+impl ToolText for crate::navigate::ReferencesResponse {
+    fn tool_text(&self) -> String {
+        let mut out = String::new();
+        if !self.definitions.is_empty() {
+            out.push_str("definitions:\n");
+            for def in &self.definitions {
+                out.push_str(&format!(
+                    "  {}:{} {}\n",
+                    def.display_path, def.line, def.kind
+                ));
+            }
+        }
+        if self.references.is_empty() {
+            out.push_str(&format!("(no references to {})\n", self.symbol));
+            return out;
+        }
+        out.push_str("references:\n");
+        for r in &self.references {
+            out.push_str(&format!("  {}:{} {}\n", r.display_path, r.line, r.kind));
+        }
+        if self.truncated {
+            out.push_str(&format!(
+                "(showing {} of {})\n",
+                self.references.len(),
+                self.total
             ));
         }
         out
@@ -1031,7 +1157,7 @@ struct AstSearchArgs {
     language: String,
     #[serde(default)]
     paths: Vec<String>,
-    #[serde(default = "default_ast_max")]
+    #[serde(default = "default_ast_max", deserialize_with = "lenient_usize")]
     max_results: usize,
 }
 
@@ -1371,6 +1497,57 @@ fn default_repo_map_max_files() -> usize {
     20
 }
 
+#[derive(Debug, Deserialize)]
+struct NavigateArgs {
+    symbol: String,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    include_definitions: bool,
+    #[serde(
+        default = "default_nav_max_results",
+        deserialize_with = "lenient_usize"
+    )]
+    max_results: usize,
+}
+
+impl NavigateArgs {
+    fn into_request(self) -> crate::navigate::NavigateRequest {
+        crate::navigate::NavigateRequest {
+            symbol: self.symbol,
+            language: self.language,
+            include_definitions: self.include_definitions,
+            max_results: self.max_results.max(1),
+        }
+    }
+}
+
+fn default_nav_max_results() -> usize {
+    200
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildContextArgs {
+    query: String,
+    #[serde(deserialize_with = "lenient_usize")]
+    token_budget: usize,
+    #[serde(default, deserialize_with = "lenient_opt_usize")]
+    max_files: Option<usize>,
+    #[serde(default)]
+    seed_paths: Vec<PathBuf>,
+}
+
+impl BuildContextArgs {
+    fn into_request(self) -> crate::BuildContextRequest {
+        crate::BuildContextRequest {
+            query: self.query,
+            token_budget: self.token_budget,
+            max_files: self.max_files,
+            seed_paths: self.seed_paths,
+        }
+    }
+}
+
 fn default_mode() -> String {
     "both".to_string()
 }
@@ -1585,6 +1762,31 @@ mod tests {
             RootPolicy::new(vec![path.to_path_buf()]).expect("policy"),
             ScanOptions::default(),
         )
+    }
+
+    // Regression: every numeric tool parameter must tolerate integer-valued
+    // strings (clients that stringify numbers), per the documented contract.
+    // build_context.token_budget/max_files and ast_search.max_results were the
+    // two holdouts.
+    #[test]
+    fn numeric_params_accept_stringified_ints() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("lib.rs"), "pub fn alpha() {}\n").expect("seed");
+        let provider = provider_for(dir.path());
+
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "build_context", "arguments": {
+                "query": "alpha", "token_budget": "200", "max_files": "5" } }),
+        )
+        .expect("build_context tolerates string numbers");
+
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_search", "arguments": {
+                "language": "rust", "query": "(function_item) @match", "max_results": "10" } }),
+        )
+        .expect("ast_search tolerates string max_results");
     }
 
     #[test]
