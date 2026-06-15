@@ -7,7 +7,12 @@
 
 use crate::{models::*, port::CatalogProvider, snapshot::CatalogSnapshot};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::OnceLock,
+};
+use tree_sitter::StreamingIterator;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// A symbol (definition) extracted from a source file.
@@ -192,6 +197,25 @@ impl Language {
             Self::Ruby => "ruby",
             Self::Php => "php",
         }
+    }
+
+    /// Resolve a language by its display name (the inverse of `name`).
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "rust" => Self::Rust,
+            "python" => Self::Python,
+            "javascript" => Self::JavaScript,
+            "typescript" => Self::TypeScript,
+            "tsx" => Self::Tsx,
+            "go" => Self::Go,
+            "java" => Self::Java,
+            "c" => Self::C,
+            "cpp" => Self::Cpp,
+            "csharp" => Self::CSharp,
+            "ruby" => Self::Ruby,
+            "php" => Self::Php,
+            _ => return None,
+        })
     }
 
     /// Raw grammar handle for a second parse used by member extraction (the
@@ -789,6 +813,181 @@ pub(crate) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
     issues
 }
 
+/// One structural match from [`ast_search`]: the `@match` region's line and
+/// text, plus any other captures as metavariables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AstMatch {
+    pub line: usize,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub captures: BTreeMap<String, String>,
+}
+
+/// Whether `language_name` maps to a supported tree-sitter grammar.
+pub(crate) fn ast_language_supported(language_name: &str) -> bool {
+    Language::from_name(language_name).is_some()
+}
+
+/// Display language name for a path's extension, if supported.
+pub(crate) fn path_language_name(path: &str) -> Option<&'static str> {
+    Language::from_path(path).map(Language::name)
+}
+
+fn ast_node_text(node: tree_sitter::Node, source: &[u8]) -> String {
+    let text = node.utf8_text(source).unwrap_or_default();
+    let first = text.lines().next().unwrap_or(text);
+    truncate_chars(first, 160)
+}
+
+/// Run a tree-sitter query over one source file. The `@match` capture (or, if
+/// absent, the largest captured node) marks each result; other captures are
+/// returned as metavariables. Errors if the language is unsupported or the query
+/// is invalid for it.
+pub(crate) fn ast_search(
+    path: &str,
+    source: &str,
+    query_src: &str,
+    max: usize,
+) -> Result<Vec<AstMatch>, String> {
+    let language = Language::from_path(path).ok_or_else(|| "unsupported language".to_string())?;
+    let ts_language = language.ts_language();
+    if query_src.contains("(#") {
+        return Err(
+            "query predicates such as (#eq? ...) are not applied yet; use a structural pattern"
+                .to_string(),
+        );
+    }
+    let query = tree_sitter::Query::new(&ts_language, query_src)
+        .map_err(|err| format!("invalid query: {err}"))?;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&ts_language)
+        .map_err(|err| format!("language error: {err}"))?;
+    let Some(tree) = parser.parse(source, None) else {
+        return Ok(Vec::new());
+    };
+    let names = query.capture_names();
+    let bytes = source.as_bytes();
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut iter = cursor.matches(&query, tree.root_node(), bytes);
+    let mut matches = Vec::new();
+    while let Some(query_match) = iter.next() {
+        let mut captures = BTreeMap::new();
+        let mut match_node = None;
+        for capture in query_match.captures {
+            let name = names[capture.index as usize];
+            if name == "match" {
+                match_node = Some(capture.node);
+            }
+            captures.insert(name.to_string(), ast_node_text(capture.node, bytes));
+        }
+        let node = match_node.or_else(|| {
+            query_match
+                .captures
+                .iter()
+                .map(|capture| capture.node)
+                .max_by_key(|node| node.byte_range().len())
+        });
+        let Some(node) = node else { continue };
+        matches.push(AstMatch {
+            line: node.start_position().row + 1,
+            text: ast_node_text(node, bytes),
+            captures,
+        });
+        if matches.len() >= max {
+            break;
+        }
+    }
+    Ok(matches)
+}
+
+/// Replace every `@match` region matched by `query_src` with `replacement`,
+/// where `${capture}` placeholders are substituted by captured text. Returns the
+/// new source and rewrite count. Applied bottom-up so byte offsets stay valid;
+/// overlapping (nested) matches keep the outermost.
+pub(crate) fn ast_rewrite(
+    path: &str,
+    source: &str,
+    query_src: &str,
+    replacement: &str,
+) -> Result<(String, usize), String> {
+    let language = Language::from_path(path).ok_or_else(|| "unsupported language".to_string())?;
+    let ts_language = language.ts_language();
+    if query_src.contains("(#") {
+        return Err(
+            "query predicates such as (#eq? ...) are not applied yet; use a structural pattern"
+                .to_string(),
+        );
+    }
+    let query = tree_sitter::Query::new(&ts_language, query_src)
+        .map_err(|err| format!("invalid query: {err}"))?;
+    let names = query.capture_names();
+    if !names.contains(&"match") {
+        return Err("rewrite query must capture the region to replace as @match".to_string());
+    }
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&ts_language)
+        .map_err(|err| format!("language error: {err}"))?;
+    let Some(tree) = parser.parse(source, None) else {
+        return Ok((source.to_string(), 0));
+    };
+    let bytes = source.as_bytes();
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut iter = cursor.matches(&query, tree.root_node(), bytes);
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    while let Some(query_match) = iter.next() {
+        let mut values: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut region = None;
+        for capture in query_match.captures {
+            let name = names[capture.index as usize];
+            let text = capture.node.utf8_text(bytes).unwrap_or_default();
+            if name == "match" {
+                region = Some(capture.node.byte_range());
+            }
+            values.insert(name, text);
+        }
+        let Some(range) = region else { continue };
+        edits.push((range, render_template(replacement, &values)));
+    }
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    let mut result = source.to_string();
+    let mut boundary = result.len();
+    let mut count = 0;
+    for (range, rendered) in edits {
+        if range.end > boundary {
+            continue;
+        }
+        result.replace_range(range.clone(), &rendered);
+        boundary = range.start;
+        count += 1;
+    }
+    Ok((result, count))
+}
+
+fn render_template(template: &str, values: &BTreeMap<&str, &str>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(idx) = rest.find("${") {
+        out.push_str(&rest[..idx]);
+        rest = &rest[idx + 2..];
+        match rest.find('}') {
+            Some(end) => {
+                if let Some(value) = values.get(&rest[..end]) {
+                    out.push_str(value);
+                }
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push_str("${");
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn select_entries<'a>(
     snapshot: &'a CatalogSnapshot,
     paths: &[PathBuf],
@@ -1016,6 +1215,34 @@ mod tests {
             "IShape.cs",
         );
         assert_eq!(member_names(&parsed, "IShape"), ["Sides"]);
+    }
+
+    #[test]
+    fn ast_search_and_rewrite_rust() {
+        let src = "fn a() { foo(); }\nfn b() { foo(); }\n";
+        let query = "(call_expression function: (identifier) @name) @match";
+        let matches = ast_search("x.rs", src, query, 10).expect("search");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches[0].captures.get("name").map(String::as_str),
+            Some("foo")
+        );
+        let (rewritten, count) = ast_rewrite("x.rs", src, query, "${name}_v2()").expect("rewrite");
+        assert_eq!(count, 2);
+        assert_eq!(rewritten, "fn a() { foo_v2(); }\nfn b() { foo_v2(); }\n");
+    }
+
+    #[test]
+    fn ast_rewrite_requires_match_capture() {
+        let err = ast_rewrite("x.rs", "fn a() {}\n", "(identifier) @name", "x").expect_err("needs");
+        assert!(err.contains("@match"), "{err}");
+    }
+
+    #[test]
+    fn ast_search_rejects_invalid_query() {
+        let err =
+            ast_search("x.rs", "fn a() {}\n", "(nonexistent_node) @match", 10).expect_err("bad");
+        assert!(err.contains("invalid query"), "{err}");
     }
 
     #[test]

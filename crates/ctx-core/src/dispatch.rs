@@ -62,6 +62,35 @@ pub fn tool_specs() -> Value {
             "inputSchema": { "type": "object", "required": ["from", "to"], "properties": { "workspace": workspace_schema(), "from": {"type": "string"}, "to": {"type": "string"} } }
         }),
         json!({
+            "name": "ast_search",
+            "description": "Structural code search via a tree-sitter query over files of one language. The query MUST capture the matched region as @match; other captures (@x) come back as metavariables.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["query", "language"],
+                "properties": {
+                    "workspace": workspace_schema(),
+                    "query": { "type": "string", "description": "Tree-sitter S-expression query, e.g. (call_expression function: (identifier) @name) @match" },
+                    "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "tsx", "go", "java", "c", "cpp", "csharp", "ruby", "php"] },
+                    "paths": { "type": "array", "items": {"type": "string"}, "description": "Optional file/dir scope relative to a root. Empty = whole catalog." },
+                    "max_results": { "type": "integer", "description": "Cap on returned matches (default 100)." }
+                }
+            }
+        }),
+        json!({
+            "name": "ast_edit",
+            "description": "Structural rewrite of one file: replace every @match region of a tree-sitter query with a template, where ${name} is substituted by capture @name. No write if nothing matches.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path", "query", "replacement"],
+                "properties": {
+                    "workspace": workspace_schema(),
+                    "path": { "type": "string" },
+                    "query": { "type": "string", "description": "Tree-sitter query; MUST capture the region to replace as @match." },
+                    "replacement": { "type": "string", "description": "Template; ${name} -> capture @name's text." }
+                }
+            }
+        }),
+        json!({
             "name": "build_context",
             "description": "Build a deterministic query-focused context within a token budget.",
             "inputSchema": {
@@ -422,6 +451,94 @@ where
                     view: None,
                     diagnostics: Vec::new(),
                 }],
+            });
+        }
+        "ast_search" => {
+            let args: AstSearchArgs = serde_json::from_value(arguments)?;
+            if !crate::codemap::ast_language_supported(&args.language) {
+                return Err(DispatchError::Edit(edit::EditError::Parse {
+                    mode: "ast_search",
+                    detail: format!("unsupported language: {}", args.language),
+                }));
+            }
+            let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+            let mut matches: Vec<AstFileMatch> = Vec::new();
+            let mut files_scanned = 0usize;
+            for entry in &snapshot.entries {
+                if crate::codemap::path_language_name(&entry.rel_path)
+                    != Some(args.language.as_str())
+                {
+                    continue;
+                }
+                if !args.paths.is_empty()
+                    && !args
+                        .paths
+                        .iter()
+                        .any(|scope| path_in_scope(&entry.rel_path, scope))
+                {
+                    continue;
+                }
+                let Ok(bytes) = provider.read_bytes(&entry.abs_path) else {
+                    continue;
+                };
+                files_scanned += 1;
+                let source = String::from_utf8_lossy(&bytes);
+                let found = crate::codemap::ast_search(
+                    &entry.rel_path,
+                    &source,
+                    &args.query,
+                    args.max_results,
+                )
+                .map_err(|detail| {
+                    DispatchError::Edit(edit::EditError::Parse {
+                        mode: "ast_search",
+                        detail,
+                    })
+                })?;
+                for item in found {
+                    matches.push(AstFileMatch {
+                        path: entry.rel_path.clone(),
+                        line: item.line,
+                        text: item.text,
+                        captures: item.captures,
+                    });
+                    if matches.len() >= args.max_results {
+                        break;
+                    }
+                }
+                if matches.len() >= args.max_results {
+                    break;
+                }
+                cancel.check_cancelled()?;
+            }
+            return tool_response_text(&AstSearchResponse {
+                matches,
+                files_scanned,
+            });
+        }
+        "ast_edit" => {
+            let args: AstEditArgs = serde_json::from_value(arguments)?;
+            let bytes = provider.read_bytes(Path::new(&args.path))?;
+            let source = String::from_utf8_lossy(&bytes).into_owned();
+            let (rewritten, count) =
+                crate::codemap::ast_rewrite(&args.path, &source, &args.query, &args.replacement)
+                    .map_err(|detail| {
+                        DispatchError::Edit(edit::EditError::Parse {
+                            mode: "ast_edit",
+                            detail,
+                        })
+                    })?;
+            if count == 0 {
+                return Ok(json!({
+                    "content": [{ "type": "text", "text": format!("ast_edit: no matches in {}\n", args.path) }],
+                    "structuredContent": { "path": args.path, "rewrites": 0 },
+                }));
+            }
+            provider.write_text(Path::new(&args.path), &rewritten)?;
+            return tool_response_text(&EditResult {
+                files: vec![EditedFile::with_content(
+                    "ast_edit", args.path, None, &rewritten,
+                )],
             });
         }
         "get_file_tree" => {
@@ -866,6 +983,61 @@ struct DeleteArgs {
 struct MoveArgs {
     from: String,
     to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AstSearchArgs {
+    query: String,
+    language: String,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default = "default_ast_max")]
+    max_results: usize,
+}
+
+fn default_ast_max() -> usize {
+    100
+}
+
+#[derive(Debug, Deserialize)]
+struct AstEditArgs {
+    path: String,
+    query: String,
+    replacement: String,
+}
+
+#[derive(serde::Serialize)]
+struct AstFileMatch {
+    path: String,
+    line: usize,
+    text: String,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    captures: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct AstSearchResponse {
+    matches: Vec<AstFileMatch>,
+    files_scanned: usize,
+}
+
+impl ToolText for AstSearchResponse {
+    fn tool_text(&self) -> String {
+        if self.matches.is_empty() {
+            return format!("(no matches in {} files)\n", self.files_scanned);
+        }
+        let mut out = String::new();
+        for item in &self.matches {
+            out.push_str(&format!("{}:{}  {}\n", item.path, item.line, item.text));
+        }
+        out
+    }
+}
+
+/// True if `rel_path` is `scope` itself or lives under directory `scope`.
+fn path_in_scope(rel_path: &str, scope: &str) -> bool {
+    let scope = scope.trim_end_matches('/');
+    scope.is_empty() || rel_path == scope || rel_path.starts_with(&format!("{scope}/"))
 }
 
 /// Adapts a [`CatalogProvider`] into an [`edit::FileReader`]; reads are
@@ -1338,6 +1510,40 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "expected syntax diagnostics for broken Rust"
+        );
+    }
+
+    #[test]
+    fn ast_search_and_edit_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.rs"), "fn main() { foo(); bar(); }\n").expect("seed");
+        let provider = provider_for(dir.path());
+
+        let res = handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_search", "arguments": {
+                "language": "rust",
+                "query": "(call_expression function: (identifier) @name) @match" } }),
+        )
+        .expect("ast_search");
+        assert_eq!(
+            res["structuredContent"]["matches"]
+                .as_array()
+                .map(|matches| matches.len()),
+            Some(2)
+        );
+
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_edit", "arguments": {
+                "path": "a.rs",
+                "query": "(call_expression) @match",
+                "replacement": "done()" } }),
+        )
+        .expect("ast_edit");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.rs")).expect("read"),
+            "fn main() { done(); done(); }\n"
         );
     }
 
