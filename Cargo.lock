@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-core"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "aho-corasick",
  "criterion",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-ffi"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "ctx-core",
  "serde_json",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-mcp"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-wasm"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "ctx-core",
  "serde",
