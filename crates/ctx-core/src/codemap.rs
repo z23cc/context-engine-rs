@@ -134,6 +134,26 @@ enum Language {
     Php,
 }
 
+/// Extra tags-query patterns for containers the bundled Java/PHP grammar queries
+/// omit, so they surface as codemap symbols (and gain member expansion).
+const JAVA_EXTRA_TAGS: &str = concat!(
+    "(enum_declaration name: (identifier) @name) @definition.class\n",
+    "(record_declaration name: (identifier) @name) @definition.class"
+);
+const PHP_EXTRA_TAGS: &str = "(enum_declaration name: (name) @name) @definition.class";
+
+/// The bundled tree-sitter-c-sharp tags query does not compile against this
+/// grammar version, so we supply a minimal working one.
+const CSHARP_TAGS: &str = concat!(
+    "(class_declaration name: (identifier) @name) @definition.class\n",
+    "(struct_declaration name: (identifier) @name) @definition.class\n",
+    "(interface_declaration name: (identifier) @name) @definition.interface\n",
+    "(enum_declaration name: (identifier) @name) @definition.class\n",
+    "(record_declaration name: (identifier) @name) @definition.class\n",
+    "(method_declaration name: (identifier) @name) @definition.method\n",
+    "(property_declaration name: (identifier) @name) @definition.method"
+);
+
 impl Language {
     fn from_path(path: &str) -> Option<Self> {
         let lower = path.to_ascii_lowercase();
@@ -202,12 +222,28 @@ impl Language {
             Self::JavaScript => &["class_declaration"],
             Self::TypeScript | Self::Tsx => &["class_declaration", "interface_declaration"],
             Self::Go => &["type_spec"],
-            Self::Java => &["class_declaration"],
+            Self::Java => &[
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+            ],
             Self::C => &["struct_specifier"],
             Self::Cpp => &["class_specifier", "struct_specifier"],
-            Self::CSharp => &["class_declaration"],
-            Self::Php => &["class_declaration"],
-            Self::Ruby => &[],
+            Self::CSharp => &[
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+                "record_declaration",
+                "enum_declaration",
+            ],
+            Self::Php => &[
+                "class_declaration",
+                "interface_declaration",
+                "trait_declaration",
+                "enum_declaration",
+            ],
+            Self::Ruby => &["class", "module"],
         }
     }
 
@@ -219,11 +255,21 @@ impl Language {
             Self::JavaScript => &["field_definition"],
             Self::TypeScript | Self::Tsx => &["property_signature", "public_field_definition"],
             Self::Go => &["field_declaration"],
-            Self::Java => &["field_declaration"],
+            Self::Java => &[
+                "field_declaration",
+                "constant_declaration",
+                "enum_constant",
+                "formal_parameter",
+            ],
             Self::C => &["field_declaration"],
             Self::Cpp => &["field_declaration"],
-            Self::CSharp => &["field_declaration", "property_declaration"],
-            Self::Php => &["property_declaration"],
+            Self::CSharp => &[
+                "field_declaration",
+                "property_declaration",
+                "enum_member_declaration",
+                "parameter",
+            ],
+            Self::Php => &["property_declaration", "const_declaration", "enum_case"],
             Self::Ruby => &[],
         }
     }
@@ -239,7 +285,7 @@ impl Language {
             Self::Java => &["identifier"],
             Self::C | Self::Cpp => &["field_identifier"],
             Self::CSharp => &["identifier"],
-            Self::Php => &["variable_name"],
+            Self::Php => &["variable_name", "name"],
             Self::Python | Self::Ruby => &[],
         }
     }
@@ -283,15 +329,19 @@ impl Language {
                 )
             ),
             Self::Go => cached!(tree_sitter_go::LANGUAGE, tree_sitter_go::TAGS_QUERY),
-            Self::Java => cached!(tree_sitter_java::LANGUAGE, tree_sitter_java::TAGS_QUERY),
+            Self::Java => cached!(
+                tree_sitter_java::LANGUAGE,
+                &format!("{}\n{}", tree_sitter_java::TAGS_QUERY, JAVA_EXTRA_TAGS)
+            ),
             Self::C => cached!(tree_sitter_c::LANGUAGE, tree_sitter_c::TAGS_QUERY),
             Self::Cpp => cached!(tree_sitter_cpp::LANGUAGE, tree_sitter_cpp::TAGS_QUERY),
-            Self::CSharp => cached!(
-                tree_sitter_c_sharp::LANGUAGE,
-                tree_sitter_c_sharp::TAGS_QUERY
-            ),
+            // The bundled c-sharp tags query fails to compile here; use ours.
+            Self::CSharp => cached!(tree_sitter_c_sharp::LANGUAGE, CSHARP_TAGS),
             Self::Ruby => cached!(tree_sitter_ruby::LANGUAGE, tree_sitter_ruby::TAGS_QUERY),
-            Self::Php => cached!(tree_sitter_php::LANGUAGE_PHP, tree_sitter_php::TAGS_QUERY),
+            Self::Php => cached!(
+                tree_sitter_php::LANGUAGE_PHP,
+                &format!("{}\n{}", tree_sitter_php::TAGS_QUERY, PHP_EXTRA_TAGS)
+            ),
         }
     }
 }
@@ -484,15 +534,24 @@ fn field_list_node<'a>(
     language: Language,
     container: tree_sitter::Node<'a>,
 ) -> Option<tree_sitter::Node<'a>> {
-    if matches!(language, Language::Go) {
-        // type_spec -> (struct_type|interface_type) -> field_declaration_list
-        let ty = container.child_by_field_name("type")?;
-        let mut cursor = ty.walk();
-        return ty
-            .children(&mut cursor)
-            .find(|child| child.kind() == "field_declaration_list");
+    match (language, container.kind()) {
+        (Language::Go, _) => {
+            // type_spec -> (struct_type|interface_type) -> field_declaration_list
+            let ty = container.child_by_field_name("type")?;
+            let mut cursor = ty.walk();
+            ty.children(&mut cursor)
+                .find(|child| child.kind() == "field_declaration_list")
+        }
+        // Records carry their components in a parameter list, not a body.
+        (Language::Java, "record_declaration") => container.child_by_field_name("parameters"),
+        (Language::CSharp, "record_declaration") => {
+            let mut cursor = container.walk();
+            container
+                .children(&mut cursor)
+                .find(|child| child.kind() == "parameter_list")
+        }
+        _ => container.child_by_field_name("body"),
     }
-    container.child_by_field_name("body")
 }
 
 fn collect_members(
@@ -501,6 +560,9 @@ fn collect_members(
     source: &[u8],
 ) -> Vec<CodeMember> {
     const MAX_MEMBERS: usize = 200;
+    if matches!(language, Language::Ruby) {
+        return collect_ruby_members(container, source, MAX_MEMBERS);
+    }
     let Some(list) = field_list_node(language, container) else {
         return Vec::new();
     };
@@ -515,6 +577,60 @@ fn collect_members(
             members.push(member);
             if members.len() >= MAX_MEMBERS {
                 break;
+            }
+        }
+    }
+    members
+}
+
+/// Ruby exposes instance attributes through `attr_accessor`/`attr_reader`/
+/// `attr_writer` calls rather than field declarations; each symbol argument
+/// becomes a member.
+fn collect_ruby_members(
+    container: tree_sitter::Node,
+    source: &[u8],
+    max_members: usize,
+) -> Vec<CodeMember> {
+    const ATTR: &[&str] = &["attr_accessor", "attr_reader", "attr_writer", "attr"];
+    let Some(body) = container.child_by_field_name("body") else {
+        return Vec::new();
+    };
+    let mut members = Vec::new();
+    let mut cursor = body.walk();
+    for statement in body.children(&mut cursor) {
+        if statement.kind() != "call" {
+            continue;
+        }
+        let Some(method) = statement
+            .child_by_field_name("method")
+            .and_then(|node| node.utf8_text(source).ok())
+        else {
+            continue;
+        };
+        if !ATTR.contains(&method) {
+            continue;
+        }
+        let Some(arguments) = statement.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut arg_cursor = arguments.walk();
+        for argument in arguments.children(&mut arg_cursor) {
+            if argument.kind() != "simple_symbol" {
+                continue;
+            }
+            let Ok(text) = argument.utf8_text(source) else {
+                continue;
+            };
+            let name = text.trim_start_matches(':').to_string();
+            if name.is_empty() {
+                continue;
+            }
+            members.push(CodeMember {
+                signature: Some(format!("{method} :{name}")),
+                name,
+            });
+            if members.len() >= max_members {
+                return members;
             }
         }
     }
@@ -835,6 +951,71 @@ mod tests {
             .expect("Mode symbol");
         let names: Vec<&str> = mode.members.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["Fast", "Slow"]);
+    }
+
+    fn member_names(parsed: &ParsedCodeFile, symbol: &str) -> Vec<String> {
+        parsed
+            .symbols
+            .iter()
+            .find(|candidate| candidate.name == symbol)
+            .unwrap_or_else(|| panic!("symbol {symbol} not found in {:?}", parsed.symbols))
+            .members
+            .iter()
+            .map(|member| member.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn java_enum_and_record_members() {
+        let parsed = parse("enum Color { RED, GREEN }\n", "Color.java");
+        assert_eq!(member_names(&parsed, "Color"), ["RED", "GREEN"]);
+        let parsed = parse("record Point(int x, String y) {}\n", "Point.java");
+        assert_eq!(member_names(&parsed, "Point"), ["x", "y"]);
+    }
+
+    #[test]
+    fn csharp_enum_and_record_members() {
+        let parsed = parse("enum E { A, B }\n", "E.cs");
+        assert_eq!(member_names(&parsed, "E"), ["A", "B"]);
+        let parsed = parse("record R(int X, string Y);\n", "R.cs");
+        assert_eq!(member_names(&parsed, "R"), ["X", "Y"]);
+    }
+
+    #[test]
+    fn php_enum_and_trait_members() {
+        let parsed = parse(
+            "<?php\nenum Suit { case Hearts; case Spades; }\n",
+            "Suit.php",
+        );
+        assert_eq!(member_names(&parsed, "Suit"), ["Hearts", "Spades"]);
+        let parsed = parse("<?php\ntrait T { public int $a; private $b; }\n", "T.php");
+        assert_eq!(member_names(&parsed, "T"), ["$a", "$b"]);
+    }
+
+    #[test]
+    fn ruby_attr_accessor_members() {
+        let parsed = parse(
+            "class C\n  attr_accessor :a, :b\n  attr_reader :c\nend\n",
+            "c.rb",
+        );
+        assert_eq!(member_names(&parsed, "C"), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn interface_members_java_and_csharp() {
+        // Interface constants/properties are members; method signatures stay
+        // top-level symbols.
+        let parsed = parse(
+            "interface Shape {\n    int SIDES = 3;\n    double area();\n}\n",
+            "Shape.java",
+        );
+        assert_eq!(member_names(&parsed, "Shape"), ["SIDES"]);
+
+        let parsed = parse(
+            "interface IShape {\n    int Sides { get; }\n}\n",
+            "IShape.cs",
+        );
+        assert_eq!(member_names(&parsed, "IShape"), ["Sides"]);
     }
 
     #[test]
