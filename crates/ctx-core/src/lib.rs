@@ -8,6 +8,7 @@ pub mod cancel;
 pub mod catalog;
 pub mod codemap;
 pub mod dispatch;
+pub mod edit;
 pub mod models;
 pub mod port;
 pub mod read;
