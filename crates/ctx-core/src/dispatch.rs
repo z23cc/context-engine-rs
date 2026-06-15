@@ -158,7 +158,7 @@ pub fn tool_specs() -> Value {
         }),
         json!({
             "name": "get_code_structure",
-            "description": "Return lightweight top-level code symbols for supported source files.",
+            "description": "Return code symbols (kind/name/line, including nested definitions like methods) for supported source files. Parsed with tree-sitter: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -502,7 +502,7 @@ impl ToolText for crate::codemap::CodeStructureResponse {
             }
         }
         if self.files.is_empty() {
-            out.push_str("(no top-level symbols)\n");
+            out.push_str("(no symbols)\n");
         }
         if self.omitted > 0 {
             out.push_str(&format!(
