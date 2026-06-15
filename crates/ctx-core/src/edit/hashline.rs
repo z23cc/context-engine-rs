@@ -121,7 +121,7 @@ pub(super) fn plan(text: &str, reader: &impl FileReader) -> Result<Vec<FileChang
         if ops.is_empty() {
             return Err(parse_err(format!("section for {path} has no operations")));
         }
-        let updated = apply_ops(&normalized_original, &ops)?;
+        let updated = apply_ops(&path, &normalized_original, &ops)?;
         changes.push(FileChange::Update {
             path,
             content: text::restore_newline(&updated, newline),
@@ -257,7 +257,7 @@ struct Splice {
     body: Vec<String>,
 }
 
-fn apply_ops(original: &str, ops: &[Op]) -> Result<String, EditError> {
+fn apply_ops(path: &str, original: &str, ops: &[Op]) -> Result<String, EditError> {
     let lines: Vec<&str> = original.split('\n').collect();
     let total = lines.len();
     let tail_pos = if lines.last() == Some(&"") {
@@ -268,7 +268,7 @@ fn apply_ops(original: &str, ops: &[Op]) -> Result<String, EditError> {
 
     let mut splices = Vec::with_capacity(ops.len());
     for op in ops {
-        splices.push(to_splice(op, &lines, total, tail_pos)?);
+        splices.push(to_splice(op, path, original, &lines, total, tail_pos)?);
     }
 
     // Reject overlapping range edits — line numbers all reference the original,
@@ -300,7 +300,14 @@ fn apply_ops(original: &str, ops: &[Op]) -> Result<String, EditError> {
     Ok(out.join("\n"))
 }
 
-fn to_splice(op: &Op, lines: &[&str], total: usize, tail_pos: usize) -> Result<Splice, EditError> {
+fn to_splice(
+    op: &Op,
+    path: &str,
+    original: &str,
+    lines: &[&str],
+    total: usize,
+    tail_pos: usize,
+) -> Result<Splice, EditError> {
     let body = |rows: &[String]| rows.to_vec();
     match op {
         Op::Replace {
@@ -350,7 +357,7 @@ fn to_splice(op: &Op, lines: &[&str], total: usize, tail_pos: usize) -> Result<S
             body: body(b),
         }),
         Op::ReplaceBlock { start, body: b } => {
-            let (block_start, block_end) = resolve_block(lines, *start)?;
+            let (block_start, block_end) = resolve_block(path, original, lines, *start)?;
             Ok(Splice {
                 at: block_start - 1,
                 remove: block_end - block_start + 1,
@@ -358,7 +365,7 @@ fn to_splice(op: &Op, lines: &[&str], total: usize, tail_pos: usize) -> Result<S
             })
         }
         Op::DeleteBlock { start } => {
-            let (block_start, block_end) = resolve_block(lines, *start)?;
+            let (block_start, block_end) = resolve_block(path, original, lines, *start)?;
             Ok(Splice {
                 at: block_start - 1,
                 remove: block_end - block_start + 1,
@@ -366,7 +373,7 @@ fn to_splice(op: &Op, lines: &[&str], total: usize, tail_pos: usize) -> Result<S
             })
         }
         Op::InsertBlockAfter { start, body: b } => {
-            let (_, block_end) = resolve_block(lines, *start)?;
+            let (_, block_end) = resolve_block(path, original, lines, *start)?;
             Ok(Splice {
                 at: block_end,
                 remove: 0,
@@ -393,13 +400,24 @@ fn check_line(line: usize, total: usize) -> Result<(), EditError> {
     Ok(())
 }
 
-/// Heuristically resolve the block starting at 1-based `start`: brace-balanced
-/// if the start line opens an unclosed `{`, otherwise the run of more-indented
-/// following lines. Returns an inclusive 1-based `(start, end)` range.
-fn resolve_block(lines: &[&str], start: usize) -> Result<(usize, usize), EditError> {
+/// Resolve the block starting at 1-based `start` to an inclusive `(start, end)`
+/// range. Uses tree-sitter for supported languages; otherwise falls back to a
+/// brace-balance heuristic (start line opens an unclosed `{`) or the run of
+/// more-indented following lines.
+fn resolve_block(
+    path: &str,
+    original: &str,
+    lines: &[&str],
+    start: usize,
+) -> Result<(usize, usize), EditError> {
     let total = lines.len();
     if start == 0 || start > total {
         return Err(EditError::LineOutOfRange { line: start, total });
+    }
+    // Prefer an exact tree-sitter block; fall back to the brace/indent heuristic
+    // for unsupported languages or unparseable spans.
+    if let Some((block_start, block_end)) = crate::codemap::block_span(path, original, start) {
+        return Ok((block_start, block_end.clamp(block_start, total)));
     }
     let first = lines[start - 1];
     let net_braces = count(first, '{') - count(first, '}');
@@ -515,6 +533,15 @@ mod tests {
         let content = "fn outer() {\n    inner();\n}\nlet keep = 1;\n";
         let out = run("a.rs", content, "SWAP.BLK 1:\n+fn outer() { done(); }").expect("blk");
         assert_eq!(out, "fn outer() { done(); }\nlet keep = 1;\n");
+    }
+
+    #[test]
+    fn block_swap_uses_tree_sitter_past_brace_in_string() {
+        // A `}` inside a string literal would fool brace-counting into ending the
+        // block at line 2; tree-sitter resolves the real function span (1..=4).
+        let content = "fn f() {\n    let s = \"}\";\n    g();\n}\nlet keep = 1;\n";
+        let out = run("a.rs", content, "SWAP.BLK 1:\n+fn f() { done(); }").expect("blk");
+        assert_eq!(out, "fn f() { done(); }\nlet keep = 1;\n");
     }
 
     #[test]

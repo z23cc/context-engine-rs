@@ -406,6 +406,7 @@ where
                     moved_to: None,
                     tag: None,
                     view: None,
+                    diagnostics: Vec::new(),
                 }],
             });
         }
@@ -419,6 +420,7 @@ where
                     moved_to: Some(args.to),
                     tag: None,
                     view: None,
+                    diagnostics: Vec::new(),
                 }],
             });
         }
@@ -891,6 +893,8 @@ struct EditedFile {
     tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     view: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<crate::codemap::SyntaxIssue>,
 }
 
 impl EditedFile {
@@ -905,6 +909,7 @@ impl EditedFile {
             action,
             tag: Some(edit::snapshot_tag(content)),
             view: Some(edit::hashline_view(&display, content)),
+            diagnostics: crate::codemap::syntax_diagnostics(&display, content),
             path,
             moved_to,
         }
@@ -923,6 +928,14 @@ impl ToolText for EditResult {
             match &file.moved_to {
                 Some(to) => out.push_str(&format!("{} {} -> {}\n", file.action, file.path, to)),
                 None => out.push_str(&format!("{} {}\n", file.action, file.path)),
+            }
+        }
+        for file in &self.files {
+            for issue in &file.diagnostics {
+                out.push_str(&format!(
+                    "  \u{26a0} {} line {}: {}\n",
+                    file.path, issue.line, issue.message
+                ));
             }
         }
         for file in &self.files {
@@ -958,6 +971,7 @@ fn apply_changes<P: CatalogProvider + ?Sized>(
                     moved_to: None,
                     tag: None,
                     view: None,
+                    diagnostics: Vec::new(),
                 }
             }
             FileChange::Rename { from, to, content } => {
@@ -1303,6 +1317,28 @@ mod tests {
             &json!({ "name": "write", "arguments": { "path": "../escape.txt", "content": "x" } }),
         );
         assert!(result.is_err(), "writes outside roots must be rejected");
+    }
+
+    #[test]
+    fn edit_reports_syntax_diagnostics_on_broken_rust() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.rs"), "fn main() {\n    let x = 1;\n}\n").expect("seed");
+        let provider = provider_for(dir.path());
+        // Drop the closing brace to break the syntax.
+        let result = handle_tool_call(
+            &provider,
+            &json!({ "name": "edit", "arguments": { "mode": "replace", "path": "a.rs",
+                "edits": [{ "old_text": "}\n", "new_text": "\n" }] } }),
+        )
+        .expect("edit");
+        let diagnostics = result["structuredContent"]["files"][0]["diagnostics"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !diagnostics.is_empty(),
+            "expected syntax diagnostics for broken Rust"
+        );
     }
 
     #[test]
