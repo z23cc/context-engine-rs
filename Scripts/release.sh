@@ -108,7 +108,6 @@ class CtxMcp < Formula
   desc "Minimal snapshot-centered context engine (MCP server over stdio)"
   homepage "https://github.com/$OWNER/$REPO"
   url "$SRC_URL"
-  version "$NEW"
   sha256 "$SRC_SHA"
   license any_of: ["MIT", "Apache-2.0"]
 EOF
