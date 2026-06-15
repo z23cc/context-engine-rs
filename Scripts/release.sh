@@ -6,11 +6,11 @@
 # (0.0.1 -> 0.0.2 -> 0.0.3 ...). The workspace version lives in one place:
 # the root Cargo.toml [workspace.package] version (all crates inherit it).
 #
-# What it does:
-#   1. bump [workspace.package] version by +0.0.1 (unless --current)
-#   2. commit the bump, tag vX.Y.Z, push main + tag
-#   3. build a deterministic source tarball and create a GitHub Release
-#   4. compute its sha256, regenerate Formula/ctx-mcp.rb, push it to the tap
+# Distribution:
+#   * macOS arm64 -> a prebuilt binary asset (no compiler needed on install).
+#   * everything else (Intel macOS, Linux) -> build from source via cargo.
+# When this script runs on an arm64 Mac it builds and attaches the prebuilt
+# binary and emits the dual formula; otherwise it emits a source-only formula.
 #
 # Usage:
 #   Scripts/release.sh            # bump +0.0.1, then release
@@ -31,7 +31,7 @@ bump=true
 [[ "${1:-}" == "--current" ]] && bump=false
 
 # ---- preconditions ----
-command -v gh >/dev/null   || { echo "error: gh CLI not found"; exit 1; }
+command -v gh >/dev/null    || { echo "error: gh CLI not found"; exit 1; }
 command -v cargo >/dev/null || { echo "error: cargo not found"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "error: gh not authenticated"; exit 1; }
 
@@ -89,20 +89,103 @@ git tag -a "$TAG" -m "$TAG"
 git push origin main
 git push origin "$TAG"
 
-# ---- deterministic source tarball ----
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-TARBALL="$TMP/${REPO}-${NEW}.tar.gz"
-git archive --format=tar --prefix="${REPO}-${NEW}/" "$TAG" | gzip -n >"$TARBALL"
-SHA="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
-URL="https://github.com/$OWNER/$REPO/releases/download/$TAG/${REPO}-${NEW}.tar.gz"
-echo ">> sha256          : $SHA"
 
-# ---- github release ----
-gh release create "$TAG" "$TARBALL" \
+# ---- source tarball (Linux / Intel fallback) ----
+SRC_TARBALL="$TMP/${REPO}-${NEW}.tar.gz"
+git archive --format=tar --prefix="${REPO}-${NEW}/" "$TAG" | gzip -n >"$SRC_TARBALL"
+SRC_SHA="$(shasum -a 256 "$SRC_TARBALL" | awk '{print $1}')"
+SRC_URL="https://github.com/$OWNER/$REPO/releases/download/$TAG/${REPO}-${NEW}.tar.gz"
+echo ">> source sha256   : $SRC_SHA"
+
+# ---- prebuilt macOS arm64 binary (only when building on an arm64 Mac) ----
+HAS_MAC=0
+ASSETS=("$SRC_TARBALL")
+if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  echo ">> building macOS arm64 binary"
+  cargo build --release -p ctx-mcp
+  STAGE="$TMP/stage"; mkdir -p "$STAGE"
+  cp "target/release/$BIN" "$STAGE/$BIN"
+  strip "$STAGE/$BIN" 2>/dev/null || true
+  MAC_TARBALL="$TMP/${BIN}-${NEW}-aarch64-apple-darwin.tar.gz"
+  tar -czf "$MAC_TARBALL" -C "$STAGE" "$BIN"
+  MAC_SHA="$(shasum -a 256 "$MAC_TARBALL" | awk '{print $1}')"
+  MAC_URL="https://github.com/$OWNER/$REPO/releases/download/$TAG/${BIN}-${NEW}-aarch64-apple-darwin.tar.gz"
+  HAS_MAC=1
+  ASSETS+=("$MAC_TARBALL")
+  echo ">> macos arm sha256: $MAC_SHA"
+fi
+
+# ---- github release (source + any prebuilt assets) ----
+gh release create "$TAG" "${ASSETS[@]}" \
   -R "$OWNER/$REPO" \
   --title "$TAG" \
   --notes "Automated release $TAG. Install: \`brew install $OWNER/tap/$FORMULA\`"
+
+# ---- formula generator ----
+gen_formula() {
+  if [[ "$HAS_MAC" == "1" ]]; then
+    cat <<EOF
+class CtxMcp < Formula
+  desc "Minimal snapshot-centered context engine (MCP server over stdio)"
+  homepage "https://github.com/$OWNER/$REPO"
+  url "$SRC_URL"
+  version "$NEW"
+  sha256 "$SRC_SHA"
+  license any_of: ["MIT", "Apache-2.0"]
+
+  on_macos do
+    on_arm do
+      url "$MAC_URL"
+      sha256 "$MAC_SHA"
+    end
+    on_intel do
+      depends_on "rust" => :build
+    end
+  end
+
+  on_linux do
+    depends_on "rust" => :build
+  end
+
+  def install
+    if OS.mac? && Hardware::CPU.arm?
+      bin.install "$BIN"
+    else
+      system "cargo", "install", *std_cargo_args(path: "crates/ctx-mcp")
+    end
+  end
+
+  test do
+    assert_match "$BIN $NEW", shell_output("#{bin}/$BIN --version")
+  end
+end
+EOF
+  else
+    cat <<EOF
+class CtxMcp < Formula
+  desc "Minimal snapshot-centered context engine (MCP server over stdio)"
+  homepage "https://github.com/$OWNER/$REPO"
+  url "$SRC_URL"
+  version "$NEW"
+  sha256 "$SRC_SHA"
+  license any_of: ["MIT", "Apache-2.0"]
+  head "https://github.com/$OWNER/$REPO.git", branch: "main"
+
+  depends_on "rust" => :build
+
+  def install
+    system "cargo", "install", *std_cargo_args(path: "crates/ctx-mcp")
+  end
+
+  test do
+    assert_match "$BIN $NEW", shell_output("#{bin}/$BIN --version")
+  end
+end
+EOF
+  fi
+}
 
 # ---- ensure tap repo exists ----
 if ! gh repo view "$OWNER/$TAP_REPO" >/dev/null 2>&1; then
@@ -122,29 +205,8 @@ for _ in 1 2 3 4 5; do
 done
 $cloned || git clone -q "https://github.com/$OWNER/$TAP_REPO.git" "$TAPDIR"
 
-# ---- (re)generate formula ----
 mkdir -p "$TAPDIR/Formula"
-cat >"$TAPDIR/Formula/${FORMULA}.rb" <<EOF
-class CtxMcp < Formula
-  desc "Minimal snapshot-centered context engine (MCP server over stdio)"
-  homepage "https://github.com/$OWNER/$REPO"
-  url "$URL"
-  version "$NEW"
-  sha256 "$SHA"
-  license any_of: ["MIT", "Apache-2.0"]
-  head "https://github.com/$OWNER/$REPO.git", branch: "main"
-
-  depends_on "rust" => :build
-
-  def install
-    system "cargo", "install", *std_cargo_args(path: "crates/ctx-mcp")
-  end
-
-  test do
-    assert_match "$BIN $NEW", shell_output("#{bin}/$BIN --version")
-  end
-end
-EOF
+gen_formula >"$TAPDIR/Formula/${FORMULA}.rb"
 
 git -C "$TAPDIR" add "Formula/${FORMULA}.rb"
 git -C "$TAPDIR" commit -q -m "$FORMULA $NEW"
