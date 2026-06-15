@@ -232,3 +232,39 @@ const res = m.handle_request(JSON.stringify({
 `feed_files(files_json)` replaces the in-memory catalog (`[{path, content}]`, logical
 paths). `handle_request(json)` takes the same `{name, arguments}` tool-call shape as
 native dispatch. Runnable example: `crates/ctx-wasm/examples/node-smoke.js`.
+
+## Use with Claude Code / Codex (MCP)
+
+`ctx-mcp` is an MCP server over stdio (JSON-RPC 2.0: `initialize` / `tools/list` /
+`tools/call`). It exposes all 8 tools and is **fail-closed** — pass the project root
+with `--root`. Build it first:
+
+```bash
+cargo build --release -p ctx-mcp   # -> target/release/ctx-mcp
+```
+
+**Claude Code** — `.mcp.json` (or `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "context-engine": {
+      "command": "/abs/path/to/target/release/ctx-mcp",
+      "args": ["serve", "--root", "/abs/path/to/your/project"]
+    }
+  }
+}
+```
+
+**Codex** — `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.context-engine]
+command = "/abs/path/to/target/release/ctx-mcp"
+args = ["serve", "--root", "/abs/path/to/your/project"]
+```
+
+Tools: `file_search`, `read_file`, `get_file_tree`, `get_code_structure`,
+`get_repo_map`, `manage_selection`, `workspace_context`, `build_context`.
+Pins MCP `protocolVersion` `2024-11-05` (clients negotiate accordingly). Codemap
+covers Rust/Python/JS. Pure Rust, no C toolchain required.
