@@ -577,8 +577,8 @@ where
                 .ok_or(DispatchError::Core(CtxError::NoRoots))?;
             let output = run_git(&root, &args)?;
             return Ok(json!({
-                "content": [{ "type": "text", "text": output }],
-                "structuredContent": { "op": args.op },
+                "content": [{ "type": "text", "text": output.clone() }],
+                "structuredContent": { "op": args.op, "output": output },
             }));
         }
         "get_file_tree" => {
