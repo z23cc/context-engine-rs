@@ -279,6 +279,7 @@ fn golden_build_context() {
             query: "Alpha".to_string(),
             token_budget: 120,
             max_files: Some(4),
+            seed_paths: Vec::new(),
         },
     )
     .expect("build context");

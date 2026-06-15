@@ -9,7 +9,10 @@ use crate::{
 };
 use crate::{repomap::RepoMapResponse, selection::SelectionKey};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 const DEFAULT_MAX_FILES: usize = 20;
 const SEARCH_WEIGHT: f64 = 0.55;
@@ -23,6 +26,10 @@ pub struct BuildContextRequest {
     pub query: String,
     pub token_budget: usize,
     pub max_files: Option<usize>,
+    /// Optional files that seed the repo-map's personalized PageRank, biasing
+    /// selection toward these files and their references.
+    #[serde(default)]
+    pub seed_paths: Vec<PathBuf>,
 }
 
 /// Response from `build_context`.
@@ -100,7 +107,7 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         snapshot,
         &RepoMapRequest {
             query: Some(request.query.clone()),
-            seed_paths: Vec::new(),
+            seed_paths: request.seed_paths.clone(),
             max_files: max_files.saturating_mul(4).max(20),
         },
         cancel,
@@ -436,6 +443,7 @@ mod tests {
                 query: "needle".to_string(),
                 token_budget: 120,
                 max_files: Some(1),
+                seed_paths: Vec::new(),
             },
         )
         .expect("build context");
@@ -461,6 +469,7 @@ mod tests {
                 query: "needle_target".to_string(),
                 token_budget: 120,
                 max_files: Some(1),
+                seed_paths: Vec::new(),
             },
         )
         .expect("build context");
@@ -485,12 +494,44 @@ mod tests {
                 query: "needle".to_string(),
                 token_budget: 120,
                 max_files: Some(1),
+                seed_paths: Vec::new(),
             },
         )
         .expect("build context");
 
         assert_eq!(response.manifest.included[0].mode, "slices");
         assert!(response.context.contains("needle line"));
+    }
+
+    #[test]
+    fn seed_paths_include_the_seeded_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("hit.rs"), "pub fn needle() {}\n").expect("write");
+        fs::write(dir.path().join("seed.rs"), "pub fn other_thing() {}\n").expect("write");
+        let (provider, snapshot) = provider_for(dir.path());
+
+        let response = build_context(
+            &provider,
+            &snapshot,
+            &BuildContextRequest {
+                query: "needle".to_string(),
+                token_budget: 400,
+                max_files: Some(5),
+                seed_paths: vec![PathBuf::from("seed.rs")],
+            },
+        )
+        .expect("build context");
+
+        let included: Vec<&str> = response
+            .manifest
+            .included
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert!(
+            included.contains(&"seed.rs"),
+            "seeded file should be included: {included:?}"
+        );
     }
 
     #[test]
@@ -507,6 +548,7 @@ mod tests {
                 query: "needle".to_string(),
                 token_budget: 0,
                 max_files: Some(1),
+                seed_paths: Vec::new(),
             },
         )
         .expect("build context");
@@ -531,6 +573,7 @@ mod tests {
                 query: "needle".to_string(),
                 token_budget: 90,
                 max_files: Some(2),
+                seed_paths: Vec::new(),
             },
         )
         .expect("build context");

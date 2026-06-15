@@ -127,6 +127,11 @@ pub fn tool_specs() -> Value {
                         "type": "integer",
                         "default": 20,
                         "description": "Maximum number of files to include."
+                    },
+                    "seed_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional files to seed the repo-map PageRank, biasing selection toward them and their references."
                     }
                 }
             }
