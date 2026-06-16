@@ -6,7 +6,6 @@ use crate::{
     models::{CatalogEntry, CtxError, Diagnostic},
     port::CatalogProvider,
     ranking::is_binary,
-    snapshot::CatalogSnapshot,
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
@@ -42,9 +41,10 @@ pub(crate) struct ChunkBuild {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
+#[cfg(test)]
 pub(crate) fn build_chunks<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &crate::snapshot::CatalogSnapshot,
     cancel: &CancelToken,
 ) -> Result<ChunkBuild, CtxError> {
     let entries: Vec<&CatalogEntry> = snapshot.entries.iter().collect();

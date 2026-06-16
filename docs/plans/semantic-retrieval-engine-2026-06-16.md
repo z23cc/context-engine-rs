@@ -156,13 +156,33 @@ cost **once**, then load + incrementally update on subsequent sessions.
 14. **Tests** (mock backend, no real model): save/load round-trip, stale-file
     re-embed, tombstone + compaction, corruption → rebuild, version-bump rebuild.
 
+## Phase 3 — Cold-build mitigations (chosen)
+
+Measured: cold build is embedding-bound (~85s for ~910 chunks of `ctx-core/src`,
+release, CPU already saturated — intra-thread tuning was a verified no-op).
+Persistence makes that a one-time cost; these two reduce it further and hide it.
+
+15. **Index-scope filtering.** By default exclude tests, vendored/generated code,
+    build artifacts, and docs from the *semantic index* (they're rarely retrieval
+    targets and inflate chunk count). Reuse the `file_search` `extensions` /
+    `include` / `exclude` glob machinery (already in `search.rs`); make the index
+    scope configurable. Fewer chunks → proportional cold-build cut **and** cleaner
+    recall. Cheapest, biggest win.
+16. **Background build + BM25 fallback.** Build the dense index on a background
+    thread (non-blocking); the first `semantic_search` returns **BM25-only**
+    results immediately with a "dense index warming" diagnostic, auto-upgrading to
+    full hybrid once the index is ready. Doesn't reduce compute — removes the
+    user-facing wait, which (with persistence) is what actually matters. Needs a
+    small index-state machine (building / ready) + concurrency care.
+
 ### Follow-up (still deferred)
 
 - **`build_context` integration**: let the deterministic builder draw on semantic
-  candidates once persistence lands and the tool is stable.
-- **Latency mitigations** (orthogonal): quantized/int8 `jina`, or `bge-small`
-  int8 as a fast default tier — pursue only if even the warm/incremental path is
-  too slow.
+  candidates once the tool is stable.
+- **Further latency mitigations** (only if cold/large repos still hurt after
+  Phase 3): int8-quantized `jina` (rerank absorbs the ~1–5% recall hit) or a
+  `bge-small` fast tier; CoreML EP (Mac-only). Measure on our corpus, don't
+  decide on generic numbers.
 
 ## Open Questions
 

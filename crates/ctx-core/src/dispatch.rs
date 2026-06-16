@@ -11,6 +11,16 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+pub trait DispatchProvider: CatalogProvider + Clone + Send + Sync + 'static {}
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+impl<T> DispatchProvider for T where T: CatalogProvider + Clone + Send + Sync + 'static {}
+
+#[cfg(not(all(feature = "semantic", not(target_arch = "wasm32"))))]
+pub trait DispatchProvider: CatalogProvider + Sync {}
+#[cfg(not(all(feature = "semantic", not(target_arch = "wasm32"))))]
+impl<T> DispatchProvider for T where T: CatalogProvider + Sync {}
+
 /// Errors produced while decoding or dispatching a tool call.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
@@ -332,7 +342,7 @@ pub fn tool_specs() -> Value {
     #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
     tools.push(json!({
         "name": "semantic_search",
-        "description": "Intent-based code retrieval over an in-memory semantic index. Builds the index on first query for the session; no persistent index is written.",
+        "description": "Intent-based code retrieval over a persistent semantic index. Cold dense builds run in the background; queries return BM25-only results with a warming diagnostic until dense search is ready.",
         "inputSchema": {
             "type": "object",
             "required": ["query"],
@@ -378,7 +388,7 @@ pub fn tool_specs() -> Value {
 /// Dispatch one MCP `tools/call` params object and return the MCP tool response.
 pub fn handle_tool_call<P>(provider: &P, params: &Value) -> Result<Value, DispatchError>
 where
-    P: CatalogProvider + Sync,
+    P: DispatchProvider,
 {
     handle_tool_call_cancellable(provider, params, &CancelToken::never())
 }
@@ -390,7 +400,7 @@ pub fn handle_tool_call_cancellable<P>(
     cancel: &CancelToken,
 ) -> Result<Value, DispatchError>
 where
-    P: CatalogProvider + Sync,
+    P: DispatchProvider,
 {
     let resolver = SingletonWorkspaceResolver::new(provider);
     handle_tool_call_with_resolver_cancellable(&resolver, params, cancel)
@@ -403,6 +413,7 @@ pub fn handle_tool_call_with_resolver<R>(
 ) -> Result<Value, DispatchError>
 where
     R: WorkspaceResolver,
+    R::Provider: DispatchProvider,
 {
     handle_tool_call_with_resolver_cancellable(resolver, params, &CancelToken::never())
 }
@@ -415,6 +426,7 @@ pub fn handle_tool_call_with_resolver_cancellable<R>(
 ) -> Result<Value, DispatchError>
 where
     R: WorkspaceResolver,
+    R::Provider: DispatchProvider,
 {
     cancel.check_cancelled()?;
     let name = params
@@ -474,7 +486,8 @@ where
             let index = provider
                 .semantic_index()
                 .ok_or(CtxError::SemanticUnavailable)?;
-            let response = index.search(provider, &snapshot, &request, cancel)?;
+            let response =
+                index.search_background((*provider).clone(), snapshot, &request, cancel)?;
             return tool_response_text(&response);
         }
         "read_file" => {
@@ -1076,7 +1089,7 @@ impl ToolText for crate::codemap::CodeStructureResponse {
 /// Decode one JSON tool-call params object and encode the tool response as JSON.
 pub fn handle_tool_call_json<P>(provider: &P, request_json: &str) -> Result<String, DispatchError>
 where
-    P: CatalogProvider + Sync,
+    P: DispatchProvider,
 {
     handle_tool_call_json_cancellable(provider, request_json, &CancelToken::never())
 }
@@ -1089,7 +1102,7 @@ pub fn handle_tool_call_json_cancellable<P>(
     cancel: &CancelToken,
 ) -> Result<String, DispatchError>
 where
-    P: CatalogProvider + Sync,
+    P: DispatchProvider,
 {
     let resolver = SingletonWorkspaceResolver::new(provider);
     handle_tool_call_json_with_resolver_cancellable(&resolver, request_json, cancel)
@@ -1102,6 +1115,7 @@ pub fn handle_tool_call_json_with_resolver<R>(
 ) -> Result<String, DispatchError>
 where
     R: WorkspaceResolver,
+    R::Provider: DispatchProvider,
 {
     handle_tool_call_json_with_resolver_cancellable(resolver, request_json, &CancelToken::never())
 }
@@ -1115,6 +1129,7 @@ pub fn handle_tool_call_json_with_resolver_cancellable<R>(
 ) -> Result<String, DispatchError>
 where
     R: WorkspaceResolver,
+    R::Provider: DispatchProvider,
 {
     let params: Value = serde_json::from_str(request_json)?;
     match handle_tool_call_with_resolver_cancellable(resolver, &params, cancel) {

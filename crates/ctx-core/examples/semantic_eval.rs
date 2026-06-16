@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             index_cache_dir: None,
             rerank: true,
             mock: false,
+            scope: Default::default(),
         }
     } else {
         SemanticRuntimeConfig::mock()

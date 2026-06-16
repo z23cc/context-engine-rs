@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "semantic")]
-use ctx_core::semantic::SemanticRuntimeConfig;
+use ctx_core::semantic::{SemanticIndexScope, SemanticRuntimeConfig};
 use ctx_core::{
     FsCatalogProvider, RootPolicy, ScanOptions, WorkspaceRegistry,
     handle_tool_call_json_with_resolver, tool_specs,
@@ -76,6 +76,22 @@ struct ServeArgs {
     #[cfg(feature = "semantic")]
     #[arg(long = "semantic-no-rerank")]
     semantic_no_rerank: bool,
+    /// Restrict semantic indexing to paths matching this glob. Repeatable.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-include")]
+    semantic_include: Vec<String>,
+    /// Exclude paths from semantic indexing with this glob. Repeatable.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-exclude")]
+    semantic_exclude: Vec<String>,
+    /// Restrict semantic indexing to this extension (dot optional). Repeatable.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-extension")]
+    semantic_extensions: Vec<String>,
+    /// Do not apply the default semantic excludes for tests/docs/vendor/build/generated files.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-no-default-excludes")]
+    semantic_no_default_excludes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +161,12 @@ fn semantic_runtime_config(args: &ServeArgs) -> SemanticRuntimeConfig {
         index_cache_dir: args.semantic_cache_dir.clone(),
         rerank: !args.semantic_no_rerank,
         mock: false,
+        scope: SemanticIndexScope {
+            extensions: args.semantic_extensions.clone(),
+            include: args.semantic_include.clone(),
+            exclude: args.semantic_exclude.clone(),
+            use_default_excludes: !args.semantic_no_default_excludes,
+        },
     }
 }
 
@@ -633,6 +655,14 @@ mod tests {
             semantic_cache_dir: None,
             #[cfg(feature = "semantic")]
             semantic_no_rerank: false,
+            #[cfg(feature = "semantic")]
+            semantic_include: Vec::new(),
+            #[cfg(feature = "semantic")]
+            semantic_exclude: Vec::new(),
+            #[cfg(feature = "semantic")]
+            semantic_extensions: Vec::new(),
+            #[cfg(feature = "semantic")]
+            semantic_no_default_excludes: false,
         }
     }
 

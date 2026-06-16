@@ -2,9 +2,7 @@
 
 pub(crate) mod chunk;
 
-use self::chunk::{
-    CHUNKER_VERSION, ChunkBuild, SemanticChunk, build_chunks, build_chunks_for_entries,
-};
+use self::chunk::{CHUNKER_VERSION, ChunkBuild, SemanticChunk, build_chunks_for_entries};
 use crate::{
     cancel::CancelToken,
     models::{
@@ -12,7 +10,7 @@ use crate::{
         SemanticSearchResponse, SemanticSearchResult, SemanticSearchTotals,
     },
     port::{CatalogProvider, FileSignature},
-    ranking::{tokenize_query, tokenize_text},
+    ranking::{EntryFilter, EntryFilterConfig, tokenize_query, tokenize_text},
     snapshot::CatalogSnapshot,
 };
 use fastembed::{
@@ -28,7 +26,10 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -53,12 +54,103 @@ pub trait RerankerBackend: Send + Sync {
     fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>, CtxError>;
 }
 
+const DEFAULT_SCOPE_EXCLUDES: &[&str] = &[
+    "**/.git/**",
+    "**/.build/**",
+    "**/target/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/out/**",
+    "**/coverage/**",
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/Vendor/**",
+    "**/third_party/**",
+    "**/ThirdParty/**",
+    "**/ThirdPartyLicenses/**",
+    "**/tests/**",
+    "**/Tests/**",
+    "**/test/**",
+    "**/__tests__/**",
+    "**/*_test.*",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/docs/**",
+    "**/Docs/**",
+    "**/README*",
+    "**/*.md",
+    "**/*.mdx",
+    "**/*.rst",
+    "**/*.adoc",
+    "**/generated/**",
+    "**/Generated/**",
+    "**/*_generated.*",
+    "**/*.generated.*",
+    "**/*Generated*",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticIndexScope {
+    pub extensions: Vec<String>,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub use_default_excludes: bool,
+}
+
+impl Default for SemanticIndexScope {
+    fn default() -> Self {
+        Self {
+            extensions: Vec::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            use_default_excludes: true,
+        }
+    }
+}
+
+impl SemanticIndexScope {
+    fn filter_config(&self) -> EntryFilterConfig {
+        let mut exclude = Vec::new();
+        if self.use_default_excludes {
+            exclude.extend(
+                DEFAULT_SCOPE_EXCLUDES
+                    .iter()
+                    .map(|pattern| (*pattern).to_string()),
+            );
+        }
+        exclude.extend(self.exclude.clone());
+        EntryFilterConfig {
+            extensions: self.extensions.clone(),
+            include: self.include.clone(),
+            exclude,
+        }
+    }
+
+    fn entry_filter(&self) -> Result<EntryFilter, CtxError> {
+        EntryFilter::from_config(&self.filter_config())
+    }
+
+    fn cache_fingerprint(&self) -> String {
+        let config = self.filter_config();
+        let mut hasher = Sha256::new();
+        for values in [&config.extensions, &config.include, &config.exclude] {
+            for value in values {
+                hasher.update(value.as_bytes());
+                hasher.update([0]);
+            }
+            hasher.update([0xff]);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+}
+
 #[derive(Clone)]
 pub struct SemanticIndexConfig {
     pub candidates: usize,
     pub rerank_limit: usize,
     pub rerank: bool,
     pub persistence: Option<SemanticPersistenceConfig>,
+    pub scope: SemanticIndexScope,
     pub compaction_tombstone_ratio: f64,
     pub compaction_tombstone_count: usize,
 }
@@ -81,6 +173,7 @@ pub struct SemanticRuntimeConfig {
     pub index_cache_dir: Option<PathBuf>,
     pub rerank: bool,
     pub mock: bool,
+    pub scope: SemanticIndexScope,
 }
 
 impl Default for SemanticRuntimeConfig {
@@ -100,6 +193,7 @@ impl SemanticRuntimeConfig {
             index_cache_dir: None,
             rerank: true,
             mock: false,
+            scope: SemanticIndexScope::default(),
         }
     }
 
@@ -113,6 +207,7 @@ impl SemanticRuntimeConfig {
             index_cache_dir: None,
             rerank: true,
             mock: true,
+            scope: SemanticIndexScope::default(),
         }
     }
 
@@ -147,7 +242,9 @@ impl SemanticRuntimeConfig {
                 roots,
                 &embedding_model_id,
                 embedding_dimension,
+                &self.scope,
             )?,
+            scope: self.scope.clone(),
             ..SemanticIndexConfig::default()
         };
         if self.mock || self.embedding_model.as_deref() == Some("mock") {
@@ -179,6 +276,7 @@ impl Default for SemanticIndexConfig {
             rerank_limit: DEFAULT_RERANK_LIMIT,
             rerank: true,
             persistence: None,
+            scope: SemanticIndexScope::default(),
             compaction_tombstone_ratio: TOMBSTONE_RATIO_THRESHOLD,
             compaction_tombstone_count: TOMBSTONE_COUNT_THRESHOLD,
         }
@@ -191,6 +289,9 @@ pub struct SemanticIndex {
     reranker: Option<Arc<dyn RerankerBackend>>,
     built: RwLock<Option<Arc<BuiltSemanticIndex>>>,
     build_lock: Mutex<()>,
+    building: Mutex<Option<BuildInProgress>>,
+    last_build_error: Mutex<Option<String>>,
+    generation: AtomicU64,
 }
 
 impl fmt::Debug for SemanticIndex {
@@ -214,6 +315,9 @@ impl SemanticIndex {
             reranker,
             built: RwLock::new(None),
             build_lock: Mutex::new(()),
+            building: Mutex::new(None),
+            last_build_error: Mutex::new(None),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -232,7 +336,13 @@ impl SemanticIndex {
     }
 
     pub fn invalidate(&self) {
+        self.generation.fetch_add(1, AtomicOrdering::SeqCst);
         *self.built.write().expect("semantic index lock") = None;
+        *self.building.lock().expect("semantic building lock") = None;
+        *self
+            .last_build_error
+            .lock()
+            .expect("semantic build error lock") = None;
     }
 
     pub fn search<P: CatalogProvider + Sync>(
@@ -244,6 +354,57 @@ impl SemanticIndex {
     ) -> Result<SemanticSearchResponse, CtxError> {
         cancel.check_cancelled()?;
         let built = self.ensure_built(provider, snapshot, cancel)?;
+        self.search_built(&built, snapshot.entries.len(), request, cancel)
+    }
+
+    pub fn search_background<P>(
+        self: &Arc<Self>,
+        provider: P,
+        snapshot: Arc<CatalogSnapshot>,
+        request: &SemanticSearchRequest,
+        cancel: &CancelToken,
+    ) -> Result<SemanticSearchResponse, CtxError>
+    where
+        P: CatalogProvider + Clone + Send + Sync + 'static,
+    {
+        cancel.check_cancelled()?;
+        if self.config.persistence.is_some() {
+            let state = SnapshotFileState::from_snapshot(&provider, &snapshot, &self.config.scope)?;
+            if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
+                && cached.manifest_fingerprint == state.fingerprint
+            {
+                return self.search_built(cached, snapshot.entries.len(), request, cancel);
+            }
+            let chunk_build = self.build_scoped_chunks(&provider, &snapshot, cancel)?;
+            self.start_background_build(
+                provider,
+                Arc::clone(&snapshot),
+                BackgroundBuildInput::Persistent(state),
+            );
+            return self.search_fallback(chunk_build, snapshot.entries.len(), request);
+        }
+
+        let chunk_build = self.build_scoped_chunks(&provider, &snapshot, cancel)?;
+        if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
+            && cached.manifest_fingerprint == chunk_build.manifest.fingerprint
+        {
+            return self.search_built(cached, snapshot.entries.len(), request, cancel);
+        }
+        self.start_background_build(
+            provider,
+            Arc::clone(&snapshot),
+            BackgroundBuildInput::Chunks(chunk_build.clone()),
+        );
+        self.search_fallback(chunk_build, snapshot.entries.len(), request)
+    }
+
+    fn search_built(
+        &self,
+        built: &BuiltSemanticIndex,
+        scanned_files: usize,
+        request: &SemanticSearchRequest,
+        cancel: &CancelToken,
+    ) -> Result<SemanticSearchResponse, CtxError> {
         let max_results = request.max_results.max(1);
         let candidate_limit = self.config.candidates.max(max_results);
         let query_vector = self.embedding.embed_query(&request.query)?;
@@ -294,7 +455,7 @@ impl SemanticIndex {
             results,
             diagnostics: built.diagnostics.clone(),
             totals: SemanticSearchTotals {
-                scanned_files: snapshot.entries.len(),
+                scanned_files,
                 chunks: built.chunks.len(),
                 dense_candidates: dense.len(),
                 bm25_candidates: bm25.len(),
@@ -304,6 +465,143 @@ impl SemanticIndex {
         })
     }
 
+    fn search_fallback(
+        &self,
+        chunk_build: ChunkBuild,
+        scanned_files: usize,
+        request: &SemanticSearchRequest,
+    ) -> Result<SemanticSearchResponse, CtxError> {
+        let max_results = request.max_results.max(1);
+        let candidate_limit = self.config.candidates.max(max_results);
+        let bm25 = if request.mode == SemanticSearchMode::Hybrid {
+            let bm25_index = ChunkBm25::new(&chunk_build.chunks);
+            bm25_index.search(&request.query, candidate_limit)
+        } else {
+            Vec::new()
+        };
+        let mut scored = bm25.clone();
+        scored.truncate(max_results);
+        let results = scored
+            .iter()
+            .map(|(idx, score)| chunk_to_result(&chunk_build.chunks[*idx], *score))
+            .collect();
+        let mut diagnostics = chunk_build.diagnostics;
+        diagnostics.push(Diagnostic {
+            path: None,
+            message: if request.mode == SemanticSearchMode::Hybrid {
+                "dense semantic index warming; returning BM25-only results".to_string()
+            } else {
+                "dense semantic index warming; semantic-only mode has no fallback results"
+                    .to_string()
+            },
+        });
+        if let Some(error) = self
+            .last_build_error
+            .lock()
+            .expect("semantic build error lock")
+            .clone()
+        {
+            diagnostics.push(Diagnostic {
+                path: None,
+                message: format!("dense semantic index build failed: {error}"),
+            });
+        }
+        Ok(SemanticSearchResponse {
+            results,
+            diagnostics,
+            totals: SemanticSearchTotals {
+                scanned_files,
+                chunks: chunk_build.chunks.len(),
+                dense_candidates: 0,
+                bm25_candidates: bm25.len(),
+                fused_candidates: scored.len(),
+                reranked: 0,
+            },
+        })
+    }
+
+    fn start_background_build<P>(
+        self: &Arc<Self>,
+        provider: P,
+        snapshot: Arc<CatalogSnapshot>,
+        input: BackgroundBuildInput,
+    ) where
+        P: CatalogProvider + Clone + Send + Sync + 'static,
+    {
+        let fingerprint = input.fingerprint().to_string();
+        let generation = self.generation.load(AtomicOrdering::SeqCst);
+        {
+            let mut building = self.building.lock().expect("semantic building lock");
+            if building.as_ref().is_some_and(|current| {
+                current.fingerprint == fingerprint && current.generation == generation
+            }) {
+                return;
+            }
+            *building = Some(BuildInProgress {
+                fingerprint: fingerprint.clone(),
+                generation,
+            });
+        }
+
+        let index = Arc::clone(self);
+        std::thread::spawn(move || {
+            let cancel = CancelToken::never();
+            let result = match input {
+                BackgroundBuildInput::Persistent(state) => {
+                    index.build_with_persistence(&provider, &snapshot, &state, &cancel)
+                }
+                BackgroundBuildInput::Chunks(chunk_build) => {
+                    index.build_from_chunks(chunk_build, &cancel)
+                }
+            };
+            let mut building = index.building.lock().expect("semantic building lock");
+            let still_current = index.generation.load(AtomicOrdering::SeqCst) == generation
+                && building.as_ref().is_some_and(|current| {
+                    current.fingerprint == fingerprint && current.generation == generation
+                });
+            if still_current {
+                match result {
+                    Ok(built) => {
+                        *index.built.write().expect("semantic index lock") = Some(Arc::new(built));
+                        *index
+                            .last_build_error
+                            .lock()
+                            .expect("semantic build error lock") = None;
+                    }
+                    Err(err) => {
+                        *index
+                            .last_build_error
+                            .lock()
+                            .expect("semantic build error lock") = Some(err.to_string());
+                    }
+                }
+                *building = None;
+            }
+        });
+    }
+
+    fn scoped_entries<'a>(
+        &self,
+        snapshot: &'a CatalogSnapshot,
+    ) -> Result<Vec<&'a CatalogEntry>, CtxError> {
+        let filter = self.config.scope.entry_filter()?;
+        Ok(snapshot
+            .entries
+            .iter()
+            .filter(|entry| filter.accepts(&entry.rel_path))
+            .collect())
+    }
+
+    fn build_scoped_chunks<P: CatalogProvider + Sync>(
+        &self,
+        provider: &P,
+        snapshot: &CatalogSnapshot,
+        cancel: &CancelToken,
+    ) -> Result<ChunkBuild, CtxError> {
+        let entries = self.scoped_entries(snapshot)?;
+        build_chunks_for_entries(provider, &entries, snapshot.generation, cancel)
+    }
+
     fn ensure_built<P: CatalogProvider + Sync>(
         &self,
         provider: &P,
@@ -311,7 +609,7 @@ impl SemanticIndex {
         cancel: &CancelToken,
     ) -> Result<Arc<BuiltSemanticIndex>, CtxError> {
         if self.config.persistence.is_some() {
-            let state = SnapshotFileState::from_snapshot(provider, snapshot)?;
+            let state = SnapshotFileState::from_snapshot(provider, snapshot, &self.config.scope)?;
             if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
                 && cached.manifest_fingerprint == state.fingerprint
             {
@@ -328,7 +626,7 @@ impl SemanticIndex {
             return Ok(built);
         }
 
-        let chunk_build = build_chunks(provider, snapshot, cancel)?;
+        let chunk_build = self.build_scoped_chunks(provider, snapshot, cancel)?;
         if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
             && cached.manifest_fingerprint == chunk_build.manifest.fingerprint
         {
@@ -559,6 +857,26 @@ struct BuiltSemanticIndex {
     bm25: ChunkBm25,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BuildInProgress {
+    fingerprint: String,
+    generation: u64,
+}
+
+enum BackgroundBuildInput {
+    Persistent(SnapshotFileState),
+    Chunks(ChunkBuild),
+}
+
+impl BackgroundBuildInput {
+    fn fingerprint(&self) -> &str {
+        match self {
+            Self::Persistent(state) => &state.fingerprint,
+            Self::Chunks(build) => &build.manifest.fingerprint,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SnapshotFileState {
     files: Vec<SnapshotFileRecord>,
@@ -576,10 +894,16 @@ impl SnapshotFileState {
     fn from_snapshot<P: CatalogProvider + Sync>(
         provider: &P,
         snapshot: &CatalogSnapshot,
+        scope: &SemanticIndexScope,
     ) -> Result<Self, CtxError> {
+        let filter = scope.entry_filter()?;
         let mut files = Vec::with_capacity(snapshot.entries.len());
         let mut hasher = Sha256::new();
-        for entry in &snapshot.entries {
+        for entry in snapshot
+            .entries
+            .iter()
+            .filter(|entry| filter.accepts(&entry.rel_path))
+        {
             let signature = provider
                 .file_signature(Path::new(&entry.abs_path))?
                 .map(PersistedFileSignature::from)
@@ -689,6 +1013,7 @@ fn semantic_persistence_config(
     roots: &[RootRef],
     embedding_model_id: &str,
     embedding_dimension: usize,
+    scope: &SemanticIndexScope,
 ) -> Result<Option<SemanticPersistenceConfig>, CtxError> {
     let cache_base_dir = configured_dir
         .map(Path::to_path_buf)
@@ -697,7 +1022,12 @@ fn semantic_persistence_config(
         .iter()
         .map(|root| root.path.clone())
         .collect::<Vec<_>>();
-    let workspace_key = workspace_key(&canonical_roots, embedding_model_id, embedding_dimension);
+    let workspace_key = workspace_key(
+        &canonical_roots,
+        embedding_model_id,
+        embedding_dimension,
+        &scope.cache_fingerprint(),
+    );
     Ok(Some(SemanticPersistenceConfig {
         cache_base_dir,
         workspace_key,
@@ -711,12 +1041,14 @@ fn workspace_key(
     roots: &[PathBuf],
     embedding_model_id: &str,
     embedding_dimension: usize,
+    scope_fingerprint: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(SCHEMA_VERSION.to_le_bytes());
     hasher.update(CHUNKER_VERSION.to_le_bytes());
     hasher.update(embedding_model_id.as_bytes());
     hasher.update(embedding_dimension.to_le_bytes());
+    hasher.update(scope_fingerprint.as_bytes());
     for root in roots {
         hasher.update(root.to_string_lossy().as_bytes());
         hasher.update([0]);
@@ -1435,7 +1767,11 @@ fn normalize(vector: &mut [f32]) {
 mod tests {
     use super::*;
     use crate::{FsCatalogProvider, HostFile, MemoryCatalogProvider, RootPolicy, ScanOptions};
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        thread,
+        time::Duration,
+    };
 
     #[test]
     fn chunk_bm25_uses_idf_over_chunks() {
@@ -1497,6 +1833,200 @@ mod tests {
         assert!(!response.results.is_empty());
         assert_eq!(response.results[0].path, "alpha.rs");
         assert!(response.totals.chunks >= 2);
+    }
+
+    #[test]
+    fn default_scope_excludes_noise_from_semantic_index() {
+        let provider = MemoryCatalogProvider::new(vec![
+            HostFile::new("src/lib.rs", b"pub fn live_code() { needle(); }".to_vec()),
+            HostFile::new(
+                "tests/test.rs",
+                b"pub fn test_code() { needle(); }".to_vec(),
+            ),
+            HostFile::new("docs/guide.md", b"needle docs".to_vec()),
+            HostFile::new("vendor/lib.rs", b"pub fn vendored() { needle(); }".to_vec()),
+            HostFile::new("target/out.rs", b"pub fn built() { needle(); }".to_vec()),
+            HostFile::new("build/out.rs", b"pub fn build_out() { needle(); }".to_vec()),
+            HostFile::new("dist/bundle.rs", b"pub fn bundled() { needle(); }".to_vec()),
+            HostFile::new("README.md", b"needle readme".to_vec()),
+            HostFile::new(
+                "src/foo_test.rs",
+                b"pub fn test_file() { needle(); }".to_vec(),
+            ),
+            HostFile::new("src/foo.spec.ts", b"export const spec = 'needle';".to_vec()),
+            HostFile::new(
+                "src/generated/out.rs",
+                b"pub fn generated() { needle(); }".to_vec(),
+            ),
+            HostFile::new(
+                "src/schema.generated.rs",
+                b"pub fn generated_file() { needle(); }".to_vec(),
+            ),
+            HostFile::new(
+                "src/schema_generated.rs",
+                b"pub fn generated_file_alt() { needle(); }".to_vec(),
+            ),
+        ])
+        .expect("provider");
+        let snapshot = provider.snapshot().expect("snapshot");
+        let backend = Arc::new(CountingEmbeddingBackend::default());
+        let index = SemanticIndex::new(
+            SemanticIndexConfig {
+                rerank: false,
+                ..SemanticIndexConfig::default()
+            },
+            backend.clone(),
+            None,
+        );
+        let response = index
+            .search(
+                &provider,
+                &snapshot,
+                &SemanticSearchRequest {
+                    query: "needle".into(),
+                    rerank: false,
+                    ..SemanticSearchRequest::default()
+                },
+                &CancelToken::never(),
+            )
+            .expect("search");
+        assert_eq!(backend.document_count(), 1);
+        assert_eq!(response.totals.chunks, 1);
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|result| result.path == "src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn scope_can_disable_default_excludes() {
+        let provider = MemoryCatalogProvider::new(vec![
+            HostFile::new("docs/guide.md", b"docs only needle".to_vec()),
+            HostFile::new("src/lib.rs", b"pub fn live_code() {}".to_vec()),
+        ])
+        .expect("provider");
+        let snapshot = provider.snapshot().expect("snapshot");
+        let backend = Arc::new(CountingEmbeddingBackend::default());
+        let index = SemanticIndex::new(
+            SemanticIndexConfig {
+                rerank: false,
+                scope: SemanticIndexScope {
+                    use_default_excludes: false,
+                    include: vec!["docs/**".to_string()],
+                    ..SemanticIndexScope::default()
+                },
+                ..SemanticIndexConfig::default()
+            },
+            backend.clone(),
+            None,
+        );
+        let response = index
+            .search(
+                &provider,
+                &snapshot,
+                &SemanticSearchRequest {
+                    query: "needle".into(),
+                    rerank: false,
+                    ..SemanticSearchRequest::default()
+                },
+                &CancelToken::never(),
+            )
+            .expect("search");
+        assert_eq!(backend.document_count(), 1);
+        assert_eq!(response.results[0].path, "docs/guide.md");
+    }
+
+    #[test]
+    fn background_search_returns_bm25_fallback_then_dense_results() {
+        let provider = MemoryCatalogProvider::new(vec![
+            HostFile::new(
+                "src/config.rs",
+                b"pub fn parse_config() { validate_config(); }".to_vec(),
+            ),
+            HostFile::new(
+                "src/view.rs",
+                b"pub fn render_view() { draw_button(); }".to_vec(),
+            ),
+        ])
+        .expect("provider");
+        let snapshot = Arc::new(provider.snapshot().expect("snapshot"));
+        let backend = Arc::new(SlowEmbeddingBackend::default());
+        let index = Arc::new(SemanticIndex::new(
+            SemanticIndexConfig {
+                rerank: false,
+                ..SemanticIndexConfig::default()
+            },
+            backend,
+            None,
+        ));
+        let request = SemanticSearchRequest {
+            query: "config validation".into(),
+            rerank: false,
+            ..SemanticSearchRequest::default()
+        };
+
+        let first = index
+            .search_background(
+                provider.clone(),
+                Arc::clone(&snapshot),
+                &request,
+                &CancelToken::never(),
+            )
+            .expect("fallback search");
+        assert_eq!(first.totals.dense_candidates, 0);
+        assert!(first.totals.bm25_candidates > 0);
+        assert!(
+            first
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("dense semantic index warming"))
+        );
+
+        let semantic_only = index
+            .search_background(
+                provider.clone(),
+                Arc::clone(&snapshot),
+                &SemanticSearchRequest {
+                    mode: SemanticSearchMode::Semantic,
+                    ..request.clone()
+                },
+                &CancelToken::never(),
+            )
+            .expect("semantic-only fallback search");
+        assert!(semantic_only.results.is_empty());
+        assert_eq!(semantic_only.totals.bm25_candidates, 0);
+        assert!(semantic_only.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("semantic-only mode has no fallback results")
+        }));
+
+        let mut ready = None;
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(25));
+            let response = index
+                .search_background(
+                    provider.clone(),
+                    Arc::clone(&snapshot),
+                    &request,
+                    &CancelToken::never(),
+                )
+                .expect("ready search");
+            if response.totals.dense_candidates > 0 {
+                ready = Some(response);
+                break;
+            }
+        }
+        let ready = ready.expect("dense index becomes ready");
+        assert_eq!(ready.results[0].path, "src/config.rs");
+        assert!(
+            ready
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("dense semantic index warming"))
+        );
     }
 
     #[test]
@@ -1663,6 +2193,26 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct SlowEmbeddingBackend {
+        inner: MockEmbeddingBackend,
+    }
+
+    impl EmbeddingBackend for SlowEmbeddingBackend {
+        fn dimension(&self) -> usize {
+            self.inner.dimension()
+        }
+
+        fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, CtxError> {
+            thread::sleep(Duration::from_millis(100));
+            self.inner.embed_documents(texts)
+        }
+
+        fn embed_query(&self, query: &str) -> Result<Vec<f32>, CtxError> {
+            self.inner.embed_query(query)
+        }
+    }
+
+    #[derive(Default)]
     struct CountingEmbeddingBackend {
         inner: MockEmbeddingBackend,
         document_count: AtomicUsize,
@@ -1709,6 +2259,7 @@ mod tests {
             &roots,
             "mock",
             MockEmbeddingBackend::default().dimension(),
+            &SemanticIndexScope::default(),
         )
         .expect("persistence")
         .expect("enabled");

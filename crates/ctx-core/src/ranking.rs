@@ -201,6 +201,14 @@ pub(crate) fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
 }
 
+/// Path filter inputs shared by file_search and the semantic index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EntryFilterConfig {
+    pub(crate) extensions: Vec<String>,
+    pub(crate) include: Vec<String>,
+    pub(crate) exclude: Vec<String>,
+}
+
 /// Path filter applied to both buckets: an extension whitelist plus glob
 /// include/exclude lists (ripgrep / Claude Code Grep parity).
 pub(crate) struct EntryFilter {
@@ -211,7 +219,15 @@ pub(crate) struct EntryFilter {
 
 impl EntryFilter {
     pub(crate) fn build(request: &SearchRequest) -> Result<Self, CtxError> {
-        let extensions = request
+        Self::from_config(&EntryFilterConfig {
+            extensions: request.extensions.clone(),
+            include: request.include.clone(),
+            exclude: request.exclude.clone(),
+        })
+    }
+
+    pub(crate) fn from_config(config: &EntryFilterConfig) -> Result<Self, CtxError> {
+        let extensions = config
             .extensions
             .iter()
             .filter(|ext| !ext.is_empty())
@@ -219,8 +235,8 @@ impl EntryFilter {
             .collect();
         Ok(Self {
             extensions,
-            include: compile_globs(&request.include)?,
-            exclude: compile_globs(&request.exclude)?,
+            include: compile_globs(&config.include)?,
+            exclude: compile_globs(&config.exclude)?,
         })
     }
 
