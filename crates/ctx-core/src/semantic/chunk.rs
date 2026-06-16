@@ -13,7 +13,11 @@ use std::{collections::BTreeMap, path::Path};
 const FALLBACK_WINDOW_LINES: usize = 80;
 const FALLBACK_OVERLAP_LINES: usize = 16;
 const SYMBOL_CONTEXT_LINES: usize = 2;
-pub(crate) const CHUNKER_VERSION: u32 = 1;
+/// Minimum size of an uncovered line gap (between/around symbol chunks) worth
+/// indexing as its own window chunk — captures top-level const/static tables and
+/// module-level code that symbol-only chunking would otherwise drop.
+const MIN_GAP_LINES: usize = 5;
+pub(crate) const CHUNKER_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SemanticChunk {
@@ -114,6 +118,7 @@ fn chunks_for_entry<P: CatalogProvider + Sync>(
     };
     let lines: Vec<&str> = source.lines().collect();
     let mut ids = Vec::new();
+    let mut covered: Vec<(usize, usize)> = Vec::new();
     for symbol in &parsed.symbols {
         cancel.check_cancelled()?;
         let (mut start, mut end) = match block_span(&entry.rel_path, source, symbol.line) {
@@ -135,7 +140,9 @@ fn chunks_for_entry<P: CatalogProvider + Sync>(
         let chunk = make_chunk(provider, entry, start, end, Some(symbol), text);
         ids.push(chunk.id.clone());
         chunks.push(chunk);
+        covered.push((start, end));
     }
+    fill_uncovered_gaps(provider, entry, &lines, &mut covered, chunks, &mut ids);
     Ok(ids)
 }
 
@@ -146,28 +153,74 @@ fn fallback_chunks_for_entry<P: CatalogProvider + Sync>(
     chunks: &mut Vec<SemanticChunk>,
 ) -> Vec<String> {
     let lines: Vec<&str> = source.lines().collect();
-    if lines.is_empty() {
-        return Vec::new();
+    let mut ids = Vec::new();
+    window_chunks(provider, entry, &lines, 1, lines.len(), chunks, &mut ids);
+    ids
+}
+
+/// Index line ranges not covered by any symbol chunk (top-level const/static,
+/// module bodies, macro invocations) so symbol-only chunking does not drop them.
+fn fill_uncovered_gaps<P: CatalogProvider + Sync>(
+    provider: &P,
+    entry: &CatalogEntry,
+    lines: &[&str],
+    covered: &mut [(usize, usize)],
+    chunks: &mut Vec<SemanticChunk>,
+    ids: &mut Vec<String>,
+) {
+    let total = lines.len();
+    if total == 0 {
+        return;
+    }
+    covered.sort_by_key(|&(start, _)| start);
+    let mut cursor = 1usize;
+    let mut gaps: Vec<(usize, usize)> = Vec::new();
+    for &(start, end) in covered.iter() {
+        if start > cursor {
+            gaps.push((cursor, start - 1));
+        }
+        cursor = cursor.max(end + 1);
+    }
+    if cursor <= total {
+        gaps.push((cursor, total));
+    }
+    for (gap_start, gap_end) in gaps {
+        if gap_end + 1 - gap_start >= MIN_GAP_LINES {
+            window_chunks(provider, entry, lines, gap_start, gap_end, chunks, ids);
+        }
+    }
+}
+
+/// Emit overlapping fixed-size window chunks across an inclusive line range.
+fn window_chunks<P: CatalogProvider + Sync>(
+    provider: &P,
+    entry: &CatalogEntry,
+    lines: &[&str],
+    range_start: usize,
+    range_end: usize,
+    chunks: &mut Vec<SemanticChunk>,
+    ids: &mut Vec<String>,
+) {
+    if lines.is_empty() || range_start > range_end {
+        return;
     }
     let step = FALLBACK_WINDOW_LINES
         .saturating_sub(FALLBACK_OVERLAP_LINES)
         .max(1);
-    let mut ids = Vec::new();
-    let mut start = 1usize;
-    while start <= lines.len() {
-        let end = (start + FALLBACK_WINDOW_LINES - 1).min(lines.len());
-        let text = slice_lines(&lines, start, end);
+    let mut start = range_start;
+    while start <= range_end {
+        let end = (start + FALLBACK_WINDOW_LINES - 1).min(range_end);
+        let text = slice_lines(lines, start, end);
         if !text.trim().is_empty() {
             let chunk = make_chunk(provider, entry, start, end, None, text);
             ids.push(chunk.id.clone());
             chunks.push(chunk);
         }
-        if end == lines.len() {
+        if end == range_end {
             break;
         }
         start += step;
     }
-    ids
 }
 
 fn fixed_span(line: usize, total_lines: usize) -> (usize, usize) {
