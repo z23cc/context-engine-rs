@@ -34,13 +34,12 @@ jobs:
         shell: bash
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy with semantic feature
-        shell: bash
-        run: cargo clippy --workspace --all-targets --features semantic -- -D warnings
+      # Note: the `semantic` feature (ort/fastembed/ONNX Runtime) is opt-in and
+      # source-only — it is not in the released artifact and is verified locally,
+      # so it is intentionally kept off the Windows release-critical path.
 
-      - name: File-size advisory
+      - name: File-size gate
         shell: bash
-        continue-on-error: true
         run: bash Scripts/check-file-size.sh --strict
 
       - name: Test
