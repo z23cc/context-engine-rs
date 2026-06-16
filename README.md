@@ -30,6 +30,12 @@ platforms build from source via a temporary Rust toolchain. Either way `ctx-mcp`
 lands on your `PATH`. See [`packaging/homebrew`](packaging/homebrew/README.md) for
 how bottles, releases, and versioning work.
 
+The distributed binary includes the optional **semantic search** engine
+(`semantic_search` tool) built in. It stays inert at runtime until you pass
+`--semantic-index` to `serve`; the first semantic query then downloads a local
+embedding model (~300 MB) into a cache. Tools that don't enable it pay nothing
+beyond the larger binary.
+
 ### Windows (Scoop)
 
 ```powershell

@@ -49,7 +49,7 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          cargo build --release -p ctx-mcp
+          cargo build --release -p ctx-mcp --features semantic
           ./target/release/ctx-mcp.exe --version
 
       - name: Upload ctx-mcp.exe + sha256 to the release

@@ -86,7 +86,7 @@ EOF
   depends_on "rust" => :build
 
   def install
-    system "cargo", "install", *std_cargo_args(path: "crates/ctx-mcp")
+    system "cargo", "install", "--features", "semantic", *std_cargo_args(path: "crates/ctx-mcp")
   end
 
   test do
@@ -101,7 +101,7 @@ EOF
 build_bottle() {
   local srcdir="$1"
   echo ">> building Homebrew bottle ($BTAG)"
-  ( cd "$srcdir" && cargo build --release -p ctx-mcp )
+  ( cd "$srcdir" && cargo build --release -p ctx-mcp --features semantic )
   "$srcdir/target/release/$BIN" --version >/dev/null # smoke test: abort if it can't run
   local keg="$TMP/bottle/$BIN/$NEW"
   rm -rf "$TMP/bottle"; mkdir -p "$keg/bin" "$keg/.brew"
