@@ -52,10 +52,10 @@ struct ServeArgs {
     /// Maximum catalog entries per workspace.
     #[arg(long, default_value_t = 10_000)]
     max_entries: usize,
-    /// Enable semantic indexing for semantic_search.
+    /// Disable the built-in semantic_search index (on by default).
     #[cfg(feature = "semantic")]
-    #[arg(long = "semantic-index")]
-    semantic_index: bool,
+    #[arg(long = "no-semantic")]
+    no_semantic: bool,
     /// Embedding model name for semantic_search.
     #[cfg(feature = "semantic")]
     #[arg(long = "semantic-embedding-model")]
@@ -154,7 +154,7 @@ fn scan_options(args: &ServeArgs) -> ScanOptions {
 #[cfg(feature = "semantic")]
 fn semantic_runtime_config(args: &ServeArgs) -> SemanticRuntimeConfig {
     SemanticRuntimeConfig {
-        enabled: args.semantic_index,
+        enabled: !args.no_semantic,
         embedding_model: args.semantic_embedding_model.clone(),
         reranker_model: args.semantic_reranker_model.clone(),
         model_cache_dir: args.semantic_model_cache_dir.clone(),
@@ -644,7 +644,7 @@ mod tests {
             workspaces,
             max_entries: 10_000,
             #[cfg(feature = "semantic")]
-            semantic_index: false,
+            no_semantic: true,
             #[cfg(feature = "semantic")]
             semantic_embedding_model: None,
             #[cfg(feature = "semantic")]
@@ -754,7 +754,7 @@ mod tests {
                 path: named_dir.path().to_path_buf(),
             }],
         );
-        args.semantic_index = true;
+        args.no_semantic = false;
         args.semantic_embedding_model = Some("mock".to_string());
         args.semantic_reranker_model = Some("mock".to_string());
 

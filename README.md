@@ -30,11 +30,14 @@ platforms build from source via a temporary Rust toolchain. Either way `ctx-mcp`
 lands on your `PATH`. See [`packaging/homebrew`](packaging/homebrew/README.md) for
 how bottles, releases, and versioning work.
 
-The distributed binary includes the optional **semantic search** engine
-(`semantic_search` tool) built in. It stays inert at runtime until you pass
-`--semantic-index` to `serve`; the first semantic query then downloads a local
-embedding model (~300 MB) into a cache. Tools that don't enable it pay nothing
-beyond the larger binary.
+The distributed binary includes the **semantic search** engine (`semantic_search`
+tool), **on by default**. The index builds lazily on the first `semantic_search`
+call: it returns BM25 results immediately while the dense index warms in the
+background, downloading a local embedding model (~300 MB) once into a per-machine
+cache (`~/Library/Caches/context-engine-rs` / `~/.cache/context-engine-rs`,
+shared across all workspaces — not re-downloaded per project). Pass
+`serve --no-semantic` to turn it off; if you never call `semantic_search`, nothing
+is downloaded or built.
 
 ### Windows (Scoop)
 

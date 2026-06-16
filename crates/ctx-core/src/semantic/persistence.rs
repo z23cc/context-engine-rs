@@ -179,25 +179,31 @@ pub(super) fn workspace_key(
     format!("{:x}", hasher.finalize())
 }
 
-pub(super) fn default_semantic_cache_dir() -> PathBuf {
+/// Machine-level cache root shared by the embedding-model cache and the
+/// persistent index, so a model downloads once per machine (not per workspace).
+pub(super) fn semantic_cache_root() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
-        return PathBuf::from(dir).join("context-engine-rs/semantic");
+        return PathBuf::from(dir).join("context-engine-rs");
     }
     if let Ok(dir) = std::env::var("LOCALAPPDATA") {
-        return PathBuf::from(dir).join("context-engine-rs/semantic");
+        return PathBuf::from(dir).join("context-engine-rs");
     }
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]
         {
-            return home.join("Library/Caches/context-engine-rs/semantic");
+            return home.join("Library/Caches/context-engine-rs");
         }
         #[cfg(not(target_os = "macos"))]
         {
-            return home.join(".cache/context-engine-rs/semantic");
+            return home.join(".cache/context-engine-rs");
         }
     }
-    std::env::temp_dir().join("context-engine-rs/semantic")
+    std::env::temp_dir().join("context-engine-rs")
+}
+
+pub(super) fn default_semantic_cache_dir() -> PathBuf {
+    semantic_cache_root().join("semantic")
 }
 
 pub(super) fn cache_workspace_dir(config: &SemanticPersistenceConfig) -> PathBuf {

@@ -126,12 +126,10 @@ pub(super) fn embedding_dimension(model: &EmbeddingModel) -> usize {
 }
 
 pub(super) fn semantic_model_cache_dir(configured: Option<&Path>) -> PathBuf {
+    // Machine-level by default so the embedding model downloads once per machine
+    // and is shared across every workspace (not re-downloaded per directory).
     configured.map_or_else(
-        || {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".fastembed_cache")
-        },
+        || super::persistence::semantic_cache_root().join("models"),
         Path::to_path_buf,
     )
 }
