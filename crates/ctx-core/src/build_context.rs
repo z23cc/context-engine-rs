@@ -462,6 +462,7 @@ fn full_content_tokens<P: CatalogProvider>(
             start_line: None,
             end_line: None,
             limit: None,
+            snap: None,
         },
     )?;
     Ok(count_tokens(&response.content))

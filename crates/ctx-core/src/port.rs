@@ -3,6 +3,7 @@
 use crate::{
     cancel::CancelToken,
     codemap::{ParsedCodeFile, symbols_for_path},
+    edit::FileChange,
     models::CtxError,
     selection::Selection,
     snapshot::CatalogSnapshot,
@@ -61,6 +62,12 @@ pub trait CatalogProvider {
         Ok(None)
     }
 
+    /// Validate that `path` is acceptable as a write destination without
+    /// mutating it. Providers with root policies should override this.
+    fn validate_write_path(&self, _path: &Path) -> Result<(), CtxError> {
+        Ok(())
+    }
+
     /// Write `content` to `path`, creating or overwriting it. Default: unsupported.
     fn write_text(&self, _path: &Path, _content: &str) -> Result<(), CtxError> {
         Err(CtxError::WritesUnsupported)
@@ -74,6 +81,29 @@ pub trait CatalogProvider {
     /// Move/rename `from` to `to`. Default: unsupported.
     fn rename_file(&self, _from: &Path, _to: &Path) -> Result<(), CtxError> {
         Err(CtxError::WritesUnsupported)
+    }
+
+    /// Apply a planned file-change batch. `atomic=true` must not silently fall
+    /// back to sequential writes; providers that cannot honor it fail before
+    /// mutation. The default only supports best-effort sequential application
+    /// for non-atomic callers.
+    fn apply_file_batch(&self, changes: &[FileChange], atomic: bool) -> Result<(), CtxError> {
+        if atomic {
+            return Err(CtxError::AtomicBatchUnsupported);
+        }
+        for change in changes {
+            match change {
+                FileChange::Create { path, content } | FileChange::Update { path, content } => {
+                    self.write_text(Path::new(path), content)?;
+                }
+                FileChange::Delete { path } => self.delete_file(Path::new(path))?,
+                FileChange::Rename { from, to, content } => {
+                    self.rename_file(Path::new(from), Path::new(to))?;
+                    self.write_text(Path::new(to), content)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn code_symbols_for_path(

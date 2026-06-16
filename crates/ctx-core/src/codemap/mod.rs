@@ -34,7 +34,9 @@ pub(crate) use ast::{
     ast_language_supported, ast_rewrite, ast_rewrite_pattern, ast_search, ast_search_pattern,
     path_language_name,
 };
-pub(crate) use block::{block_span, syntax_diagnostics};
+pub(crate) use block::{
+    ContainingBlockError, block_span, containing_block_span, syntax_diagnostics,
+};
 pub(crate) use summarize::{render_summary, summarize_source};
 #[cfg(fuzzing)]
 pub use symbols::fuzz_symbols_for_path;

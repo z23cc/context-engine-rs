@@ -19,7 +19,8 @@ pub fn tool_specs() -> Value {
                     "entries": { "type": "array", "description": "patch mode: {op: update|create|delete, diff?, rename?}.", "items": { "type": "object" } },
                     "patch": { "type": "string", "description": "Full patch text for apply_patch / hashline modes." },
                     "diff_context_lines": { "type": "integer", "default": 3, "description": "Context lines in edit-result unified diffs. Default preserves existing behavior." },
-                    "diff_ignore_whitespace": { "type": "boolean", "default": false, "description": "When true, omit paired add/remove lines that differ only by whitespace from edit-result diffs." }
+                    "diff_ignore_whitespace": { "type": "boolean", "default": false, "description": "When true, omit paired add/remove lines that differ only by whitespace from edit-result diffs." },
+                    "atomic": { "type": "boolean", "default": false, "description": "When true, require all planned file changes to commit as an atomic batch or fail before mutation if unsupported." }
                 }
             }
         }),
@@ -212,7 +213,8 @@ pub fn tool_specs() -> Value {
                     "start_line": { "type": "integer", "description": "1-based line to start from (alias: offset)." },
                     "end_line": { "type": "integer", "description": "1-based inclusive end line." },
                     "limit": { "type": "integer", "description": "Max lines to return from start_line; overrides end_line." },
-                    "view": { "type": "string", "enum": ["raw", "hashline", "summary"], "description": "hashline: return the whole file as a [PATH#TAG] header + 1-based N:LINE rows, for authoring hashline edits. summary: return a whole-file structural source summary with elided bodies and concrete re-read ranges. hashline and summary ignore range fields." }
+                    "view": { "type": "string", "enum": ["raw", "hashline", "summary"], "description": "hashline: return the whole file as a [PATH#TAG] header + 1-based N:LINE rows, for authoring hashline edits. summary: return a whole-file structural source summary with elided bodies and concrete re-read ranges. hashline and summary ignore range fields." },
+                    "snap": { "type": "string", "enum": ["none", "block"], "default": "none", "description": "Optional syntactic-boundary snapping for raw range reads. block expands a requested range to the smallest containing parsed block when supported; hashline and summary views ignore snap." }
                 }
             }
         }),

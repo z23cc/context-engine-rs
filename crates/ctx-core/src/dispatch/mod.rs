@@ -2,6 +2,7 @@
 
 mod args;
 mod ast;
+mod batch;
 mod editing;
 mod error;
 mod git;
@@ -11,8 +12,12 @@ mod text;
 
 use args::*;
 use ast::*;
+use batch::*;
 use editing::*;
-pub use error::{DispatchError, dispatch_error_json, dispatch_error_kind};
+pub use error::{
+    DispatchError, dispatch_error_json, dispatch_error_json_for, dispatch_error_kind,
+    dispatch_error_value,
+};
 use git::run_git;
 use handlers::dispatch_provider_tool;
 pub use specs::tool_specs;
@@ -291,6 +296,7 @@ mod tests {
             last_line: 2,
             total_lines: 2,
             content: "one\ntwo\n".to_string(),
+            snap: None,
         };
         assert_eq!(response.tool_text(), "one\ntwo\n");
     }
@@ -377,6 +383,35 @@ mod tests {
             RootPolicy::new(vec![path.to_path_buf()]).expect("policy"),
             ScanOptions::default(),
         )
+    }
+
+    fn set_slice_selection(provider: &FsCatalogProvider, path: &str, start: usize, end: usize) {
+        handle_tool_call(
+            provider,
+            &json!({ "name": "manage_selection", "arguments": {
+                "op": "set", "mode": "slices",
+                "slices": [{ "path": path, "ranges": [{ "start_line": start, "end_line": end }] }]
+            } }),
+        )
+        .expect("set slice selection");
+    }
+
+    fn set_full_selection(provider: &FsCatalogProvider, path: &str) {
+        handle_tool_call(
+            provider,
+            &json!({ "name": "manage_selection", "arguments": {
+                "op": "set", "mode": "full", "paths": [path]
+            } }),
+        )
+        .expect("set full selection");
+    }
+
+    fn selection_response(provider: &FsCatalogProvider) -> Value {
+        handle_tool_call(
+            provider,
+            &json!({ "name": "manage_selection", "arguments": { "op": "get" } }),
+        )
+        .expect("selection get")
     }
 
     // Regression: every numeric tool parameter must tolerate integer-valued
@@ -532,6 +567,362 @@ mod tests {
         )
         .expect("delete");
         assert!(!dir.path().join("c.txt").exists());
+    }
+
+    #[test]
+    fn apply_patch_duplicate_create_fails_preflight_without_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "alpha\n").expect("seed");
+        let provider = provider_for(dir.path());
+        let changes = vec![
+            edit::FileChange::Update {
+                path: "a.txt".to_string(),
+                content: "ALPHA\n".to_string(),
+            },
+            edit::FileChange::Create {
+                path: "new.txt".to_string(),
+                content: "one\n".to_string(),
+            },
+            edit::FileChange::Create {
+                path: "new.txt".to_string(),
+                content: "two\n".to_string(),
+            },
+        ];
+        let err = apply_changes(&provider, changes, DiffOptions::default(), false)
+            .err()
+            .expect("duplicate create preflight");
+        assert!(err.to_string().contains("duplicate create/update target"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert!(!dir.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn create_over_existing_fails_preflight_before_later_update() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "alpha\n").expect("seed a");
+        fs::write(dir.path().join("exists.txt"), "old\n").expect("seed exists");
+        let provider = provider_for(dir.path());
+        let changes = vec![
+            edit::FileChange::Create {
+                path: "exists.txt".to_string(),
+                content: "new\n".to_string(),
+            },
+            edit::FileChange::Update {
+                path: "a.txt".to_string(),
+                content: "ALPHA\n".to_string(),
+            },
+        ];
+        let err = apply_changes(&provider, changes, DiffOptions::default(), false)
+            .err()
+            .expect("existing destination preflight");
+        assert!(err.to_string().contains("destination already exists"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("exists.txt")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn atomic_true_unsupported_provider_fails_before_mutation() {
+        #[derive(Default)]
+        struct BasicProvider(std::sync::RwLock<std::collections::BTreeMap<String, String>>);
+        impl CatalogProvider for BasicProvider {
+            fn snapshot(&self) -> Result<crate::CatalogSnapshot, CtxError> {
+                Ok(crate::CatalogSnapshot {
+                    generation: 0,
+                    roots: vec![],
+                    entries: vec![],
+                    diagnostics: vec![],
+                })
+            }
+            fn read_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, CtxError> {
+                self.0
+                    .read()
+                    .unwrap()
+                    .get(&path.to_string_lossy().to_string())
+                    .map(|text| text.as_bytes().to_vec())
+                    .ok_or_else(|| CtxError::OutsideRoots(path.to_path_buf()))
+            }
+            fn write_text(&self, path: &std::path::Path, content: &str) -> Result<(), CtxError> {
+                self.0
+                    .write()
+                    .unwrap()
+                    .insert(path.to_string_lossy().to_string(), content.to_string());
+                Ok(())
+            }
+        }
+        let provider = BasicProvider::default();
+        provider
+            .write_text(std::path::Path::new("a.txt"), "alpha\n")
+            .unwrap();
+        let changes = vec![edit::FileChange::Update {
+            path: "a.txt".to_string(),
+            content: "ALPHA\n".to_string(),
+        }];
+        let err = apply_changes(&provider, changes, DiffOptions::default(), true)
+            .err()
+            .expect("atomic unsupported");
+        assert!(matches!(
+            err,
+            DispatchError::Core(CtxError::AtomicBatchUnsupported)
+        ));
+        assert_eq!(
+            provider.read_bytes(std::path::Path::new("a.txt")).unwrap(),
+            b"alpha\n"
+        );
+    }
+
+    #[test]
+    fn non_atomic_preflight_rejects_invalid_create_before_update() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "alpha\n").expect("seed a");
+        fs::write(dir.path().join("not_dir"), "file\n").expect("seed blocker");
+        let provider = provider_for(dir.path());
+        let changes = vec![
+            edit::FileChange::Update {
+                path: "a.txt".to_string(),
+                content: "ALPHA\n".to_string(),
+            },
+            edit::FileChange::Create {
+                path: "not_dir/new.txt".to_string(),
+                content: "new\n".to_string(),
+            },
+        ];
+        apply_changes(&provider, changes, DiffOptions::default(), false)
+            .err()
+            .expect("invalid destination preflight");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+    }
+
+    #[test]
+    fn fs_provider_create_does_not_overwrite_existing_in_batch_api() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("exists.txt"), "old\n").expect("seed exists");
+        let provider = provider_for(dir.path());
+        let changes = [edit::FileChange::Create {
+            path: "exists.txt".to_string(),
+            content: "new\n".to_string(),
+        }];
+        assert!(provider.apply_file_batch(&changes, false).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("exists.txt")).unwrap(),
+            "old\n"
+        );
+        assert!(provider.apply_file_batch(&changes, true).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("exists.txt")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn fs_atomic_backup_collision_preserves_user_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "alpha\n").expect("seed a");
+        fs::create_dir(dir.path().join("existing_dir")).expect("seed blocker");
+        let backup_name = format!(".a.txt.ctx-bak-{}-0-0", std::process::id());
+        fs::write(dir.path().join(&backup_name), "do not delete\n").expect("seed backup collision");
+        let provider = provider_for(dir.path());
+        let changes = vec![
+            edit::FileChange::Update {
+                path: "a.txt".to_string(),
+                content: "ALPHA\n".to_string(),
+            },
+            edit::FileChange::Create {
+                path: "existing_dir".to_string(),
+                content: "new\n".to_string(),
+            },
+        ];
+        apply_changes(&provider, changes, DiffOptions::default(), true)
+            .err()
+            .expect("atomic rollback");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(backup_name)).unwrap(),
+            "do not delete\n"
+        );
+    }
+
+    #[test]
+    fn fs_atomic_rollback_restores_first_write_after_later_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "alpha\n").expect("seed a");
+        fs::create_dir(dir.path().join("existing_dir")).expect("seed blocker");
+        let provider = provider_for(dir.path());
+        let changes = vec![
+            edit::FileChange::Update {
+                path: "a.txt".to_string(),
+                content: "ALPHA\n".to_string(),
+            },
+            edit::FileChange::Create {
+                path: "existing_dir".to_string(),
+                content: "new\n".to_string(),
+            },
+        ];
+        let err = apply_changes(&provider, changes, DiffOptions::default(), true)
+            .err()
+            .expect("atomic rollback");
+        assert!(matches!(
+            err,
+            DispatchError::Core(CtxError::AtomicBatchFailed { .. })
+        ));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert!(dir.path().join("existing_dir").is_dir());
+    }
+
+    #[test]
+    fn stale_hash_error_has_structured_reread_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "current\n").expect("seed");
+        let provider = provider_for(dir.path());
+        let patch = "*** Begin Patch\n[a.txt#0000]\nSWAP 1.=1:\n+x\n*** End Patch\n";
+        let err = handle_tool_call(
+            &provider,
+            &json!({ "name": "edit", "arguments": { "mode": "hashline", "patch": patch } }),
+        )
+        .expect_err("stale hash");
+        let value = dispatch_error_value(&err);
+        assert_eq!(value["error"]["kind"], json!("stale_hash"));
+        assert_eq!(value["error"]["path"], json!("a.txt"));
+        assert_eq!(value["error"]["expected_hash"], json!("0000"));
+        assert!(value["error"]["actual_hash"].is_string());
+        assert!(
+            value["error"]["reread_hint"]
+                .as_str()
+                .unwrap()
+                .contains("hashline")
+        );
+        assert!(value["error"].get("content").is_none());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "current\n"
+        );
+    }
+
+    #[test]
+    fn selection_slices_rebase_across_mutation_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\nfour\n").expect("seed a");
+        fs::write(dir.path().join("w.txt"), "alpha\nbeta\ngamma\n").expect("seed w");
+        fs::write(
+            dir.path().join("a.rs"),
+            "fn main() {\n    foo();\n    selected();\n}\n",
+        )
+        .expect("seed rs");
+        fs::write(dir.path().join("m.txt"), "move me\n").expect("seed m");
+        let provider = provider_for(dir.path());
+
+        set_slice_selection(&provider, "a.txt", 3, 3);
+        let edit = handle_tool_call(
+            &provider,
+            &json!({ "name": "edit", "arguments": { "mode": "replace", "path": "a.txt",
+                "edits": [{ "old_text": "one\n", "new_text": "zero\none\n" }] } }),
+        )
+        .expect("edit replace");
+        assert_eq!(
+            edit["structuredContent"]["files"][0]["selection"]["ranges_after"][0]["start_line"],
+            json!(4)
+        );
+
+        set_slice_selection(&provider, "w.txt", 2, 2);
+        let write = handle_tool_call(
+            &provider,
+            &json!({ "name": "write", "arguments": { "path": "w.txt", "content": "replacement\n" } }),
+        )
+        .expect("write");
+        assert_eq!(
+            write["structuredContent"]["files"][0]["selection"]["dropped"][0]["start_line"],
+            json!(2)
+        );
+        let selection = selection_response(&provider);
+        assert!(
+            selection["structuredContent"]["files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        set_slice_selection(&provider, "a.rs", 3, 3);
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_edit", "arguments": {
+                "path": "a.rs", "mode": "pattern", "pattern": "foo()",
+                "replacement": "foo();\n    inserted()" } }),
+        )
+        .expect("ast edit");
+        let selection = selection_response(&provider);
+        assert_eq!(
+            selection["structuredContent"]["files"][0]["ranges"][0]["start_line"],
+            json!(4)
+        );
+
+        set_full_selection(&provider, "m.txt");
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "move", "arguments": { "from": "m.txt", "to": "moved.txt" } }),
+        )
+        .expect("move selected");
+        let moved = selection_response(&provider);
+        assert_eq!(
+            moved["structuredContent"]["files"][0]["path"],
+            json!("moved.txt")
+        );
+
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "delete", "arguments": { "path": "moved.txt" } }),
+        )
+        .expect("delete selected");
+        let deleted = selection_response(&provider);
+        assert!(
+            deleted["structuredContent"]["files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_over_selected_destination_drops_stale_destination_slice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("src.txt"), "new\ncontent\n").expect("seed src");
+        fs::write(dir.path().join("dst.txt"), "old\nselected\n").expect("seed dst");
+        let provider = provider_for(dir.path());
+        set_slice_selection(&provider, "dst.txt", 2, 2);
+
+        let moved = handle_tool_call(
+            &provider,
+            &json!({ "name": "move", "arguments": { "from": "src.txt", "to": "dst.txt" } }),
+        )
+        .expect("move over selected destination");
+        assert_eq!(
+            moved["structuredContent"]["files"][0]["selection"]["dropped"][0]["start_line"],
+            json!(2)
+        );
+        let selection = selection_response(&provider);
+        assert!(
+            selection["structuredContent"]["files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

@@ -96,12 +96,13 @@ pub enum EditError {
     #[error("line {line} is out of range (file has {total} lines)")]
     LineOutOfRange { line: usize, total: usize },
     #[error(
-        "stale edit for {path}: file hash is {actual} but the patch expected {expected}; re-read the file"
+        "stale edit for {path}: file hash is {actual} but the patch expected {expected}; {reread_hint}"
     )]
     StaleHash {
         path: String,
         expected: String,
         actual: String,
+        reread_hint: String,
     },
 }
 

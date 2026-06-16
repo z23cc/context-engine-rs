@@ -1,6 +1,6 @@
 use super::{DispatchError, edit};
 use crate::edit::EditRequest;
-use crate::{ReadFileRequest, RepoMapRequest, SearchMode, SearchRequest};
+use crate::{ReadFileRequest, ReadFileSnapMode, RepoMapRequest, SearchMode, SearchRequest};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -123,6 +123,8 @@ pub(super) struct ReadFileArgs {
     pub(super) limit: Option<usize>,
     #[serde(default)]
     pub(super) view: Option<String>,
+    #[serde(default)]
+    pub(super) snap: Option<ReadFileSnapMode>,
 }
 
 impl ReadFileArgs {
@@ -132,6 +134,7 @@ impl ReadFileArgs {
             start_line: self.start_line,
             end_line: self.end_line,
             limit: self.limit,
+            snap: self.snap,
         }
     }
 }
@@ -154,12 +157,14 @@ pub(super) struct EditArgs {
     pub(super) diff_context_lines: usize,
     #[serde(default)]
     pub(super) diff_ignore_whitespace: bool,
+    #[serde(default)]
+    pub(super) atomic: bool,
 }
 
 impl EditArgs {
     pub(super) fn into_request_and_diff_options(
         self,
-    ) -> Result<(EditRequest, super::DiffOptions), DispatchError> {
+    ) -> Result<(EditRequest, super::DiffOptions, bool), DispatchError> {
         let EditArgs {
             mode,
             path,
@@ -168,6 +173,7 @@ impl EditArgs {
             patch,
             diff_context_lines,
             diff_ignore_whitespace,
+            atomic,
         } = self;
         let diff_options = super::DiffOptions {
             context_lines: diff_context_lines,
@@ -197,7 +203,7 @@ impl EditArgs {
             },
             other => return Err(err(format!("unknown edit mode: {other}"))),
         };
-        Ok((request, diff_options))
+        Ok((request, diff_options, atomic))
     }
 }
 

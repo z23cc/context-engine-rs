@@ -1,0 +1,25 @@
+---
+source: crates/ctx-core/tests/golden.rs
+assertion_line: 364
+expression: "json!({\n    \"files\": response.tokens.files, \"contents_tokens\":\n    response.tokens.contents_tokens,\n})"
+---
+{
+  "contents_tokens": 44,
+  "files": [
+    {
+      "display_path": "selection-root/target.txt",
+      "mode": "slices",
+      "path": "target.txt",
+      "root_id": "root-0",
+      "segments": [
+        {
+          "end_line": 4,
+          "label": "lines 4-4",
+          "start_line": 4,
+          "token_count": 2
+        }
+      ],
+      "token_count": 44
+    }
+  ]
+}

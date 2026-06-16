@@ -147,6 +147,7 @@ fn golden_read_file_whole_and_slice() {
             start_line: None,
             end_line: None,
             limit: None,
+            snap: None,
         },
     )
     .expect("whole read");
@@ -157,6 +158,7 @@ fn golden_read_file_whole_and_slice() {
             start_line: Some(2),
             end_line: None,
             limit: Some(1),
+            snap: None,
         },
     )
     .expect("slice read");
@@ -167,6 +169,20 @@ fn golden_read_file_whole_and_slice() {
     });
     normalize_read_paths(&mut value);
     insta::assert_json_snapshot!(value);
+}
+
+#[test]
+fn golden_read_file_snap_block() {
+    let provider = provider();
+    let mut response = handle_tool_call(
+        &provider,
+        &json!({ "name": "read_file", "arguments": {
+            "path": "alpha.rs", "start_line": 25, "limit": 1, "snap": "block"
+        } }),
+    )
+    .expect("snap read");
+    normalize_read_paths(&mut response);
+    insta::assert_json_snapshot!(response);
 }
 
 #[test]
@@ -312,6 +328,59 @@ fn golden_workspace_context() {
     )
     .expect("workspace context");
     insta::assert_json_snapshot!(response);
+}
+
+#[test]
+fn golden_workspace_context_rebased_slice_after_edit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("selection-root");
+    fs::create_dir(&root).expect("create root");
+    fs::write(root.join("target.txt"), "one\ntwo\nthree\nfour\n").expect("write target");
+    let provider = FsCatalogProvider::new(
+        RootPolicy::new(vec![root]).expect("root policy"),
+        ScanOptions::default(),
+    );
+    let snapshot = provider.snapshot().expect("snapshot");
+    manage_selection(
+        &provider,
+        &snapshot,
+        &ManageSelectionRequest {
+            op: ManageSelectionOp::Set,
+            paths: Vec::new(),
+            mode: Some(ManageSelectionMode::Slices),
+            slices: vec![SelectionSliceArg {
+                path: PathBuf::from("target.txt"),
+                ranges: vec![LineRange {
+                    start_line: 3,
+                    end_line: 3,
+                }],
+            }],
+        },
+    )
+    .expect("select slice");
+    handle_tool_call(
+        &provider,
+        &json!({ "name": "edit", "arguments": { "mode": "replace", "path": "target.txt",
+            "edits": [{ "old_text": "one\n", "new_text": "zero\none\n" }] } }),
+    )
+    .expect("edit before slice");
+
+    let snapshot = provider.snapshot().expect("post-edit snapshot");
+    let response = workspace_context(
+        &provider,
+        &snapshot,
+        &WorkspaceContextRequest {
+            include: vec![WorkspaceContextInclude::Contents],
+            instructions: None,
+        },
+    )
+    .expect("workspace context");
+    assert!(response.context.contains("<slice lines=\"4-4\""));
+    assert!(response.context.contains("three\n```"));
+    insta::assert_json_snapshot!(json!({
+        "files": response.tokens.files,
+        "contents_tokens": response.tokens.contents_tokens,
+    }));
 }
 
 #[test]

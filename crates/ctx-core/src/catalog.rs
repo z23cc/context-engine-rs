@@ -260,6 +260,58 @@ impl CatalogProvider for MemoryCatalogProvider {
             .ok_or_else(|| CtxError::OutsideRoots(path.to_path_buf()))
     }
 
+    fn validate_write_path(&self, path: &Path) -> Result<(), CtxError> {
+        normalize_host_path(path).map(|_| ())
+    }
+
+    fn write_text(&self, path: &Path, content: &str) -> Result<(), CtxError> {
+        self.apply_file_batch(
+            &[crate::edit::FileChange::Update {
+                path: path_to_slash_string(path),
+                content: content.to_string(),
+            }],
+            false,
+        )
+    }
+
+    fn delete_file(&self, path: &Path) -> Result<(), CtxError> {
+        self.apply_file_batch(
+            &[crate::edit::FileChange::Delete {
+                path: path_to_slash_string(path),
+            }],
+            false,
+        )
+    }
+
+    fn rename_file(&self, from: &Path, to: &Path) -> Result<(), CtxError> {
+        let content = String::from_utf8_lossy(&self.read_bytes(from)?).into_owned();
+        self.apply_file_batch(
+            &[crate::edit::FileChange::Rename {
+                from: path_to_slash_string(from),
+                to: path_to_slash_string(to),
+                content,
+            }],
+            false,
+        )
+    }
+
+    fn apply_file_batch(
+        &self,
+        changes: &[crate::edit::FileChange],
+        _atomic: bool,
+    ) -> Result<(), CtxError> {
+        let mut guard = self.state.files.write().expect("memory files lock");
+        let mut next = guard.clone();
+        for change in changes {
+            memory_batch::apply_change(&mut next, change)?;
+        }
+        *guard = next;
+        let snapshot_files = guard.clone();
+        drop(guard);
+        memory_batch::refresh_snapshot_from_map(self, &snapshot_files);
+        Ok(())
+    }
+
     fn code_symbols_for_path(
         &self,
         path: &Path,
@@ -340,6 +392,8 @@ fn normalize_host_path(path: &Path) -> Result<PathBuf, CtxError> {
 fn path_to_slash_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
+
+mod memory_batch;
 
 /// Options controlling native catalog scan cost.
 #[cfg(not(target_arch = "wasm32"))]
@@ -693,6 +747,9 @@ fn cache_entry_fresh(now: Instant, created_at: Instant, ttl: Duration) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+mod fs_atomic;
+
+#[cfg(not(target_arch = "wasm32"))]
 impl CatalogProvider for FsCatalogProvider {
     fn snapshot(&self) -> Result<CatalogSnapshot, CtxError> {
         self.snapshot_arc().map(|snapshot| (*snapshot).clone())
@@ -731,6 +788,10 @@ impl CatalogProvider for FsCatalogProvider {
         Ok(Some(Self::file_signature(&allowed)?))
     }
 
+    fn validate_write_path(&self, path: &Path) -> Result<(), CtxError> {
+        self.policy.resolve_for_write(path).map(|_| ())
+    }
+
     fn write_text(&self, path: &Path, content: &str) -> Result<(), CtxError> {
         let target = self.policy.resolve_for_write(path)?;
         if let Some(parent) = target.parent() {
@@ -757,6 +818,21 @@ impl CatalogProvider for FsCatalogProvider {
         fs::rename(&source, &destination).map_err(|err| CtxError::io(destination.clone(), err))?;
         FsCatalogProvider::invalidate(self);
         Ok(())
+    }
+
+    fn apply_file_batch(
+        &self,
+        changes: &[crate::edit::FileChange],
+        atomic: bool,
+    ) -> Result<(), CtxError> {
+        if !atomic {
+            for change in changes {
+                fs_atomic::apply_change(self, change)?;
+            }
+            self.invalidate();
+            return Ok(());
+        }
+        fs_atomic::apply_atomic_batch(self, changes)
     }
 
     fn code_symbols_for_path(
@@ -842,6 +918,29 @@ mod memory_tests {
             provider.display_path(Path::new("src/lib.rs")),
             "host/src/lib.rs"
         );
+    }
+
+    #[test]
+    fn memory_provider_applies_atomic_batches() {
+        let provider =
+            MemoryCatalogProvider::new(vec![HostFile::new("a.txt", "alpha\n")]).expect("provider");
+        provider
+            .apply_file_batch(
+                &[
+                    crate::edit::FileChange::Update {
+                        path: "a.txt".to_string(),
+                        content: "ALPHA\n".to_string(),
+                    },
+                    crate::edit::FileChange::Create {
+                        path: "b.txt".to_string(),
+                        content: "beta\n".to_string(),
+                    },
+                ],
+                true,
+            )
+            .expect("atomic batch");
+        assert_eq!(provider.read_bytes(Path::new("a.txt")).unwrap(), b"ALPHA\n");
+        assert_eq!(provider.read_bytes(Path::new("b.txt")).unwrap(), b"beta\n");
     }
 
     #[test]

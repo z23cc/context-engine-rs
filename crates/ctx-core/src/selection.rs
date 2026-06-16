@@ -275,9 +275,7 @@ fn select_entries<'a>(snapshot: &'a CatalogSnapshot, paths: &[PathBuf]) -> Vec<&
     }
     let mut selected = BTreeSet::new();
     for path in paths {
-        let raw = path.to_string_lossy().replace('\\', "/");
-        let rel = raw.trim_start_matches("./").trim_end_matches('/');
-        let canonical = canonicalize_existing(path);
+        let (rel, canonical) = path_match_inputs(path);
         for (idx, entry) in snapshot.entries.iter().enumerate() {
             let rel_match = rel.is_empty()
                 || entry.rel_path == rel
@@ -296,11 +294,43 @@ fn select_entries<'a>(snapshot: &'a CatalogSnapshot, paths: &[PathBuf]) -> Vec<&
         .collect()
 }
 
+pub(crate) fn selection_key_for_path(
+    snapshot: &CatalogSnapshot,
+    path: &Path,
+) -> Option<SelectionKey> {
+    let (rel, canonical) = path_match_inputs(path);
+    let mut fallback = None;
+    for entry in &snapshot.entries {
+        let rel_exact = entry.rel_path == rel;
+        let abs_exact = canonical.as_ref().is_some_and(|abs| entry.abs_path == *abs);
+        if rel_exact || abs_exact {
+            return Some(selection_key(entry));
+        }
+        let rel_child = !rel.is_empty() && entry.rel_path.starts_with(&format!("{rel}/"));
+        let abs_child = canonical
+            .as_ref()
+            .is_some_and(|abs| entry.abs_path.starts_with(abs));
+        if fallback.is_none() && (rel_child || abs_child) {
+            fallback = Some(selection_key(entry));
+        }
+    }
+    fallback
+}
+
+fn path_match_inputs(path: &Path) -> (String, Option<PathBuf>) {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let rel = raw
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string();
+    (rel, canonicalize_existing(path))
+}
+
 fn canonicalize_existing(path: &Path) -> Option<PathBuf> {
     path.canonicalize().ok()
 }
 
-fn selection_key(entry: &CatalogEntry) -> SelectionKey {
+pub(crate) fn selection_key(entry: &CatalogEntry) -> SelectionKey {
     SelectionKey {
         root_id: entry.root_id.clone(),
         path: entry.rel_path.clone(),

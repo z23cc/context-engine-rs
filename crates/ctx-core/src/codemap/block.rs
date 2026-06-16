@@ -65,6 +65,145 @@ pub(crate) fn block_span(path: &str, source: &str, start_line: usize) -> Option<
     Some((start_line, end_row + 1))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainingBlockError {
+    UnsupportedLanguage,
+    ParseError,
+    BlankLine,
+}
+
+pub(crate) fn containing_block_span(
+    path: &str,
+    source: &str,
+    first_line: usize,
+    last_line: usize,
+) -> Result<Option<(usize, usize)>, ContainingBlockError> {
+    let language = Language::from_path(path).ok_or(ContainingBlockError::UnsupportedLanguage)?;
+    if first_line == 0 || last_line < first_line || line_text(source, first_line).is_none() {
+        return Ok(None);
+    }
+    if line_text(source, first_line).is_some_and(|line| line.trim().is_empty()) {
+        return Err(ContainingBlockError::BlankLine);
+    }
+    let tree = parse_clean_tree(language, source)?;
+    Ok(smallest_containing_block(
+        tree.root_node(),
+        first_line - 1,
+        last_line - 1,
+    ))
+}
+
+fn parse_clean_tree(
+    language: Language,
+    source: &str,
+) -> Result<tree_sitter::Tree, ContainingBlockError> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&language.ts_language())
+        .map_err(|_| ContainingBlockError::ParseError)?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or(ContainingBlockError::ParseError)?;
+    if tree.root_node().has_error() {
+        return Err(ContainingBlockError::ParseError);
+    }
+    Ok(tree)
+}
+
+fn smallest_containing_block(
+    root: tree_sitter::Node<'_>,
+    first_row: usize,
+    last_row: usize,
+) -> Option<(usize, usize)> {
+    let mut best: Option<tree_sitter::Node<'_>> = None;
+    let mut stack = Vec::new();
+    let mut root_cursor = root.walk();
+    stack.extend(root.children(&mut root_cursor));
+    while let Some(node) = stack.pop() {
+        if !node_contains_rows(node, first_row, last_row) {
+            continue;
+        }
+        if node.is_named() && node_start_line(node) < node_end_line(node) {
+            best = better_containing_node(best, node);
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    best.map(|node| (node_start_line(node), node_end_line(node)))
+}
+
+fn better_containing_node<'a>(
+    current: Option<tree_sitter::Node<'a>>,
+    candidate: tree_sitter::Node<'a>,
+) -> Option<tree_sitter::Node<'a>> {
+    let Some(current) = current else {
+        return Some(candidate);
+    };
+    let current_lines = node_end_line(current) - node_start_line(current);
+    let candidate_lines = node_end_line(candidate) - node_start_line(candidate);
+    if candidate_lines < current_lines
+        || (candidate_lines == current_lines
+            && candidate.byte_range().len() < current.byte_range().len())
+    {
+        Some(candidate)
+    } else {
+        Some(current)
+    }
+}
+
+fn node_contains_rows(node: tree_sitter::Node<'_>, first_row: usize, last_row: usize) -> bool {
+    node.start_position().row <= first_row && node_content_end_row(node) >= last_row
+}
+
+fn node_start_line(node: tree_sitter::Node<'_>) -> usize {
+    node.start_position().row + 1
+}
+
+fn node_end_line(node: tree_sitter::Node<'_>) -> usize {
+    node_content_end_row(node) + 1
+}
+
+fn node_content_end_row(node: tree_sitter::Node<'_>) -> usize {
+    let pos = node.end_position();
+    if pos.column == 0 && pos.row > 0 {
+        pos.row - 1
+    } else {
+        pos.row
+    }
+}
+
+fn line_text(source: &str, line: usize) -> Option<&str> {
+    source.split_inclusive('\n').nth(line.checked_sub(1)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn containing_block_chooses_smallest_nested_node() {
+        let source = "fn outer() {\n    if true {\n        println!(\"x\");\n    }\n}\n";
+        let span = containing_block_span("lib.rs", source, 3, 3)
+            .expect("parse")
+            .expect("span");
+        assert_eq!(span, (2, 4));
+    }
+
+    #[test]
+    fn containing_block_excludes_whole_file_root() {
+        let source = "fn one() {\n}\n\nfn two() {\n}\n";
+        let span = containing_block_span("lib.rs", source, 2, 4).expect("parse");
+        assert_eq!(span, None);
+    }
+
+    #[test]
+    fn containing_block_out_of_range_is_none() {
+        let source = "fn one() {\n}\n";
+        let span = containing_block_span("lib.rs", source, 99, 99).expect("parse");
+        assert_eq!(span, None);
+    }
+}
+
 /// A tree-sitter syntax problem in a file (used to flag broken edits).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyntaxIssue {

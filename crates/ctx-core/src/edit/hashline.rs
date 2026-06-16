@@ -107,6 +107,7 @@ pub(super) fn plan(text: &str, reader: &impl FileReader) -> Result<Vec<FileChang
                 path,
                 expected,
                 actual,
+                reread_hint: "re-read the file with read_file view=\"hashline\"".to_string(),
             });
         }
 

@@ -192,3 +192,53 @@ consumer can detect index lag without parsing prose. Mirrors repoprompt-ce stale
 **Done when.** `semantic_search` returns a structured `index_state`; `generation` is exposed in
 structuredContent; tests cover the warming vs ready states; deterministic; gates pass.
 **Key files:** `models.rs`, `semantic/index.rs`, `search/api.rs`, `dispatch/text.rs` (if needed). **Size:** small.
+
+---
+
+# Round 4 — deterministic editing/read ergonomics (all DONE 2026-06-17)
+
+Second-pass mining of `repoprompt-ce` + `oh-my-pi` for techniques not covered by Rounds 1-3.
+Plan grounded in `prompt-exports/oracle-plan-2026-06-17-...-round-4-plan`. All three shipped
+with `cargo build` / `clippy -D warnings` / `fmt --check` / `cargo test` (210 passing) /
+`check-file-size.sh` green.
+
+## [x] Item 8 (selection): rebase persisted slice selections across edits — DONE
+New pure module `selection_rebase.rs` (`rebase_ranges` = contiguous prefix/suffix fast path +
+line-window anchor fallback; drop-unresolvable; clamp to new length). Post-commit selection
+maintenance centralized in `dispatch/editing.rs`; `write`/`delete`/`move`/`ast_edit` routed
+through the shared hook (rebase / transfer key on rename, preserving Full/CodemapOnly /
+remove on delete). Structured rebase+dropped metadata in edit output; compact one-line text.
+Mirrors repoprompt-ce `SliceRebaseEngine.swift`. Tests: 6 unit + dispatch regressions +
+`golden_workspace_context_rebased_slice_after_edit`.
+**Files:** `selection_rebase.rs` (new), `selection.rs`, `dispatch/{editing,handlers,mod}.rs`, `tests/golden.rs`.
+
+## [x] Item 9 (edit reliability): batch preflight + atomicity contract — DONE
+Kept hashline stale-hash guard as a hard pre-mutation failure. **Deferred by design** (would
+break the stateless/deterministic model): seen-lines provenance (2a) and automatic 3-way stale
+recovery (2b). **Shipped:** deterministic multi-file batch preflight (`dispatch/batch.rs` —
+duplicate create/update, source/dest conflicts, delete+update, rename cycles, destination
+collisions; fail before any write); optional `edit.atomic` arg (default false) backed by an
+additive `CatalogProvider` batch capability — MemoryCatalogProvider commits atomically,
+FsCatalogProvider does best-effort temp-backup rollback (`catalog/{fs_atomic,memory_batch}.rs`),
+unsupported providers fail loudly; structured StaleHash error gains `expected_hash`/`actual_hash`/
+`reread_hint`. Mirrors oh-my-pi `packages/hashline` preflight (provenance/3-way intentionally dropped).
+**Files:** `dispatch/{batch,args,specs,handlers,editing,error,mod}.rs`, `port.rs`, `catalog.rs` + `catalog/{fs_atomic,memory_batch}.rs`, `edit/{mod,hashline}.rs`, `security.rs`.
+
+## [x] Item 10 (read): syntactic-boundary snapping for `read_file` — DONE
+Opt-in `snap` arg (`"none"`|`"block"`, default `"none"`; ignored by hashline/summary views).
+`read.rs` snaps a requested range to its enclosing tree-sitter block: reuses `codemap::block_span`
+for opener lines, plus a new smallest-containing-named-node helper in `codemap/block.rs` (root
+excluded) for interior lines. Unsupported lang / parse error / blank line / no block → raw range
+with `snap.applied=false` + deterministic reason. Snap details (requested vs returned ranges,
+boundary_lines) in `structuredContent`; raw text unchanged. Mirrors oh-my-pi `pi-ast/src/block.rs`.
+Tests: read unit (none/opener/interior/unsupported/syntax-error), codemap helper, `golden_read_file_snap_block`.
+**Files:** `read.rs`, `models.rs`, `codemap/{block,mod}.rs`, `dispatch/{args,specs,handlers}.rs`, `tests/golden.rs`.
+
+---
+
+## Deferred / not yet taken (Round 4 backlog from the same mining pass)
+Lower-tier ideas surfaced but not implemented: git diff artifact-bundle export + churn-sorted
+patch truncation (RPCE `GitDiffSnapshotStore`/`GitDiffPatchParsing`); embedded-language injection
++ broader language detection (oh-my-pi `pi-ast/language`); file-tree selected/codemap markers;
+slice purpose-labels through range math; multi-index path resolver; `file_search` regex sanitization.
+(Tree budget-fallback and hash-staleness rejection were already present — not reopened.)

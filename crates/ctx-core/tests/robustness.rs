@@ -229,6 +229,7 @@ fn boundary_corpus_uses_tempdir_and_degrades_gracefully() {
             start_line: Some(usize::MAX),
             end_line: Some(usize::MAX),
             limit: Some(usize::MAX),
+            snap: None,
         },
     )
     .expect("empty read");
@@ -242,6 +243,7 @@ fn boundary_corpus_uses_tempdir_and_degrades_gracefully() {
             start_line: Some(1),
             end_line: None,
             limit: None,
+            snap: None,
         },
     )
     .expect("no newline read");

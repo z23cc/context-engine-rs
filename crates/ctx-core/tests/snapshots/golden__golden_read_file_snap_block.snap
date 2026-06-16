@@ -1,0 +1,32 @@
+---
+source: crates/ctx-core/tests/golden.rs
+assertion_line: 185
+expression: response
+---
+{
+  "content": [
+    {
+      "text": "pub fn alpha_needle() -> &'static str {\n    \"needle alpha\"\n}\n",
+      "type": "text"
+    }
+  ],
+  "structuredContent": {
+    "display_path": "fixtures/alpha.rs",
+    "first_line": 24,
+    "last_line": 26,
+    "path": "<absolute-path>",
+    "snap": {
+      "applied": true,
+      "boundary_lines": [
+        24,
+        26
+      ],
+      "mode": "block",
+      "requested_first_line": 25,
+      "requested_last_line": 25,
+      "returned_first_line": 24,
+      "returned_last_line": 26
+    },
+    "total_lines": 26
+  }
+}

@@ -97,6 +97,15 @@ impl RootPolicy {
         let canonical_parent = parent
             .canonicalize()
             .map_err(|err| CtxError::io(parent.to_path_buf(), err))?;
+        if !canonical_parent.is_dir() {
+            return Err(CtxError::io(
+                canonical_parent,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    "parent is not a directory",
+                ),
+            ));
+        }
         let resolved = canonical_parent.join(file_name);
         if self
             .roots

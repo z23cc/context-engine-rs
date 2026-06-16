@@ -135,6 +135,7 @@ where
         request.start_line = None;
         request.end_line = None;
         request.limit = None;
+        request.snap = None;
     }
     let response = read_file(provider, &request)?;
     cancel.check_cancelled()?;
@@ -184,10 +185,10 @@ where
 {
     cancel.check_cancelled()?;
     let args: EditArgs = serde_json::from_value(arguments)?;
-    let (request, diff_options) = args.into_request_and_diff_options()?;
+    let (request, diff_options, atomic) = args.into_request_and_diff_options()?;
     let changes = edit::apply(&request, &ProviderReader { provider })?;
     cancel.check_cancelled()?;
-    tool_response_text(&apply_changes(provider, changes, diff_options)?)
+    tool_response_text(&apply_changes(provider, changes, diff_options, atomic)?)
 }
 
 fn handle_write<P>(provider: &P, arguments: Value) -> Result<Value, DispatchError>
@@ -195,18 +196,7 @@ where
     P: DispatchProvider,
 {
     let args: WriteArgs = serde_json::from_value(arguments)?;
-    let old = read_old(provider, &args.path);
-    provider.write_text(Path::new(&args.path), &args.content)?;
-    tool_response_text(&EditResult {
-        files: vec![EditedFile::with_content(
-            "write",
-            args.path,
-            None,
-            &args.content,
-            &old,
-            DiffOptions::default(),
-        )],
-    })
+    tool_response_text(&apply_write(provider, args.path, args.content)?)
 }
 
 fn handle_delete<P>(provider: &P, arguments: Value) -> Result<Value, DispatchError>
@@ -214,18 +204,7 @@ where
     P: DispatchProvider,
 {
     let args: DeleteArgs = serde_json::from_value(arguments)?;
-    provider.delete_file(Path::new(&args.path))?;
-    tool_response_text(&EditResult {
-        files: vec![EditedFile {
-            action: "delete",
-            path: args.path,
-            moved_to: None,
-            tag: None,
-            view: None,
-            diff: None,
-            diagnostics: Vec::new(),
-        }],
-    })
+    tool_response_text(&apply_delete(provider, args.path)?)
 }
 
 fn handle_move<P>(provider: &P, arguments: Value) -> Result<Value, DispatchError>
@@ -233,18 +212,7 @@ where
     P: DispatchProvider,
 {
     let args: MoveArgs = serde_json::from_value(arguments)?;
-    provider.rename_file(Path::new(&args.from), Path::new(&args.to))?;
-    tool_response_text(&EditResult {
-        files: vec![EditedFile {
-            action: "move",
-            path: args.from,
-            moved_to: Some(args.to),
-            tag: None,
-            view: None,
-            diff: None,
-            diagnostics: Vec::new(),
-        }],
-    })
+    tool_response_text(&apply_move(provider, args.from, args.to)?)
 }
 
 fn handle_ast_search<P>(
@@ -398,17 +366,14 @@ where
             "structuredContent": { "path": args.path, "rewrites": 0 },
         }));
     }
-    provider.write_text(Path::new(&args.path), &rewritten)?;
-    tool_response_text(&EditResult {
-        files: vec![EditedFile::with_content(
-            "ast_edit",
-            args.path,
-            None,
-            &rewritten,
-            &source,
-            DiffOptions::default(),
-        )],
-    })
+    tool_response_text(&apply_content_update_with_old(
+        provider,
+        "ast_edit",
+        args.path,
+        rewritten,
+        source,
+        DiffOptions::default(),
+    )?)
 }
 
 fn ast_rewrite(args: &AstEditArgs, source: &str) -> Result<(String, usize), DispatchError> {

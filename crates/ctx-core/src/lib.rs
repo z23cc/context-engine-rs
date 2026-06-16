@@ -18,6 +18,7 @@ pub mod repomap;
 pub mod search;
 pub mod security;
 pub mod selection;
+pub mod selection_rebase;
 #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
 pub mod semantic;
 pub mod snapshot;
@@ -35,10 +36,11 @@ pub use catalog::{FsCatalogProvider, ScanOptions};
 pub use catalog::{HostFile, MemoryCatalogProvider};
 pub use codemap::get_code_structure;
 pub use dispatch::{
-    DispatchError, dispatch_error_json, dispatch_error_kind, handle_tool_call,
-    handle_tool_call_cancellable, handle_tool_call_json, handle_tool_call_json_cancellable,
-    handle_tool_call_json_with_resolver, handle_tool_call_json_with_resolver_cancellable,
-    handle_tool_call_with_resolver, handle_tool_call_with_resolver_cancellable, tool_specs,
+    DispatchError, dispatch_error_json, dispatch_error_json_for, dispatch_error_kind,
+    dispatch_error_value, handle_tool_call, handle_tool_call_cancellable, handle_tool_call_json,
+    handle_tool_call_json_cancellable, handle_tool_call_json_with_resolver,
+    handle_tool_call_json_with_resolver_cancellable, handle_tool_call_with_resolver,
+    handle_tool_call_with_resolver_cancellable, tool_specs,
 };
 pub use models::*;
 pub use navigate::{

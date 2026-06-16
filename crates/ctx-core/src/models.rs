@@ -63,6 +63,16 @@ pub enum CtxError {
     },
     #[error("filesystem writes are not supported by this provider")]
     WritesUnsupported,
+    #[error("atomic batch unsupported by this provider")]
+    AtomicBatchUnsupported,
+    #[error(
+        "atomic batch failed: {detail}; applied paths: {applied_paths:?}; rollback failed paths: {rollback_failed_paths:?}"
+    )]
+    AtomicBatchFailed {
+        detail: String,
+        applied_paths: Vec<PathBuf>,
+        rollback_failed_paths: Vec<PathBuf>,
+    },
 }
 
 impl CtxError {
@@ -348,6 +358,14 @@ pub struct SemanticSearchResponse {
     pub totals: SemanticSearchTotals,
 }
 
+/// Optional syntactic-boundary snapping mode for read_file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadFileSnapMode {
+    None,
+    Block,
+}
+
 /// Request for read_file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileRequest {
@@ -355,6 +373,22 @@ pub struct ReadFileRequest {
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<ReadFileSnapMode>,
+}
+
+/// Syntactic-boundary snapping metadata for read_file responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadFileSnapMetadata {
+    pub mode: ReadFileSnapMode,
+    pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub requested_first_line: usize,
+    pub requested_last_line: usize,
+    pub returned_first_line: usize,
+    pub returned_last_line: usize,
+    pub boundary_lines: Vec<usize>,
 }
 
 /// Response for read_file.
@@ -369,6 +403,8 @@ pub struct ReadFileResponse {
     /// tool's `content[].text`, so emitting it twice would double the payload.
     #[serde(default, skip_serializing)]
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snap: Option<ReadFileSnapMetadata>,
 }
 
 /// Compact file tree node.
