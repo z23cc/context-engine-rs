@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+semantic = ["dep:fastembed", "dep:hnsw_rs", "dep:sha2"]
+
 [dependencies]
 aho-corasick.workspace = true
 memchr.workspace = true
@@ -31,8 +35,11 @@ tree-sitter-ruby = "0.23.1"
 tree-sitter-php = "0.24.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fastembed = { workspace = true, optional = true }
+hnsw_rs = { workspace = true, optional = true }
 ignore.workspace = true
 rayon.workspace = true
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

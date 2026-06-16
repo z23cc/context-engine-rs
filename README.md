@@ -259,8 +259,10 @@ micro-benchmarks on synthetic data; run `cargo bench` locally for your own figur
 | Repeated tool search — cached | ~62 ms | ~3.3x speedup |
 
 Notes:
-- On-demand model (no persistent index): a cold query re-scans; the snapshot/codemap
-  cache makes repeated requests within a session ~3.3x faster.
+- On-demand model (no persistent index by default): a cold query re-scans; the snapshot/codemap
+  cache makes repeated requests within a session ~3.3x faster. The optional `semantic`
+  Cargo feature keeps its code index in memory for the process/session; it does not write
+  a workspace index to disk.
 - Rough large-repo extrapolation: content search ~445 MiB/s is ~225 ms cold over a
   100 MB tree; catalog ~482K files/s is ~200 ms over 100K files; warm queries hit the cache.
 - Same order of magnitude as ripgrep (which is faster via mmap/SIMD/streaming); the goal
@@ -269,12 +271,33 @@ Notes:
 ## Use with Claude Code / Codex (MCP)
 
 `ctx-mcp` is an MCP server over stdio (JSON-RPC 2.0: `initialize` / `tools/list` /
-`tools/call`). It exposes all 19 tools and is **fail-closed** — pass the project root
+`tools/call`). It exposes all 19 default tools and is **fail-closed** — pass the project root
 with `--root`. Installed via Homebrew the binary is already on your `PATH` (use
 `"command": "ctx-mcp"`); otherwise build it first:
 
 ```bash
 cargo build --release -p ctx-mcp   # -> target/release/ctx-mcp
+```
+
+Optional semantic retrieval is feature-gated and native-only:
+
+```bash
+cargo build --release -p ctx-mcp --features semantic
+ctx-mcp serve --root /abs/project --semantic-index \
+  --semantic-embedding-model jina-embeddings-v2-base-code \
+  --semantic-reranker-model bge-reranker-base
+```
+
+The `semantic_search` tool builds an in-memory chunk index on first query and fuses
+local embeddings, chunk-level BM25, and optional reranking. Tests use a deterministic
+mock backend; real fastembed models download on first semantic use into `./.fastembed_cache`
+by default, or into `--semantic-model-cache-dir`, through per-model init options rather
+than a global environment variable. Use `--semantic-no-rerank` to disable reranking.
+A lightweight eval harness is available:
+
+```bash
+cargo run -p ctx-core --example semantic_eval --features semantic -- crates/ctx-core/tests/fixtures "config validation"
+cargo run -p ctx-core --example semantic_eval --features semantic -- /abs/sample/repo "where is auth handled" --real
 ```
 
 ### Automatic setup (recommended)

@@ -2,6 +2,8 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "semantic")]
+use ctx_core::semantic::SemanticRuntimeConfig;
 use ctx_core::{
     FsCatalogProvider, RootPolicy, ScanOptions, WorkspaceRegistry,
     handle_tool_call_json_with_resolver, tool_specs,
@@ -50,6 +52,30 @@ struct ServeArgs {
     /// Maximum catalog entries per workspace.
     #[arg(long, default_value_t = 10_000)]
     max_entries: usize,
+    /// Enable semantic indexing for semantic_search.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-index")]
+    semantic_index: bool,
+    /// Embedding model name for semantic_search.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-embedding-model")]
+    semantic_embedding_model: Option<String>,
+    /// Reranker model name for semantic_search.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-reranker-model")]
+    semantic_reranker_model: Option<String>,
+    /// Model cache directory for semantic_search providers.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-model-cache-dir")]
+    semantic_model_cache_dir: Option<PathBuf>,
+    /// Persistent semantic index cache directory.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-cache-dir")]
+    semantic_cache_dir: Option<PathBuf>,
+    /// Disable semantic_search reranking.
+    #[cfg(feature = "semantic")]
+    #[arg(long = "semantic-no-rerank")]
+    semantic_no_rerank: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,18 +135,62 @@ fn scan_options(args: &ServeArgs) -> ScanOptions {
     }
 }
 
-fn provider_for_roots(roots: Vec<PathBuf>, options: ScanOptions) -> Result<FsCatalogProvider> {
+#[cfg(feature = "semantic")]
+fn semantic_runtime_config(args: &ServeArgs) -> SemanticRuntimeConfig {
+    SemanticRuntimeConfig {
+        enabled: args.semantic_index,
+        embedding_model: args.semantic_embedding_model.clone(),
+        reranker_model: args.semantic_reranker_model.clone(),
+        model_cache_dir: args.semantic_model_cache_dir.clone(),
+        index_cache_dir: args.semantic_cache_dir.clone(),
+        rerank: !args.semantic_no_rerank,
+        mock: false,
+    }
+}
+
+fn provider_for_roots(
+    roots: Vec<PathBuf>,
+    options: ScanOptions,
+    args: &ServeArgs,
+) -> Result<FsCatalogProvider> {
     let policy = RootPolicy::new(roots).context("invalid root policy")?;
-    Ok(FsCatalogProvider::new(policy, options))
+    #[cfg(feature = "semantic")]
+    {
+        let semantic = semantic_runtime_config(args);
+        let semantic_index = semantic
+            .build_index_for_roots(policy.roots())
+            .context("failed to initialize semantic index")?;
+        Ok(FsCatalogProvider::with_semantic_index(
+            policy,
+            options,
+            semantic_index,
+        ))
+    }
+    #[cfg(not(feature = "semantic"))]
+    {
+        let _ = args;
+        Ok(FsCatalogProvider::new(policy, options))
+    }
 }
 
 fn registry(args: &ServeArgs) -> Result<WorkspaceRegistry> {
     let options = scan_options(args);
+    #[cfg(feature = "semantic")]
+    let registry: WorkspaceRegistry<FsCatalogProvider> =
+        WorkspaceRegistry::with_scan_options_and_semantic(
+            options.clone(),
+            semantic_runtime_config(args),
+        );
+    #[cfg(not(feature = "semantic"))]
     let registry: WorkspaceRegistry<FsCatalogProvider> =
         WorkspaceRegistry::with_scan_options(options.clone());
     registry.insert(
         "default",
-        std::sync::Arc::new(provider_for_roots(args.roots.clone(), options.clone())?),
+        std::sync::Arc::new(provider_for_roots(
+            args.roots.clone(),
+            options.clone(),
+            args,
+        )?),
     );
 
     let mut grouped: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
@@ -551,6 +621,18 @@ mod tests {
             roots,
             workspaces,
             max_entries: 10_000,
+            #[cfg(feature = "semantic")]
+            semantic_index: false,
+            #[cfg(feature = "semantic")]
+            semantic_embedding_model: None,
+            #[cfg(feature = "semantic")]
+            semantic_reranker_model: None,
+            #[cfg(feature = "semantic")]
+            semantic_model_cache_dir: None,
+            #[cfg(feature = "semantic")]
+            semantic_cache_dir: None,
+            #[cfg(feature = "semantic")]
+            semantic_no_rerank: false,
         }
     }
 
@@ -623,6 +705,51 @@ mod tests {
         assert_eq!(
             response["result"]["structuredContent"]["content_matches"][0]["path"],
             Value::String("named.txt".to_string())
+        );
+    }
+
+    #[cfg(feature = "semantic")]
+    #[test]
+    fn semantic_flags_flow_to_registry_and_named_workspaces() {
+        let named_dir = tempfile::tempdir().expect("named tempdir");
+        fs::write(
+            named_dir.path().join("config.rs"),
+            "pub fn validate_config() {}\n",
+        )
+        .expect("named write");
+        let mut args = args_with(
+            Vec::new(),
+            vec![WorkspaceArg {
+                name: "named".to_string(),
+                path: named_dir.path().to_path_buf(),
+            }],
+        );
+        args.semantic_index = true;
+        args.semantic_embedding_model = Some("mock".to_string());
+        args.semantic_reranker_model = Some("mock".to_string());
+
+        let registry = registry(&args).expect("registry");
+        let mut initialized = true;
+        let response = handle_message(
+            &registry,
+            &mut initialized,
+            RpcMessage {
+                id: Some(json!(1)),
+                method: "tools/call".to_string(),
+                params: json!({
+                    "name": "semantic_search",
+                    "arguments": {
+                        "workspace": "named",
+                        "query": "config validation",
+                        "max_results": 1
+                    }
+                }),
+            },
+        )
+        .expect("response");
+        assert_eq!(
+            response["result"]["structuredContent"]["results"][0]["path"],
+            Value::String("config.rs".to_string())
         );
     }
 

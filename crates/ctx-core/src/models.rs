@@ -39,6 +39,12 @@ pub enum CtxError {
     UnknownWorkspace(String),
     #[error("manage_workspaces requires a workspace registry")]
     ManageWorkspacesUnsupported,
+    #[error(
+        "semantic search is unavailable; rebuild with the semantic feature and enable semantic indexing"
+    )]
+    SemanticUnavailable,
+    #[error("semantic search failed: {0}")]
+    Semantic(String),
     #[error("manage_workspaces requires workspace name")]
     MissingWorkspaceName,
     #[error("path is outside configured roots: {0}")]
@@ -254,6 +260,81 @@ pub struct SearchResponse {
     pub match_files: Vec<FileMatchCount>,
     pub diagnostics: Vec<Diagnostic>,
     pub totals: SearchTotals,
+}
+
+/// Candidate sources for semantic_search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchMode {
+    /// Dense ANN candidates fused with chunk-level BM25 candidates.
+    #[default]
+    Hybrid,
+    /// Dense ANN candidates only.
+    Semantic,
+}
+
+/// Request for semantic_search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticSearchRequest {
+    pub query: String,
+    #[serde(default)]
+    pub mode: SemanticSearchMode,
+    #[serde(default = "default_semantic_max_results")]
+    pub max_results: usize,
+    #[serde(default = "default_semantic_rerank")]
+    pub rerank: bool,
+}
+
+fn default_semantic_max_results() -> usize {
+    20
+}
+
+fn default_semantic_rerank() -> bool {
+    true
+}
+
+impl Default for SemanticSearchRequest {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            mode: SemanticSearchMode::Hybrid,
+            max_results: 20,
+            rerank: true,
+        }
+    }
+}
+
+/// One sub-file semantic_search result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticSearchResult {
+    pub root_id: String,
+    pub path: String,
+    pub display_path: String,
+    pub score: f64,
+    pub line_start: usize,
+    pub line_end: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticSearchTotals {
+    pub scanned_files: usize,
+    pub chunks: usize,
+    pub dense_candidates: usize,
+    pub bm25_candidates: usize,
+    pub fused_candidates: usize,
+    pub reranked: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticSearchResponse {
+    pub results: Vec<SemanticSearchResult>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub totals: SemanticSearchTotals,
 }
 
 /// Request for read_file.

@@ -4,3 +4,7 @@
 
 # wasm-pack build output
 crates/ctx-wasm/pkg/
+
+# semantic-search runtime artifacts (downloaded ONNX models, oracle exports)
+.fastembed_cache/
+prompt-exports/

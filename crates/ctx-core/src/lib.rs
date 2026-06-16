@@ -12,11 +12,14 @@ pub mod edit;
 pub mod models;
 pub mod navigate;
 pub mod port;
+pub(crate) mod ranking;
 pub mod read;
 pub mod repomap;
 pub mod search;
 pub mod security;
 pub mod selection;
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+pub mod semantic;
 pub mod snapshot;
 pub mod token;
 pub mod tree;

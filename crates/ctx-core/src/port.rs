@@ -7,10 +7,20 @@ use crate::{
     selection::Selection,
     snapshot::CatalogSnapshot,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::SystemTime;
 use std::{path::Path, sync::Arc};
 
 /// Cached or freshly parsed lightweight code symbols for one source file.
 pub type CodeSymbolsResult = Result<Option<Arc<ParsedCodeFile>>, String>;
+
+/// Filesystem freshness signal used by native provider caches.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSignature {
+    pub modified: Option<SystemTime>,
+    pub size: u64,
+}
 
 /// Provider for immutable catalog snapshots and file bytes.
 ///
@@ -45,6 +55,12 @@ pub trait CatalogProvider {
 
     fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, CtxError>;
 
+    /// Return a native filesystem freshness signature when the provider has one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn file_signature(&self, _path: &Path) -> Result<Option<FileSignature>, CtxError> {
+        Ok(None)
+    }
+
     /// Write `content` to `path`, creating or overwriting it. Default: unsupported.
     fn write_text(&self, _path: &Path, _content: &str) -> Result<(), CtxError> {
         Err(CtxError::WritesUnsupported)
@@ -68,6 +84,11 @@ pub trait CatalogProvider {
         let bytes = self.read_bytes(path)?;
         let source = String::from_utf8_lossy(&bytes);
         Ok(symbols_for_path(&source, rel_path).map(|maybe| maybe.map(Arc::new)))
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    fn semantic_index(&self) -> Option<Arc<crate::semantic::SemanticIndex>> {
+        None
     }
 
     fn display_path(&self, path: &Path) -> String {

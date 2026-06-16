@@ -5,7 +5,11 @@
 //! the same `CatalogProvider` port.
 
 #[cfg(not(target_arch = "wasm32"))]
+use crate::port::FileSignature;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::security::RootPolicy;
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+use crate::semantic::SemanticIndex;
 use crate::{
     cancel::CancelToken,
     codemap::symbols_for_path,
@@ -25,7 +29,7 @@ use std::{
 use std::{
     fmt, fs,
     sync::Mutex,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 /// One host-provided file for `MemoryCatalogProvider`.
@@ -64,6 +68,8 @@ struct MemoryProviderState {
     files: RwLock<HashMap<PathBuf, Arc<Vec<u8>>>>,
     codemap: RwLock<HashMap<PathBuf, Arc<CodeSymbolsResult>>>,
     selection: RwLock<Selection>,
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    semantic_index: RwLock<Option<Arc<SemanticIndex>>>,
 }
 
 impl Default for MemoryProviderState {
@@ -78,6 +84,8 @@ impl Default for MemoryProviderState {
             files: RwLock::new(HashMap::new()),
             codemap: RwLock::new(HashMap::new()),
             selection: RwLock::new(Selection::default()),
+            #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+            semantic_index: RwLock::new(None),
         }
     }
 }
@@ -161,8 +169,27 @@ impl MemoryCatalogProvider {
 
         *self.state.files.write().expect("memory files lock") = map;
         *self.state.codemap.write().expect("memory codemap lock") = HashMap::new();
+        #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+        if let Some(index) = self
+            .state
+            .semantic_index
+            .read()
+            .expect("memory semantic index lock")
+            .as_ref()
+        {
+            index.invalidate();
+        }
         *self.state.snapshot.write().expect("memory snapshot lock") = Arc::new(snapshot);
         Ok(())
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    pub fn set_semantic_index(&self, index: Option<Arc<SemanticIndex>>) {
+        *self
+            .state
+            .semantic_index
+            .write()
+            .expect("memory semantic index lock") = index;
     }
 
     #[must_use]
@@ -198,6 +225,16 @@ impl CatalogProvider for MemoryCatalogProvider {
             .write()
             .expect("memory codemap lock")
             .clear();
+        #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+        if let Some(index) = self
+            .state
+            .semantic_index
+            .read()
+            .expect("memory semantic index lock")
+            .as_ref()
+        {
+            index.invalidate();
+        }
     }
 
     fn selection(&self) -> Selection {
@@ -249,6 +286,15 @@ impl CatalogProvider for MemoryCatalogProvider {
             .expect("memory codemap lock")
             .insert(normalized, Arc::new(parsed.clone()));
         Ok(parsed)
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    fn semantic_index(&self) -> Option<Arc<SemanticIndex>> {
+        self.state
+            .semantic_index
+            .read()
+            .expect("memory semantic index lock")
+            .clone()
     }
 
     fn display_path(&self, path: &Path) -> String {
@@ -324,6 +370,8 @@ pub struct FsCatalogProvider {
     options: ScanOptions,
     cache: Arc<ProviderCache>,
     clock: Arc<Clock>,
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    semantic_index: Option<Arc<SemanticIndex>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -359,13 +407,6 @@ struct CachedCodeSymbols {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileSignature {
-    modified: Option<SystemTime>,
-    size: u64,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl FsCatalogProvider {
     #[must_use]
     pub fn new(policy: RootPolicy, options: ScanOptions) -> Self {
@@ -382,6 +423,24 @@ impl FsCatalogProvider {
             options,
             cache: Arc::new(ProviderCache::default()),
             clock: Arc::new(clock),
+            #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+            semantic_index: None,
+        }
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn with_semantic_index(
+        policy: RootPolicy,
+        options: ScanOptions,
+        semantic_index: Option<Arc<SemanticIndex>>,
+    ) -> Self {
+        Self {
+            policy,
+            options,
+            cache: Arc::new(ProviderCache::default()),
+            clock: Arc::new(Instant::now),
+            semantic_index,
         }
     }
 
@@ -426,6 +485,10 @@ impl FsCatalogProvider {
             .write()
             .expect("codemap cache lock")
             .clear();
+        #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+        if let Some(index) = &self.semantic_index {
+            index.invalidate();
+        }
     }
 
     #[must_use]
@@ -609,6 +672,11 @@ impl CatalogProvider for FsCatalogProvider {
         fs::read(&allowed).map_err(|err| CtxError::io(allowed, err))
     }
 
+    fn file_signature(&self, path: &Path) -> Result<Option<FileSignature>, CtxError> {
+        let allowed = self.policy.resolve_allowed(path)?;
+        Ok(Some(Self::file_signature(&allowed)?))
+    }
+
     fn write_text(&self, path: &Path, content: &str) -> Result<(), CtxError> {
         let target = self.policy.resolve_for_write(path)?;
         if let Some(parent) = target.parent() {
@@ -671,6 +739,11 @@ impl CatalogProvider for FsCatalogProvider {
                 },
             );
         Ok(parsed)
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    fn semantic_index(&self) -> Option<Arc<SemanticIndex>> {
+        self.semantic_index.clone()
     }
 
     fn display_path(&self, path: &Path) -> String {

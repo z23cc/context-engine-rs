@@ -29,7 +29,7 @@ pub enum DispatchError {
 /// Return the MCP tool specifications supported by the engine.
 #[must_use]
 pub fn tool_specs() -> Value {
-    let tools = vec![
+    let mut tools = vec![
         json!({
             "name": "edit",
             "description": "Edit an existing file in one of four modes. Required fields depend on mode: replace -> path + edits; patch -> path + entries; apply_patch -> patch; hashline -> patch. For hashline, first call read_file with view=\"hashline\" to get the [PATH#TAG] header and line numbers.",
@@ -329,9 +329,24 @@ pub fn tool_specs() -> Value {
             }
         }),
     ];
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    tools.push(json!({
+        "name": "semantic_search",
+        "description": "Intent-based code retrieval over an in-memory semantic index. Builds the index on first query for the session; no persistent index is written.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "workspace": workspace_schema(),
+                "query": { "type": "string", "description": "Natural-language or code intent query." },
+                "mode": { "type": "string", "enum": ["hybrid", "semantic"], "default": "hybrid", "description": "hybrid: dense ANN + chunk BM25; semantic: dense ANN only." },
+                "max_results": { "type": "integer", "default": 20 },
+                "rerank": { "type": "boolean", "default": true }
+            }
+        }
+    }));
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut tools = tools;
         tools.push(json!({
             "name": "manage_workspaces",
             "description": "List, add, remove, or inspect registered filesystem workspaces.",
@@ -449,6 +464,17 @@ where
             let snapshot = provider.snapshot_arc_cancellable(cancel)?;
             let response =
                 search_snapshot_cancellable(provider, &snapshot, &args.into_request(), cancel)?;
+            return tool_response_text(&response);
+        }
+        #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+        "semantic_search" => {
+            let args: SemanticSearchArgs = serde_json::from_value(arguments)?;
+            let request = args.into_request();
+            let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+            let index = provider
+                .semantic_index()
+                .ok_or(CtxError::SemanticUnavailable)?;
+            let response = index.search(provider, &snapshot, &request, cancel)?;
             return tool_response_text(&response);
         }
         "read_file" => {
@@ -752,6 +778,43 @@ impl ToolText for crate::WorkspaceContextResponse {
 impl ToolText for crate::BuildContextResponse {
     fn tool_text(&self) -> String {
         self.context.clone()
+    }
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+impl ToolText for crate::SemanticSearchResponse {
+    fn tool_text(&self) -> String {
+        let mut out = String::new();
+        if self.results.is_empty() {
+            out.push_str("(no semantic matches)\n");
+        } else {
+            out.push_str("semantic matches:\n");
+            for result in &self.results {
+                let symbol = result
+                    .symbol
+                    .as_deref()
+                    .map(|symbol| format!(" {symbol}"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "  {}:{}-{}{} (score {:.4})\n",
+                    result.display_path, result.line_start, result.line_end, symbol, result.score
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "totals: {} chunks, {} dense, {} bm25, {} reranked\n",
+            self.totals.chunks,
+            self.totals.dense_candidates,
+            self.totals.bm25_candidates,
+            self.totals.reranked
+        ));
+        if !self.diagnostics.is_empty() {
+            out.push_str(&format!(
+                "({} diagnostics in structuredContent)\n",
+                self.diagnostics.len()
+            ));
+        }
+        out
     }
 }
 
@@ -1107,6 +1170,43 @@ fn workspace_arg(arguments: &Value) -> Result<Option<&str>, DispatchError> {
         })
         .transpose()
         .map_err(DispatchError::Json)
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+#[derive(Debug, Deserialize)]
+struct SemanticSearchArgs {
+    query: String,
+    #[serde(default)]
+    mode: crate::SemanticSearchMode,
+    #[serde(
+        default = "default_semantic_max_results",
+        deserialize_with = "lenient_usize"
+    )]
+    max_results: usize,
+    #[serde(default = "default_true")]
+    rerank: bool,
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+fn default_semantic_max_results() -> usize {
+    20
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+impl SemanticSearchArgs {
+    fn into_request(self) -> crate::SemanticSearchRequest {
+        crate::SemanticSearchRequest {
+            query: self.query,
+            mode: self.mode,
+            max_results: self.max_results,
+            rerank: self.rerank,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1776,7 +1876,71 @@ fn lenient_opt_usize<'de, D: serde::Deserializer<'de>>(
 mod tests {
     use super::*;
     use crate::{FsCatalogProvider, RootPolicy, ScanOptions, WorkspaceRegistry};
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    use crate::{HostFile, MemoryCatalogProvider, semantic::SemanticIndex};
     use std::{fs, sync::Arc};
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    #[test]
+    fn semantic_search_is_listed_when_feature_enabled() {
+        let specs = tool_specs();
+        let names: Vec<_> = specs
+            .as_array()
+            .expect("tool specs array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"semantic_search"));
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    #[test]
+    fn semantic_search_without_runtime_index_is_unavailable() {
+        let provider =
+            MemoryCatalogProvider::new(vec![HostFile::new("a.rs", b"fn alpha() {}".to_vec())])
+                .expect("provider");
+        let err = handle_tool_call(
+            &provider,
+            &json!({
+                "name": "semantic_search",
+                "arguments": { "query": "alpha" }
+            }),
+        )
+        .expect_err("semantic unavailable");
+        assert!(matches!(
+            err,
+            DispatchError::Core(CtxError::SemanticUnavailable)
+        ));
+    }
+
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    #[test]
+    fn semantic_search_dispatches_with_mock_index() {
+        let provider = MemoryCatalogProvider::new(vec![
+            HostFile::new("config.rs", b"pub fn validate_config() {}".to_vec()),
+            HostFile::new("view.rs", b"pub fn render_view() {}".to_vec()),
+        ])
+        .expect("provider");
+        provider.set_semantic_index(Some(Arc::new(SemanticIndex::mock())));
+        let response = handle_tool_call(
+            &provider,
+            &json!({
+                "name": "semantic_search",
+                "arguments": { "query": "config validation", "max_results": "1" }
+            }),
+        )
+        .expect("semantic search");
+        assert_eq!(
+            response["structuredContent"]["results"][0]["path"],
+            Value::String("config.rs".to_string())
+        );
+        assert!(
+            response["content"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("semantic matches:")
+        );
+    }
 
     #[test]
     fn read_file_args_accept_string_numbers() {

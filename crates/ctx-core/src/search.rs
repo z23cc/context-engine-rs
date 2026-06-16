@@ -1,6 +1,12 @@
 //! Path and content search over immutable catalog snapshots.
 
-use crate::{cancel::CancelToken, models::*, port::CatalogProvider, snapshot::CatalogSnapshot};
+use crate::{
+    cancel::CancelToken,
+    models::*,
+    port::CatalogProvider,
+    ranking::{ContentRankingQuery, EntryFilter, FileRankingStats, content_file_scores, is_binary},
+    snapshot::CatalogSnapshot,
+};
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
 use nucleo_matcher::{
     Config, Matcher, Utf32Str,
@@ -10,17 +16,12 @@ use nucleo_matcher::{
 use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 use std::{
-    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 const PATH_SUBSTRING_BASE: i64 = 1_000_000;
 const PATH_REGEX_BASE: i64 = 900_000;
-const SCORE_SCALE: f64 = 1_000_000.0;
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
 
 /// Search an immutable snapshot using provider-backed content reads.
 pub fn search_snapshot<P: CatalogProvider + Sync>(
@@ -504,10 +505,6 @@ fn is_whole_word_match(text: &str, start: usize, end: usize) -> bool {
     before.is_none_or(|ch| !is_word_char(ch)) && after.is_none_or(|ch| !is_word_char(ch))
 }
 
-fn is_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
-}
-
 struct ContentSearchResult {
     matches: Vec<ContentSearchMatch>,
     ranking: Option<FileRankingStats>,
@@ -623,74 +620,6 @@ fn literal_match_columns(
     Ok(columns)
 }
 
-#[derive(Clone, Debug)]
-enum ContentRankingQuery {
-    /// Literal searches without `whole_word` use file-level BM25. A single term
-    /// naturally degenerates to saturated term frequency plus BM25's document
-    /// length normalization, so no cross-document IDF is needed to order files.
-    Bm25 { terms: Vec<String> },
-    /// Regex and `whole_word` searches do not expose stable lexical query terms:
-    /// regex can match arbitrary syntax and whole-word filtering is applied to
-    /// match spans. For those modes we fall back to TF density (matches per
-    /// normalized document length) and document the intentional degradation here.
-    TfDensity,
-}
-
-impl ContentRankingQuery {
-    fn new(pattern: &str, case_sensitive: bool, regex: bool, whole_word: bool) -> Self {
-        if regex || whole_word {
-            return Self::TfDensity;
-        }
-        let terms = tokenize_query(pattern, case_sensitive);
-        if terms.is_empty() {
-            Self::TfDensity
-        } else {
-            Self::Bm25 { terms }
-        }
-    }
-
-    fn stats_for_file(&self, path: &str, text: &str, occurrence_count: usize) -> FileRankingStats {
-        match self {
-            Self::Bm25 { terms } => collect_bm25_stats(path, text, terms),
-            Self::TfDensity => FileRankingStats {
-                path: path.to_string(),
-                doc_len: normalized_doc_len(text),
-                term_frequencies: HashMap::new(),
-                occurrence_count,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct FileRankingStats {
-    path: String,
-    doc_len: usize,
-    term_frequencies: HashMap<String, usize>,
-    occurrence_count: usize,
-}
-
-fn collect_bm25_stats(path: &str, text: &str, terms: &[String]) -> FileRankingStats {
-    let query_terms: HashSet<&str> = terms.iter().map(String::as_str).collect();
-    let case_sensitive = terms
-        .iter()
-        .any(|term| term.chars().any(char::is_uppercase));
-    let mut doc_len = 0usize;
-    let mut term_frequencies = HashMap::new();
-    for token in tokenize_text(text, case_sensitive) {
-        doc_len += 1;
-        if query_terms.contains(token.as_str()) {
-            *term_frequencies.entry(token).or_insert(0) += 1;
-        }
-    }
-    FileRankingStats {
-        path: path.to_string(),
-        doc_len: doc_len.max(1),
-        term_frequencies,
-        occurrence_count: 0,
-    }
-}
-
 fn apply_content_relevance_scores(
     matches: &mut [ContentSearchMatch],
     stats: &[FileRankingStats],
@@ -700,116 +629,6 @@ fn apply_content_relevance_scores(
     for hit in matches {
         hit.score = scores.get(&hit.path).copied().unwrap_or_default();
     }
-}
-
-fn content_file_scores(
-    stats: &[FileRankingStats],
-    query: &ContentRankingQuery,
-) -> HashMap<String, i64> {
-    match query {
-        ContentRankingQuery::Bm25 { terms } => bm25_file_scores(stats, terms),
-        ContentRankingQuery::TfDensity => tf_density_file_scores(stats),
-    }
-}
-
-fn bm25_file_scores(stats: &[FileRankingStats], terms: &[String]) -> HashMap<String, i64> {
-    if stats.is_empty() {
-        return HashMap::new();
-    }
-    let unique_terms: Vec<&String> = terms.iter().collect();
-    let doc_count = stats.len() as f64;
-    let avg_doc_len = stats.iter().map(|stat| stat.doc_len as f64).sum::<f64>() / doc_count;
-    let mut document_frequencies: HashMap<&str, usize> = HashMap::new();
-    for term in &unique_terms {
-        let df = stats
-            .iter()
-            .filter(|stat| {
-                stat.term_frequencies
-                    .get(term.as_str())
-                    .copied()
-                    .unwrap_or(0)
-                    > 0
-            })
-            .count();
-        document_frequencies.insert(term.as_str(), df);
-    }
-
-    stats
-        .iter()
-        .map(|stat| {
-            let mut score = 0.0;
-            for term in &unique_terms {
-                let tf = stat
-                    .term_frequencies
-                    .get(term.as_str())
-                    .copied()
-                    .unwrap_or(0) as f64;
-                if tf == 0.0 {
-                    continue;
-                }
-                let length_norm = 1.0 - BM25_B + BM25_B * (stat.doc_len as f64 / avg_doc_len);
-                let saturated_tf = (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * length_norm);
-                if unique_terms.len() == 1 {
-                    score += saturated_tf;
-                } else {
-                    let df = *document_frequencies.get(term.as_str()).unwrap_or(&0) as f64;
-                    let idf = (1.0 + (doc_count - df + 0.5) / (df + 0.5)).ln();
-                    score += idf * saturated_tf;
-                }
-            }
-            (stat.path.clone(), scaled_score(score))
-        })
-        .collect()
-}
-
-fn tf_density_file_scores(stats: &[FileRankingStats]) -> HashMap<String, i64> {
-    stats
-        .iter()
-        .map(|stat| {
-            let density = stat.occurrence_count as f64 / stat.doc_len.max(1) as f64;
-            (stat.path.clone(), scaled_score(density))
-        })
-        .collect()
-}
-
-fn scaled_score(score: f64) -> i64 {
-    (score * SCORE_SCALE).round() as i64
-}
-
-fn tokenize_query(pattern: &str, case_sensitive: bool) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut terms = Vec::new();
-    for token in tokenize_text(pattern, case_sensitive) {
-        if seen.insert(token.clone()) {
-            terms.push(token);
-        }
-    }
-    terms
-}
-
-fn tokenize_text(text: &str, case_sensitive: bool) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            if case_sensitive {
-                current.push(ch);
-            } else {
-                current.extend(ch.to_lowercase());
-            }
-        } else if !current.is_empty() {
-            tokens.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
-}
-
-fn normalized_doc_len(text: &str) -> usize {
-    let token_len = tokenize_text(text, false).len();
-    token_len.max(text.lines().count()).max(1)
 }
 
 fn line_context(
@@ -866,7 +685,8 @@ pub fn fuzz_match_content(
             root_id: "fuzz",
             path: "fuzz.txt",
             display_path: "fuzz/fuzz.txt",
-            context_lines: 2,
+            context_before: 2,
+            context_after: 2,
             pattern,
             regex: compiled_regex.as_ref(),
             ac: ac.as_ref(),
@@ -875,103 +695,6 @@ pub fn fuzz_match_content(
         &CancelToken::never(),
     )?;
     Ok(matches.occurrence_count)
-}
-
-/// Path filter applied to both buckets: an extension whitelist plus glob
-/// include/exclude lists (ripgrep / Claude Code Grep parity).
-struct EntryFilter {
-    extensions: Vec<String>,
-    include: Vec<Regex>,
-    exclude: Vec<Regex>,
-}
-
-impl EntryFilter {
-    fn build(request: &SearchRequest) -> Result<Self, CtxError> {
-        let extensions = request
-            .extensions
-            .iter()
-            .filter(|ext| !ext.is_empty())
-            .map(|ext| ext.trim_start_matches('.').to_ascii_lowercase())
-            .collect();
-        Ok(Self {
-            extensions,
-            include: compile_globs(&request.include)?,
-            exclude: compile_globs(&request.exclude)?,
-        })
-    }
-
-    /// True if `rel_path` passes the extension whitelist, matches some include
-    /// glob (when any are set), and matches no exclude glob.
-    fn accepts(&self, rel_path: &str) -> bool {
-        if !self.extensions.is_empty() {
-            let ext = rel_path
-                .rsplit_once('.')
-                .map(|(_, ext)| ext.to_ascii_lowercase())
-                .unwrap_or_default();
-            if !self.extensions.contains(&ext) {
-                return false;
-            }
-        }
-        if !self.include.is_empty() && !self.include.iter().any(|re| re.is_match(rel_path)) {
-            return false;
-        }
-        if self.exclude.iter().any(|re| re.is_match(rel_path)) {
-            return false;
-        }
-        true
-    }
-}
-
-fn compile_globs(globs: &[String]) -> Result<Vec<Regex>, CtxError> {
-    globs
-        .iter()
-        .filter(|glob| !glob.is_empty())
-        .map(|glob| Ok(Regex::new(&glob_to_regex(glob))?))
-        .collect()
-}
-
-/// Translate a gitignore/ripgrep-style glob to an anchored regex. `*` matches
-/// within a path segment, `**` across segments, `?` one non-slash char. A glob
-/// without a `/` matches the basename at any depth (e.g. `*.rs`).
-fn glob_to_regex(glob: &str) -> String {
-    let mut re = String::from("(?s)^");
-    if !glob.contains('/') {
-        re.push_str("(?:.*/)?");
-    }
-    let bytes = glob.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'*' => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-                    i += 2;
-                    if i < bytes.len() && bytes[i] == b'/' {
-                        i += 1;
-                        re.push_str("(?:.*/)?");
-                    } else {
-                        re.push_str(".*");
-                    }
-                } else {
-                    re.push_str("[^/]*");
-                    i += 1;
-                }
-            }
-            b'?' => {
-                re.push_str("[^/]");
-                i += 1;
-            }
-            byte => {
-                let ch = byte as char;
-                if "\\.[]{}()+-^$|".contains(ch) {
-                    re.push('\\');
-                }
-                re.push(ch);
-                i += 1;
-            }
-        }
-    }
-    re.push('$');
-    re
 }
 
 /// Collapse content matches to one entry per file with its matched-line count,
@@ -1007,6 +730,7 @@ fn collapse_to_files(matches: &[ContentSearchMatch]) -> Vec<FileMatchCount> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ranking::glob_to_regex;
     use crate::{FsCatalogProvider, RootPolicy, catalog::ScanOptions};
     use std::fs;
 
