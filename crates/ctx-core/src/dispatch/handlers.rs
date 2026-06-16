@@ -128,19 +128,21 @@ where
 {
     cancel.check_cancelled()?;
     let args: ReadFileArgs = serde_json::from_value(arguments)?;
-    let hashline = args.view.as_deref() == Some("hashline");
+    let view = args.view.clone().unwrap_or_default();
+    let whole_file_view = matches!(view.as_str(), "hashline" | "summary");
     let mut request = args.into_request();
-    if hashline {
+    if whole_file_view {
         request.start_line = None;
         request.end_line = None;
         request.limit = None;
     }
     let response = read_file(provider, &request)?;
     cancel.check_cancelled()?;
-    if hashline {
-        return hashline_read_response(response);
+    match view.as_str() {
+        "hashline" => hashline_read_response(response),
+        "summary" => summary_read_response(response),
+        _ => tool_response_text(&response),
     }
-    tool_response_text(&response)
 }
 
 fn hashline_read_response(response: crate::ReadFileResponse) -> Result<Value, DispatchError> {
@@ -155,6 +157,23 @@ fn hashline_read_response(response: crate::ReadFileResponse) -> Result<Value, Di
     }))
 }
 
+fn summary_read_response(response: crate::ReadFileResponse) -> Result<Value, DispatchError> {
+    let summary = crate::codemap::summarize_source(&response.display_path, &response.content);
+    let view = crate::codemap::render_summary(&response.display_path, &summary);
+    Ok(json!({
+        "content": [{ "type": "text", "text": view }],
+        "structuredContent": {
+            "path": response.display_path,
+            "view": "summary",
+            "total_lines": response.total_lines,
+            "language": summary.language,
+            "parsed": summary.parsed,
+            "elided": summary.elided,
+            "segments": summary.segments,
+        },
+    }))
+}
+
 fn handle_edit<P>(
     provider: &P,
     arguments: Value,
@@ -165,10 +184,10 @@ where
 {
     cancel.check_cancelled()?;
     let args: EditArgs = serde_json::from_value(arguments)?;
-    let request = args.into_request()?;
+    let (request, diff_options) = args.into_request_and_diff_options()?;
     let changes = edit::apply(&request, &ProviderReader { provider })?;
     cancel.check_cancelled()?;
-    tool_response_text(&apply_changes(provider, changes)?)
+    tool_response_text(&apply_changes(provider, changes, diff_options)?)
 }
 
 fn handle_write<P>(provider: &P, arguments: Value) -> Result<Value, DispatchError>
@@ -185,6 +204,7 @@ where
             None,
             &args.content,
             &old,
+            DiffOptions::default(),
         )],
     })
 }
@@ -294,19 +314,62 @@ fn ast_entry_matches_scope(entry: &crate::CatalogEntry, args: &AstSearchArgs) ->
             .any(|scope| path_in_scope(&entry.rel_path, scope))
 }
 
+enum AstInput<'a> {
+    Query(&'a str),
+    Pattern(&'a str),
+}
+
+fn ast_input<'a>(
+    query: &'a Option<String>,
+    pattern: &'a Option<String>,
+    mode: Option<&str>,
+    tool: &'static str,
+) -> Result<AstInput<'a>, DispatchError> {
+    match (mode, query.as_deref(), pattern.as_deref()) {
+        (Some("query"), Some(query), _) | (None, Some(query), _) => Ok(AstInput::Query(query)),
+        (Some("pattern"), _, Some(pattern)) | (None, None, Some(pattern)) => {
+            Ok(AstInput::Pattern(pattern))
+        }
+        (Some("query"), None, _) => ast_input_error(tool, "mode `query` requires `query`"),
+        (Some("pattern"), _, None) => ast_input_error(tool, "mode `pattern` requires `pattern`"),
+        (Some(other), _, _) => ast_input_error(tool, &format!("unknown AST mode: {other}")),
+        (None, None, None) => ast_input_error(tool, "provide either `query` or `pattern`"),
+    }
+}
+
+fn ast_input_error<T>(tool: &'static str, detail: &str) -> Result<T, DispatchError> {
+    Err(DispatchError::Edit(edit::EditError::Parse {
+        mode: tool,
+        detail: detail.to_string(),
+    }))
+}
+
 fn push_ast_matches(
     matches: &mut Vec<AstFileMatch>,
     entry: &crate::CatalogEntry,
     source: &str,
     args: &AstSearchArgs,
 ) -> Result<(), DispatchError> {
-    let found = crate::codemap::ast_search(&entry.rel_path, source, &args.query, args.max_results)
-        .map_err(|detail| {
-            DispatchError::Edit(edit::EditError::Parse {
-                mode: "ast_search",
-                detail,
-            })
-        })?;
+    let input = ast_input(
+        &args.query,
+        &args.pattern,
+        args.mode.as_deref(),
+        "ast_search",
+    )?;
+    let found = match input {
+        AstInput::Query(query) => {
+            crate::codemap::ast_search(&entry.rel_path, source, query, args.max_results)
+        }
+        AstInput::Pattern(pattern) => {
+            crate::codemap::ast_search_pattern(&entry.rel_path, source, pattern, args.max_results)
+        }
+    }
+    .map_err(|detail| {
+        DispatchError::Edit(edit::EditError::Parse {
+            mode: "ast_search",
+            detail,
+        })
+    })?;
     for item in found {
         matches.push(AstFileMatch {
             path: entry.rel_path.clone(),
@@ -338,20 +401,32 @@ where
     provider.write_text(Path::new(&args.path), &rewritten)?;
     tool_response_text(&EditResult {
         files: vec![EditedFile::with_content(
-            "ast_edit", args.path, None, &rewritten, &source,
+            "ast_edit",
+            args.path,
+            None,
+            &rewritten,
+            &source,
+            DiffOptions::default(),
         )],
     })
 }
 
 fn ast_rewrite(args: &AstEditArgs, source: &str) -> Result<(String, usize), DispatchError> {
-    crate::codemap::ast_rewrite(&args.path, source, &args.query, &args.replacement).map_err(
-        |detail| {
-            DispatchError::Edit(edit::EditError::Parse {
-                mode: "ast_edit",
-                detail,
-            })
-        },
-    )
+    let input = ast_input(&args.query, &args.pattern, args.mode.as_deref(), "ast_edit")?;
+    let result = match input {
+        AstInput::Query(query) => {
+            crate::codemap::ast_rewrite(&args.path, source, query, &args.replacement)
+        }
+        AstInput::Pattern(pattern) => {
+            crate::codemap::ast_rewrite_pattern(&args.path, source, pattern, &args.replacement)
+        }
+    };
+    result.map_err(|detail| {
+        DispatchError::Edit(edit::EditError::Parse {
+            mode: "ast_edit",
+            detail,
+        })
+    })
 }
 
 fn handle_git<P>(

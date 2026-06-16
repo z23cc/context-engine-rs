@@ -194,6 +194,7 @@ mod tests {
             &request("needle", SearchMode::Both, 10),
         )
         .expect("search");
+        assert_eq!(response.generation, snapshot.generation);
         assert_eq!(response.totals.content_matches, 1);
         assert_eq!(response.content_matches.len(), 1);
     }
@@ -293,6 +294,44 @@ mod tests {
     }
 
     #[test]
+    fn content_results_are_per_file_capped_and_round_robin_interleaved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("noisy.txt"), "needle\n".repeat(30)).expect("noisy");
+        fs::write(dir.path().join("broad_a.txt"), "needle\n".repeat(3)).expect("broad a");
+        fs::write(dir.path().join("broad_b.txt"), "needle\n".repeat(3)).expect("broad b");
+        let (provider, snapshot) = provider_for(dir.path());
+        let response = search_snapshot(
+            &provider,
+            &snapshot,
+            &request("needle", SearchMode::Content, 9),
+        )
+        .expect("search");
+
+        let paths: Vec<_> = response
+            .content_matches
+            .iter()
+            .map(|hit| hit.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "noisy.txt",
+                "broad_a.txt",
+                "broad_b.txt",
+                "noisy.txt",
+                "broad_a.txt",
+                "broad_b.txt",
+                "noisy.txt",
+                "broad_a.txt",
+                "broad_b.txt",
+            ]
+        );
+        assert_eq!(response.totals.content_matches, 36);
+        assert_eq!(response.totals.omitted, 27);
+        assert!(response.totals.budget.exhausted);
+    }
+
+    #[test]
     fn regex_content_ranking_falls_back_to_tf_density() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("dense.txt"), "needle\nneedle\nneedle\n").expect("dense");
@@ -305,8 +344,19 @@ mod tests {
         let mut req = request(r"need(le)?", SearchMode::Content, 10);
         req.regex = true;
         let response = search_snapshot(&provider, &snapshot, &req).expect("search");
-        assert_eq!(response.content_matches[0].path, "dense.txt");
-        assert!(response.content_matches[0].score > response.content_matches.last().unwrap().score);
+        let dense_score = response
+            .content_matches
+            .iter()
+            .find(|hit| hit.path == "dense.txt")
+            .expect("dense hit")
+            .score;
+        let sparse_score = response
+            .content_matches
+            .iter()
+            .find(|hit| hit.path == "sparse.txt")
+            .expect("sparse hit")
+            .score;
+        assert!(dense_score > sparse_score);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_CONTENT_MATCHES_PER_FILE: usize = 20;
+
 pub(super) struct ContentSearchInput<'a, P> {
     pub(super) provider: &'a P,
     pub(super) snapshot: &'a CatalogSnapshot,
@@ -233,9 +235,8 @@ pub(super) fn shape_content_output(
         OutputMode::Content => {
             apply_content_relevance_scores(&mut summary.matches, ranking_stats, ranking_query);
             summary.matches.sort_by(content_match_cmp);
-            if summary.matches.len() > max_results {
-                summary.matches.truncate(max_results);
-            }
+            summary.matches =
+                diversify_content_matches(std::mem::take(&mut summary.matches), max_results);
         }
         OutputMode::FilesWithMatches | OutputMode::Count => {
             summary.match_files = collapse_to_files(&summary.matches);
@@ -246,6 +247,55 @@ pub(super) fn shape_content_output(
         }
     }
     Ok(())
+}
+
+pub(super) fn diversify_content_matches(
+    matches: Vec<ContentSearchMatch>,
+    max_results: usize,
+) -> Vec<ContentSearchMatch> {
+    let groups = group_matches_by_ranked_file(matches, content_file_match_cap(max_results));
+    let mut selected = Vec::new();
+    let mut round = 0usize;
+    while selected.len() < max_results {
+        let mut added = false;
+        for group in &groups {
+            if let Some(hit) = group.get(round) {
+                selected.push(hit.clone());
+                added = true;
+                if selected.len() >= max_results {
+                    break;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+        round += 1;
+    }
+    selected
+}
+
+fn content_file_match_cap(max_results: usize) -> usize {
+    max_results
+        .div_ceil(3)
+        .clamp(1, MAX_CONTENT_MATCHES_PER_FILE)
+}
+
+fn group_matches_by_ranked_file(
+    matches: Vec<ContentSearchMatch>,
+    per_file_cap: usize,
+) -> Vec<Vec<ContentSearchMatch>> {
+    let mut groups: Vec<Vec<ContentSearchMatch>> = Vec::new();
+    for hit in matches {
+        if let Some(group) = groups.iter_mut().find(|group| group[0].path == hit.path) {
+            if group.len() < per_file_cap {
+                group.push(hit);
+            }
+        } else {
+            groups.push(vec![hit]);
+        }
+    }
+    groups
 }
 
 pub(super) struct ContentSearchResult {

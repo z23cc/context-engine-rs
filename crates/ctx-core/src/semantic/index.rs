@@ -71,7 +71,13 @@ impl SemanticIndex {
     ) -> Result<SemanticSearchResponse, CtxError> {
         cancel.check_cancelled()?;
         let built = self.ensure_built(provider, snapshot, cancel)?;
-        self.search_built(&built, snapshot.entries.len(), request, cancel)
+        self.search_built(
+            &built,
+            snapshot.generation,
+            snapshot.entries.len(),
+            request,
+            cancel,
+        )
     }
 
     pub fn search_background<P>(
@@ -90,7 +96,13 @@ impl SemanticIndex {
             if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
                 && cached.manifest_fingerprint == state.fingerprint
             {
-                return self.search_built(cached, snapshot.entries.len(), request, cancel);
+                return self.search_built(
+                    cached,
+                    snapshot.generation,
+                    snapshot.entries.len(),
+                    request,
+                    cancel,
+                );
             }
             let chunk_build = self.build_scoped_chunks(&provider, &snapshot, cancel)?;
             self.start_background_build(
@@ -105,7 +117,13 @@ impl SemanticIndex {
         if let Some(cached) = self.built.read().expect("semantic index lock").as_ref()
             && cached.manifest_fingerprint == chunk_build.manifest.fingerprint
         {
-            return self.search_built(cached, snapshot.entries.len(), request, cancel);
+            return self.search_built(
+                cached,
+                snapshot.generation,
+                snapshot.entries.len(),
+                request,
+                cancel,
+            );
         }
         self.start_background_build(
             provider,
@@ -142,7 +160,13 @@ impl SemanticIndex {
         };
         if is_current {
             return self
-                .search_built(&cached, snapshot.entries.len(), request, cancel)
+                .search_built(
+                    &cached,
+                    snapshot.generation,
+                    snapshot.entries.len(),
+                    request,
+                    cancel,
+                )
                 .map(Some);
         }
         Ok(None)
@@ -151,6 +175,7 @@ impl SemanticIndex {
     fn search_built(
         &self,
         built: &BuiltSemanticIndex,
+        generation: u64,
         scanned_files: usize,
         request: &SemanticSearchRequest,
         cancel: &CancelToken,
@@ -212,6 +237,8 @@ impl SemanticIndex {
             .map(|(idx, score)| chunk_to_result(&built.chunks[*idx], *score))
             .collect();
         Ok(SemanticSearchResponse {
+            generation,
+            index_state: SemanticIndexState::Ready,
             results,
             diagnostics: built.diagnostics.clone(),
             totals: SemanticSearchTotals {
@@ -238,6 +265,11 @@ impl SemanticIndex {
             bm25_index.search(&request.query, candidate_limit)
         } else {
             Vec::new()
+        };
+        let index_state = if request.mode == SemanticSearchMode::Hybrid {
+            SemanticIndexState::Bm25Only
+        } else {
+            SemanticIndexState::Warming
         };
         let mut scored = bm25.clone();
         scored.truncate(max_results);
@@ -267,6 +299,8 @@ impl SemanticIndex {
             });
         }
         Ok(SemanticSearchResponse {
+            generation: chunk_build.generation,
+            index_state,
             results,
             diagnostics,
             totals: SemanticSearchTotals {

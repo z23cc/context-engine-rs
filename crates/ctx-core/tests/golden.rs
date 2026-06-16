@@ -6,7 +6,10 @@ use ctx_core::{
     handle_tool_call, manage_selection, read_file, search_snapshot, tool_specs, workspace_context,
 };
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -164,6 +167,56 @@ fn golden_read_file_whole_and_slice() {
     });
     normalize_read_paths(&mut value);
     insta::assert_json_snapshot!(value);
+}
+
+#[test]
+fn golden_read_file_summary_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("summary-root");
+    fs::create_dir(&root).expect("create root");
+    fs::write(
+        root.join("summary_sample.ts"),
+        "import alpha from 'alpha';\nimport beta from 'beta';\nimport gamma from 'gamma';\nimport delta from 'delta';\nimport epsilon from 'epsilon';\n\nexport function greet(name: string): string {\n    const clean = name.trim();\n    const label = clean || 'world';\n    return `hello ${label}`;\n}\n",
+    )
+    .expect("write summary sample");
+    fs::write(
+        root.join("summary_broken.ts"),
+        "export function broken( {\n    return 1;\n",
+    )
+    .expect("write broken sample");
+    fs::write(root.join("summary_notes.txt"), "plain text\nwith lines\n")
+        .expect("write unsupported sample");
+    let provider = FsCatalogProvider::new(
+        RootPolicy::new(vec![root]).expect("root policy"),
+        ScanOptions::default(),
+    );
+    let summary = handle_tool_call(
+        &provider,
+        &json!({ "name": "read_file", "arguments": {
+            "path": "summary_sample.ts", "view": "summary"
+        } }),
+    )
+    .expect("summary read");
+    let fallback = handle_tool_call(
+        &provider,
+        &json!({ "name": "read_file", "arguments": {
+            "path": "summary_broken.ts", "view": "summary"
+        } }),
+    )
+    .expect("fallback read");
+    let unsupported = handle_tool_call(
+        &provider,
+        &json!({ "name": "read_file", "arguments": {
+            "path": "summary_notes.txt", "view": "summary"
+        } }),
+    )
+    .expect("unsupported read");
+
+    insta::assert_json_snapshot!(json!({
+        "summary": summary,
+        "fallback": fallback,
+        "unsupported": unsupported,
+    }));
 }
 
 #[test]

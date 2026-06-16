@@ -57,6 +57,7 @@ pub fn search_snapshot_cancellable<P: CatalogProvider + Sync>(
     let returned = path_matches.len() + content.matches.len();
     let omitted = total.saturating_sub(returned);
     Ok(SearchResponse {
+        generation: snapshot.generation,
         path_matches,
         content_matches: content.matches,
         match_files: content.match_files,

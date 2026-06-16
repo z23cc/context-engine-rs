@@ -18,6 +18,8 @@ mod ast;
 mod block;
 mod language;
 mod selection;
+mod summarize;
+mod summary_cache;
 mod symbols;
 mod types;
 
@@ -28,8 +30,12 @@ pub use types::{
     FileCodeStructure, ParsedCodeFile, get_code_structure, render_file_codemap,
 };
 
-pub(crate) use ast::{ast_language_supported, ast_rewrite, ast_search, path_language_name};
+pub(crate) use ast::{
+    ast_language_supported, ast_rewrite, ast_rewrite_pattern, ast_search, ast_search_pattern,
+    path_language_name,
+};
 pub(crate) use block::{block_span, syntax_diagnostics};
+pub(crate) use summarize::{render_summary, summarize_source};
 #[cfg(fuzzing)]
 pub use symbols::fuzz_symbols_for_path;
 pub(crate) use symbols::symbols_for_path;
@@ -247,6 +253,39 @@ mod tests {
         let (rewritten, count) = ast_rewrite("x.rs", src, query, "${name}_v2()").expect("rewrite");
         assert_eq!(count, 2);
         assert_eq!(rewritten, "fn a() { foo_v2(); }\nfn b() { foo_v2(); }\n");
+    }
+
+    #[test]
+    fn ast_search_and_rewrite_pattern_rust() {
+        let src = "fn main() { foo(one); bar(one); foo(two); foo(one, two); }\n";
+        let matches = ast_search_pattern("x.rs", src, "foo($ARG)", 10).expect("search");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches[0].captures.get("ARG").map(String::as_str),
+            Some("one")
+        );
+        assert_eq!(
+            matches[1].captures.get("ARG").map(String::as_str),
+            Some("two")
+        );
+
+        let (rewritten, count) =
+            ast_rewrite_pattern("x.rs", src, "foo($ARG)", "baz(${ARG})").expect("rewrite");
+        assert_eq!(count, 2);
+        assert_eq!(
+            rewritten,
+            "fn main() { baz(one); bar(one); baz(two); foo(one, two); }\n"
+        );
+    }
+
+    #[test]
+    fn ast_rewrite_preserves_full_multiline_capture() {
+        let src = "fn a() {\n    foo();\n}\n";
+        let query = "(function_item body: (block) @body) @match";
+        let (rewritten, count) =
+            ast_rewrite("x.rs", src, query, "fn b() ${body}").expect("rewrite");
+        assert_eq!(count, 1);
+        assert_eq!(rewritten, "fn b() {\n    foo();\n}\n");
     }
 
     #[test]

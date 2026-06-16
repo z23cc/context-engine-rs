@@ -17,7 +17,9 @@ pub fn tool_specs() -> Value {
                     "path": { "type": "string", "description": "Target file for replace/patch modes." },
                     "edits": { "type": "array", "description": "replace mode.", "items": { "type": "object", "required": ["old_text", "new_text"], "properties": { "old_text": {"type": "string"}, "new_text": {"type": "string"}, "all": {"type": "boolean"} } } },
                     "entries": { "type": "array", "description": "patch mode: {op: update|create|delete, diff?, rename?}.", "items": { "type": "object" } },
-                    "patch": { "type": "string", "description": "Full patch text for apply_patch / hashline modes." }
+                    "patch": { "type": "string", "description": "Full patch text for apply_patch / hashline modes." },
+                    "diff_context_lines": { "type": "integer", "default": 3, "description": "Context lines in edit-result unified diffs. Default preserves existing behavior." },
+                    "diff_ignore_whitespace": { "type": "boolean", "default": false, "description": "When true, omit paired add/remove lines that differ only by whitespace from edit-result diffs." }
                 }
             }
         }),
@@ -38,13 +40,15 @@ pub fn tool_specs() -> Value {
         }),
         json!({
             "name": "ast_search",
-            "description": "Structural code search via a tree-sitter query over files of one language. The query MUST capture the matched region as @match; other captures (@x) come back as metavariables.",
+            "description": "Structural code search over files of one language. Use mode=\"query\" for raw tree-sitter S-expressions or mode=\"pattern\" for lightweight ast-grep-style code patterns with $META captures.",
             "inputSchema": {
                 "type": "object",
-                "required": ["query", "language"],
+                "required": ["language"],
                 "properties": {
                     "workspace": workspace_schema(),
-                    "query": { "type": "string", "description": "Tree-sitter S-expression query, e.g. (call_expression function: (identifier) @name) @match" },
+                    "mode": { "type": "string", "enum": ["query", "pattern"], "default": "query" },
+                    "query": { "type": "string", "description": "Tree-sitter S-expression query, e.g. (call_expression function: (identifier) @name) @match. Raw query mode must capture @match for precise region selection." },
+                    "pattern": { "type": "string", "description": "Lightweight code pattern, e.g. foo($ARG). $META captures are returned as metavariables and may be used by ast_edit replacements as ${META}." },
                     "language": { "type": "string", "enum": ["rust", "python", "javascript", "typescript", "tsx", "go", "java", "c", "cpp", "csharp", "ruby", "php"] },
                     "paths": { "type": "array", "items": {"type": "string"}, "description": "Optional file/dir scope relative to a root. Empty = whole catalog." },
                     "max_results": { "type": "integer", "description": "Cap on returned matches (default 100)." }
@@ -53,15 +57,17 @@ pub fn tool_specs() -> Value {
         }),
         json!({
             "name": "ast_edit",
-            "description": "Structural rewrite of one file: replace every @match region of a tree-sitter query with a template, where ${name} is substituted by capture @name. No write if nothing matches.",
+            "description": "Structural rewrite of one file. Use mode=\"query\" for raw tree-sitter queries or mode=\"pattern\" for lightweight $META code patterns. No write if nothing matches.",
             "inputSchema": {
                 "type": "object",
-                "required": ["path", "query", "replacement"],
+                "required": ["path", "replacement"],
                 "properties": {
                     "workspace": workspace_schema(),
                     "path": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["query", "pattern"], "default": "query" },
                     "query": { "type": "string", "description": "Tree-sitter query; MUST capture the region to replace as @match." },
-                    "replacement": { "type": "string", "description": "Template; ${name} -> capture @name's text." }
+                    "pattern": { "type": "string", "description": "Lightweight code pattern, e.g. foo($ARG). $META captures are substituted in replacement with ${META}." },
+                    "replacement": { "type": "string", "description": "Template; ${name} -> capture @name's text, and ${META} -> pattern metavariable text." }
                 }
             }
         }),
@@ -206,7 +212,7 @@ pub fn tool_specs() -> Value {
                     "start_line": { "type": "integer", "description": "1-based line to start from (alias: offset)." },
                     "end_line": { "type": "integer", "description": "1-based inclusive end line." },
                     "limit": { "type": "integer", "description": "Max lines to return from start_line; overrides end_line." },
-                    "view": { "type": "string", "enum": ["raw", "hashline"], "description": "hashline: return the whole file as a [PATH#TAG] header + 1-based N:LINE rows, for authoring hashline edits." }
+                    "view": { "type": "string", "enum": ["raw", "hashline", "summary"], "description": "hashline: return the whole file as a [PATH#TAG] header + 1-based N:LINE rows, for authoring hashline edits. summary: return a whole-file structural source summary with elided bodies and concrete re-read ranges. hashline and summary ignore range fields." }
                 }
             }
         }),

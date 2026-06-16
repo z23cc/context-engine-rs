@@ -6,8 +6,8 @@ use self::chunk::{CHUNKER_VERSION, ChunkBuild, SemanticChunk, build_chunks_for_e
 use crate::{
     cancel::CancelToken,
     models::{
-        CatalogEntry, CtxError, Diagnostic, RootRef, SemanticSearchMode, SemanticSearchRequest,
-        SemanticSearchResponse, SemanticSearchResult, SemanticSearchTotals,
+        CatalogEntry, CtxError, Diagnostic, RootRef, SemanticIndexState, SemanticSearchMode,
+        SemanticSearchRequest, SemanticSearchResponse, SemanticSearchResult, SemanticSearchTotals,
     },
     port::{CatalogProvider, FileSignature},
     ranking::{EntryFilter, EntryFilterConfig, tokenize_query, tokenize_text},
@@ -271,6 +271,8 @@ mod tests {
                 &CancelToken::never(),
             )
             .expect("fallback search");
+        assert_eq!(first.generation, snapshot.generation);
+        assert_eq!(first.index_state, SemanticIndexState::Bm25Only);
         assert_eq!(first.totals.dense_candidates, 0);
         assert!(first.totals.bm25_candidates > 0);
         assert!(
@@ -291,6 +293,8 @@ mod tests {
                 &CancelToken::never(),
             )
             .expect("semantic-only fallback search");
+        assert_eq!(semantic_only.generation, snapshot.generation);
+        assert_eq!(semantic_only.index_state, SemanticIndexState::Warming);
         assert!(semantic_only.results.is_empty());
         assert_eq!(semantic_only.totals.bm25_candidates, 0);
         assert!(semantic_only.diagnostics.iter().any(|diagnostic| {
@@ -316,6 +320,8 @@ mod tests {
             }
         }
         let ready = ready.expect("dense index becomes ready");
+        assert_eq!(ready.generation, snapshot.generation);
+        assert_eq!(ready.index_state, SemanticIndexState::Ready);
         assert_eq!(ready.results[0].path, "src/config.rs");
         assert!(
             ready

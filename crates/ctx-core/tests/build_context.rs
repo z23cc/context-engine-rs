@@ -132,6 +132,91 @@ fn seed_paths_include_the_seeded_file() {
 }
 
 #[test]
+fn reference_expansion_adds_codemap_only_defining_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("seed.js"),
+        "function seedMarker() { return new ReferencedThing(); }\n",
+    )
+    .expect("write");
+    fs::write(dir.path().join("types.js"), "class ReferencedThing {}\n").expect("write");
+    let (provider, snapshot) = provider_for(dir.path());
+
+    let response = build_context(
+        &provider,
+        &snapshot,
+        &BuildContextRequest {
+            query: "seedMarker".to_string(),
+            token_budget: 500,
+            max_files: Some(1),
+            seed_paths: Vec::new(),
+        },
+    )
+    .expect("build context");
+
+    let expanded = response
+        .manifest
+        .included
+        .iter()
+        .find(|file| file.path == "types.js")
+        .expect("referenced definition file included");
+    assert_eq!(expanded.mode, "codemap_only");
+    assert!(
+        response
+            .manifest
+            .excluded
+            .iter()
+            .all(|file| file.path != "types.js")
+    );
+    assert!(response.manifest.token_used <= response.manifest.token_budget);
+}
+
+#[test]
+fn reference_expansion_skips_when_budget_exhausted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("seed.js"),
+        "function seedMarker() { return new HugeReferencedThing(); }\n",
+    )
+    .expect("write");
+    let extra_types = (0..80)
+        .map(|idx| format!("class ExtraReferencedThing{idx} {{}}\n"))
+        .collect::<String>();
+    fs::write(
+        dir.path().join("types.js"),
+        format!("class HugeReferencedThing {{}}\n{extra_types}"),
+    )
+    .expect("write");
+    let (provider, snapshot) = provider_for(dir.path());
+
+    let response = build_context(
+        &provider,
+        &snapshot,
+        &BuildContextRequest {
+            query: "seedMarker".to_string(),
+            token_budget: 120,
+            max_files: Some(1),
+            seed_paths: Vec::new(),
+        },
+    )
+    .expect("build context");
+
+    assert!(
+        response
+            .manifest
+            .included
+            .iter()
+            .all(|file| file.path != "types.js")
+    );
+    assert!(response
+        .manifest
+        .excluded
+        .iter()
+        .any(|file| file.path == "types.js" && file.reason == "reference_expansion_over_budget"));
+    assert!(response.manifest.token_used <= response.manifest.token_budget);
+}
+
+#[test]
 fn tiny_budget_returns_no_files_and_preserves_selection() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(dir.path().join("file.txt"), "needle\n").expect("write");

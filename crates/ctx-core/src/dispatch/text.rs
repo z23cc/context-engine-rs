@@ -97,6 +97,28 @@ impl ToolText for crate::SemanticSearchResponse {
 impl ToolText for crate::SearchResponse {
     fn tool_text(&self) -> String {
         let mut out = String::new();
+        // Summary header first so a model reading top-down learns the result
+        // shape — and whether it was truncated — before scanning the matches.
+        let totals = &self.totals;
+        out.push_str(&format!(
+            "search: {} content, {} path · {} files scanned",
+            totals.content_matches, totals.path_matches, totals.scanned_files
+        ));
+        if totals.totals_are_lower_bound || totals.omitted > 0 {
+            out.push_str(" · TRUNCATED (results capped — narrow the query)");
+        }
+        out.push('\n');
+
+        // Cheap relevance overview: the files carrying the most content hits.
+        let top = top_content_files(&self.content_matches);
+        if !top.is_empty() {
+            let rendered: Vec<String> = top
+                .iter()
+                .map(|(path, n)| format!("{path} ({n})"))
+                .collect();
+            out.push_str(&format!("top files: {}\n", rendered.join(", ")));
+        }
+
         if !self.path_matches.is_empty() {
             out.push_str("path matches:\n");
             for m in &self.path_matches {
@@ -129,20 +151,29 @@ impl ToolText for crate::SearchResponse {
         {
             out.push_str("(no matches)\n");
         }
-        let totals = &self.totals;
-        out.push_str(&format!(
-            "totals: {} path, {} content, {} files scanned{}\n",
-            totals.path_matches,
-            totals.content_matches,
-            totals.scanned_files,
-            if totals.totals_are_lower_bound {
-                " (lower bound)"
-            } else {
-                ""
-            }
-        ));
         out
     }
+}
+
+/// The content-hit files carrying the most matches, sorted by count (desc) then
+/// path (asc) for deterministic output. Capped at the top 5; returns empty when
+/// fewer than two files matched, since the per-line list already makes a single
+/// file's relevance obvious.
+fn top_content_files(matches: &[crate::ContentSearchMatch]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for m in matches {
+        *counts.entry(m.display_path.as_str()).or_insert(0) += 1;
+    }
+    if counts.len() < 2 {
+        return Vec::new();
+    }
+    let mut ranked: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(p, n)| (p.to_string(), n))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(5);
+    ranked
 }
 
 /// Character budget for the rendered repo-map text (~3k tokens). Like aider's

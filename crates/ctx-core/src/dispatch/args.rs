@@ -147,41 +147,57 @@ pub(super) struct EditArgs {
     pub(super) entries: Vec<edit::PatchEntry>,
     #[serde(default)]
     pub(super) patch: Option<String>,
+    #[serde(
+        default = "default_edit_diff_context_lines",
+        deserialize_with = "lenient_usize"
+    )]
+    pub(super) diff_context_lines: usize,
+    #[serde(default)]
+    pub(super) diff_ignore_whitespace: bool,
 }
 
 impl EditArgs {
-    pub(super) fn into_request(self) -> Result<EditRequest, DispatchError> {
+    pub(super) fn into_request_and_diff_options(
+        self,
+    ) -> Result<(EditRequest, super::DiffOptions), DispatchError> {
         let EditArgs {
             mode,
             path,
             edits,
             entries,
             patch,
+            diff_context_lines,
+            diff_ignore_whitespace,
         } = self;
+        let diff_options = super::DiffOptions {
+            context_lines: diff_context_lines,
+            ignore_whitespace: diff_ignore_whitespace,
+        };
         let err = |detail: String| {
             DispatchError::Edit(edit::EditError::Parse {
                 mode: "edit",
                 detail,
             })
         };
-        match mode.as_str() {
-            "replace" => Ok(EditRequest::Replace {
+        let request = match mode.as_str() {
+            "replace" => EditRequest::Replace {
                 path: path.ok_or_else(|| err("mode `replace` requires `path`".to_string()))?,
                 edits,
-            }),
-            "patch" => Ok(EditRequest::Patch {
+            },
+            "patch" => EditRequest::Patch {
                 path: path.ok_or_else(|| err("mode `patch` requires `path`".to_string()))?,
                 entries,
-            }),
-            "apply_patch" | "apply-patch" => Ok(EditRequest::ApplyPatch {
+            },
+            "apply_patch" | "apply-patch" => EditRequest::ApplyPatch {
                 patch: patch
                     .ok_or_else(|| err("mode `apply_patch` requires `patch`".to_string()))?,
-            }),
-            "hashline" => Ok(EditRequest::Hashline {
+            },
+            "hashline" => EditRequest::Hashline {
                 patch: patch.ok_or_else(|| err("mode `hashline` requires `patch`".to_string()))?,
-            }),
-            other => Err(err(format!("unknown edit mode: {other}"))),
-        }
+            },
+            other => return Err(err(format!("unknown edit mode: {other}"))),
+        };
+        Ok((request, diff_options))
     }
 }
 
@@ -204,7 +220,12 @@ pub(super) struct MoveArgs {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AstSearchArgs {
-    pub(super) query: String,
+    #[serde(default)]
+    pub(super) query: Option<String>,
+    #[serde(default)]
+    pub(super) pattern: Option<String>,
+    #[serde(default)]
+    pub(super) mode: Option<String>,
     pub(super) language: String,
     #[serde(default)]
     pub(super) paths: Vec<String>,
@@ -219,7 +240,12 @@ pub(super) fn default_ast_max() -> usize {
 #[derive(Debug, Deserialize)]
 pub(super) struct AstEditArgs {
     pub(super) path: String,
-    pub(super) query: String,
+    #[serde(default)]
+    pub(super) query: Option<String>,
+    #[serde(default)]
+    pub(super) pattern: Option<String>,
+    #[serde(default)]
+    pub(super) mode: Option<String>,
     pub(super) replacement: String,
 }
 
@@ -376,6 +402,10 @@ pub(super) fn default_max_results() -> usize {
 
 pub(super) fn default_context_lines() -> usize {
     2
+}
+
+pub(super) fn default_edit_diff_context_lines() -> usize {
+    3
 }
 
 pub(super) fn default_max_content_files() -> usize {

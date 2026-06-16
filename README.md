@@ -67,10 +67,10 @@ integer-valued strings (e.g. `"limit": "120"`).
 
 | Group | Tools |
 |---|---|
-| Search / read | `file_search` (path+content, BM25, smart-case, glob `include`/`exclude`/`extensions`, `output_mode`, asymmetric context), `read_file` (line ranges, hashline view), `get_file_tree` (budgeted ASCII tree) |
+| Search / read | `file_search` (path+content, BM25, smart-case, glob `include`/`exclude`/`extensions`, `output_mode`, asymmetric context; per-file cap + round-robin so one file can't monopolize results), `read_file` (line ranges, hashline view, **structural `summary` view** — signatures kept, bodies elided, with concrete re-read ranges), `get_file_tree` (budgeted ASCII tree) |
 | Code intelligence | `get_code_structure` (codemap + signatures/fields + per-file `token_count`), `get_repo_map` (deterministic PageRank), `goto_definition` / `find_references` (confidence-scored) / `call_hierarchy` |
-| Semantic | `semantic_search` (hybrid dense + BM25 + rerank) |
-| Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` — root-gated, with unified diff + syntax diagnostics; `ast_search` / `ast_edit` (structural) |
+| Semantic | `semantic_search` (hybrid dense + BM25 + rerank; structured `index_state` = `ready`/`warming`/`bm25_only` + snapshot `generation` for freshness) |
+| Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` — root-gated, with unified diff (configurable context, optional ignore-whitespace) + syntax diagnostics; `ast_search` / `ast_edit` (structural — raw tree-sitter `query` mode **plus a `$META` pattern mode**) |
 | Context / ops | `manage_selection`, `workspace_context`, `build_context`, `git` (read-only), `manage_workspaces` |
 
 ## Semantic search (built in, on by default)
@@ -89,7 +89,9 @@ full hybrid (embeddings + ANN + rerank).
 - **Tune**: `--semantic-cache-dir`, `--semantic-model-cache-dir`, `--semantic-no-rerank`,
   and scope flags (`--semantic-include` / `--semantic-exclude` / `--semantic-extension`).
 - `build_context` automatically folds semantic candidates into its ranking when a
-  warm index is available.
+  warm index is available, then does a deterministic 1-hop type-reference expansion:
+  files defining symbols the seed files reference are pulled in as codemap-only context.
+- Structural summaries (`read_file view="summary"`) are memoized by content hash + fold options.
 
 `build_context` / `read_file` etc. fall back gracefully when the index is cold.
 

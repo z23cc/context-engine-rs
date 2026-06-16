@@ -1,5 +1,6 @@
 ---
 source: crates/ctx-core/tests/golden.rs
+assertion_line: 133
 expression: "json!({ \"literal\": literal, \"regex\": regex, \"path\": path, })"
 ---
 {
@@ -76,6 +77,7 @@ expression: "json!({ \"literal\": literal, \"regex\": regex, \"path\": path, })"
       }
     ],
     "diagnostics": [],
+    "generation": 1,
     "path_matches": [],
     "totals": {
       "binary_files_skipped": 0,
@@ -99,6 +101,7 @@ expression: "json!({ \"literal\": literal, \"regex\": regex, \"path\": path, })"
   "path": {
     "content_matches": [],
     "diagnostics": [],
+    "generation": 1,
     "path_matches": [
       {
         "display_path": "fixtures/nested/beta.rs",
@@ -178,6 +181,7 @@ expression: "json!({ \"literal\": literal, \"regex\": regex, \"path\": path, })"
       }
     ],
     "diagnostics": [],
+    "generation": 1,
     "path_matches": [],
     "totals": {
       "binary_files_skipped": 0,

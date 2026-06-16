@@ -252,6 +252,7 @@ pub struct SearchBudget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchResponse {
+    pub generation: u64,
     pub path_matches: Vec<PathSearchMatch>,
     pub content_matches: Vec<ContentSearchMatch>,
     /// Populated for `files_with_matches` / `count` output modes (instead of
@@ -330,8 +331,18 @@ pub struct SemanticSearchTotals {
     pub reranked: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticIndexState {
+    Ready,
+    Warming,
+    Bm25Only,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticSearchResponse {
+    pub generation: u64,
+    pub index_state: SemanticIndexState,
     pub results: Vec<SemanticSearchResult>,
     pub diagnostics: Vec<Diagnostic>,
     pub totals: SemanticSearchTotals,

@@ -141,8 +141,12 @@ fn semantic_search_recall_baseline() {
     let root = repo_root();
     let k = env_usize("EVAL_K", 10);
     let rerank = env_flag("EVAL_RERANK");
-    let reranker_model = std::env::var("EVAL_RERANKER").ok().filter(|v| !v.is_empty());
-    let embedding_model = std::env::var("EVAL_EMBEDDER").ok().filter(|v| !v.is_empty());
+    let reranker_model = std::env::var("EVAL_RERANKER")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let embedding_model = std::env::var("EVAL_EMBEDDER")
+        .ok()
+        .filter(|v| !v.is_empty());
     let mode = match std::env::var("EVAL_MODE").ok().as_deref() {
         Some("semantic") | Some("dense") => SemanticSearchMode::Semantic,
         _ => SemanticSearchMode::Hybrid,
@@ -167,8 +171,8 @@ fn semantic_search_recall_baseline() {
         .expect("build semantic index")
         .expect("semantic index enabled");
 
-    let set: EvalSet = serde_json::from_str(include_str!("eval_data/queries.json"))
-        .expect("parse eval dataset");
+    let set: EvalSet =
+        serde_json::from_str(include_str!("eval_data/queries.json")).expect("parse eval dataset");
     let n = set.queries.len();
     assert!(n > 0, "empty eval dataset");
 
@@ -178,7 +182,10 @@ fn semantic_search_recall_baseline() {
         embedding_model.as_deref().unwrap_or("jina-v2-base-code"),
         reranker_model.as_deref().unwrap_or("default")
     );
-    println!("{:<18} {:>5} {:>5} {:>4}  top-1 path", "query", "hit", "rank", "sym");
+    println!(
+        "{:<18} {:>5} {:>5} {:>4}  top-1 path",
+        "query", "hit", "rank", "sym"
+    );
     println!("{}", "-".repeat(96));
 
     let started = Instant::now();
@@ -229,7 +236,9 @@ fn semantic_search_recall_baseline() {
         symbol_total,
         elapsed.as_secs_f64(),
     );
-    println!("(baseline run — raise the assertion floor in tests/eval.rs to lock a regression gate)\n");
+    println!(
+        "(baseline run — raise the assertion floor in tests/eval.rs to lock a regression gate)\n"
+    );
 
     assert!(
         file_hits > 0,

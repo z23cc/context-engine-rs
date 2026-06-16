@@ -11,6 +11,8 @@ use crate::{
 use crate::{SemanticSearchMode, SemanticSearchRequest};
 use crate::{repomap::RepoMapResponse, selection::SelectionKey};
 use serde::{Deserialize, Serialize};
+
+mod reference_expansion;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -131,8 +133,16 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         &repo_map,
         &semantic_scores,
     );
-    let (selection, excluded) =
+    let (mut selection, mut excluded) =
         allocate_selection(provider, snapshot, &ranked, request.token_budget, max_files)?;
+    excluded.extend(reference_expansion::expand_reference_codemap_selection(
+        provider,
+        snapshot,
+        &mut selection,
+        request.token_budget,
+        cancel,
+    )?);
+    remove_selected_exclusions(&mut excluded, &selection);
     let mut workspace = workspace_context_for_selection(
         provider,
         snapshot,
@@ -406,6 +416,15 @@ fn allocate_selection<P: CatalogProvider>(
     }
 
     Ok((selection, excluded))
+}
+
+fn remove_selected_exclusions(excluded: &mut Vec<BuildContextExcludedFile>, selection: &Selection) {
+    let selected_paths = selection
+        .files
+        .keys()
+        .map(|key| key.path.as_str())
+        .collect::<BTreeSet<_>>();
+    excluded.retain(|file| !selected_paths.contains(file.path.as_str()));
 }
 
 fn candidate_modes<P: CatalogProvider>(

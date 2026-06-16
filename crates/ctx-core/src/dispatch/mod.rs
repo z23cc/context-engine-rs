@@ -602,6 +602,50 @@ mod tests {
     }
 
     #[test]
+    fn ast_pattern_search_and_edit_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("a.rs"),
+            "fn main() { foo(one); bar(one); }\n",
+        )
+        .expect("seed");
+        let provider = provider_for(dir.path());
+
+        let res = handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_search", "arguments": {
+                "language": "rust",
+                "mode": "pattern",
+                "pattern": "foo($ARG)" } }),
+        )
+        .expect("ast_search");
+        assert_eq!(
+            res["structuredContent"]["matches"]
+                .as_array()
+                .map(|matches| matches.len()),
+            Some(1)
+        );
+        assert_eq!(
+            res["structuredContent"]["matches"][0]["captures"]["ARG"],
+            "one"
+        );
+
+        handle_tool_call(
+            &provider,
+            &json!({ "name": "ast_edit", "arguments": {
+                "path": "a.rs",
+                "mode": "pattern",
+                "pattern": "foo($ARG)",
+                "replacement": "baz(${ARG})" } }),
+        )
+        .expect("ast_edit");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.rs")).expect("read"),
+            "fn main() { baz(one); bar(one); }\n"
+        );
+    }
+
+    #[test]
     fn git_tool_and_per_edit_diff() {
         if std::process::Command::new("git")
             .arg("--version")
