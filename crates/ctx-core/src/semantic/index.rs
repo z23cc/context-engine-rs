@@ -115,6 +115,39 @@ impl SemanticIndex {
         self.search_fallback(chunk_build, snapshot.entries.len(), request)
     }
 
+    pub fn search_if_ready<P: CatalogProvider + Sync>(
+        &self,
+        provider: &P,
+        snapshot: &CatalogSnapshot,
+        request: &SemanticSearchRequest,
+        cancel: &CancelToken,
+    ) -> Result<Option<SemanticSearchResponse>, CtxError> {
+        cancel.check_cancelled()?;
+        let Some(cached) = self
+            .built
+            .read()
+            .expect("semantic index lock")
+            .as_ref()
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let is_current = if self.config.persistence.is_some() {
+            let fingerprint =
+                SnapshotFileState::from_snapshot(provider, snapshot, &self.config.scope)?
+                    .fingerprint;
+            cached.manifest_fingerprint == fingerprint
+        } else {
+            cached.snapshot_generation == Some(snapshot.generation)
+        };
+        if is_current {
+            return self
+                .search_built(&cached, snapshot.entries.len(), request, cancel)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
     fn search_built(
         &self,
         built: &BuiltSemanticIndex,
@@ -375,6 +408,7 @@ impl SemanticIndex {
         cancel.check_cancelled()?;
         Self::built_from_active(
             chunk_build.manifest.fingerprint,
+            Some(chunk_build.generation),
             chunk_build.chunks,
             vectors,
             chunk_build.diagnostics,
@@ -472,6 +506,7 @@ impl SemanticIndex {
             .collect::<Vec<_>>();
         Self::built_from_active(
             fingerprint,
+            None,
             chunks,
             vectors,
             diagnostics,
@@ -481,6 +516,7 @@ impl SemanticIndex {
 
     fn built_from_active(
         fingerprint: String,
+        snapshot_generation: Option<u64>,
         chunks: Vec<SemanticChunk>,
         vectors: Vec<Vec<f32>>,
         diagnostics: Vec<Diagnostic>,
@@ -490,6 +526,7 @@ impl SemanticIndex {
         let bm25 = ChunkBm25::new(&chunks);
         Ok(BuiltSemanticIndex {
             manifest_fingerprint: fingerprint,
+            snapshot_generation,
             chunks,
             diagnostics,
             ann,
@@ -508,6 +545,7 @@ pub(super) struct SemanticChunkRecord {
 
 pub(super) struct BuiltSemanticIndex {
     pub(super) manifest_fingerprint: String,
+    pub(super) snapshot_generation: Option<u64>,
     pub(super) chunks: Vec<SemanticChunk>,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) ann: DenseAnn,

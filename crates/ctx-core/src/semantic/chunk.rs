@@ -39,6 +39,7 @@ pub(crate) struct ChunkBuild {
     pub(crate) chunks: Vec<SemanticChunk>,
     pub(crate) manifest: ChunkManifest,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) generation: u64,
 }
 
 #[cfg(test)]
@@ -96,6 +97,7 @@ pub(crate) fn build_chunks_for_entries<P: CatalogProvider + Sync>(
             file_chunks,
         },
         diagnostics,
+        generation,
     })
 }
 

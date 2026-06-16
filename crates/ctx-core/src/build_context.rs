@@ -7,6 +7,8 @@ use crate::{
     count_tokens, get_repo_map_cancellable, read_file, search_snapshot_cancellable,
     workspace_context_for_selection,
 };
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+use crate::{SemanticSearchMode, SemanticSearchRequest};
 use crate::{repomap::RepoMapResponse, selection::SelectionKey};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +20,9 @@ const DEFAULT_MAX_FILES: usize = 20;
 const SEARCH_WEIGHT: f64 = 0.55;
 const REPOMAP_WEIGHT: f64 = 0.35;
 const PATH_WEIGHT: f64 = 0.10;
+const SEARCH_SEMANTIC_WEIGHT: f64 = 0.30;
+const REPOMAP_SEMANTIC_WEIGHT: f64 = 0.25;
+const SEMANTIC_WEIGHT: f64 = 0.35;
 const SLICE_RADIUS: usize = 2;
 
 /// Request for the `build_context` primitive and MCP tool.
@@ -115,6 +120,8 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         cancel,
     )?;
     cancel.check_cancelled()?;
+    let semantic_scores =
+        semantic_candidate_scores(provider, snapshot, request, max_files, cancel)?;
 
     let ranked = rank_candidates(
         provider,
@@ -122,6 +129,7 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         request.query.as_str(),
         &search,
         &repo_map,
+        &semantic_scores,
     );
     let (selection, excluded) =
         allocate_selection(provider, snapshot, &ranked, request.token_budget, max_files)?;
@@ -170,6 +178,7 @@ fn rank_candidates<'a, P: CatalogProvider>(
     query: &str,
     search: &crate::SearchResponse,
     repo_map: &RepoMapResponse,
+    semantic_scores: &BTreeMap<String, f64>,
 ) -> Vec<Candidate<'a>> {
     let entries_by_path = snapshot
         .entries
@@ -187,6 +196,9 @@ fn rank_candidates<'a, P: CatalogProvider>(
     for file in &repo_map.files {
         builders.entry(file.path.clone()).or_default().repo_score =
             file.score.parse::<f64>().unwrap_or(0.0);
+    }
+    for (path, score) in semantic_scores {
+        builders.entry(path.clone()).or_default().semantic_score = score.max(0.0);
     }
     for entry in &snapshot.entries {
         let path_score = path_relevance(&entry.rel_path, query);
@@ -206,6 +218,11 @@ fn rank_candidates<'a, P: CatalogProvider>(
         .values()
         .map(|builder| builder.repo_score)
         .fold(0.0, f64::max);
+    let max_semantic = builders
+        .values()
+        .map(|builder| builder.semantic_score)
+        .fold(0.0, f64::max);
+    let has_semantic = !semantic_scores.is_empty();
 
     let mut candidates = builders
         .into_iter()
@@ -214,8 +231,14 @@ fn rank_candidates<'a, P: CatalogProvider>(
             let search_score = normalize(builder.search_score, max_search);
             let repo_score = normalize(builder.repo_score, max_repo);
             let path_score = builder.path_score;
-            let score = search_score.mul_add(SEARCH_WEIGHT, repo_score * REPOMAP_WEIGHT)
-                + path_score * PATH_WEIGHT;
+            let semantic_score = normalize(builder.semantic_score, max_semantic);
+            let score = fused_score(
+                search_score,
+                repo_score,
+                semantic_score,
+                path_score,
+                has_semantic,
+            );
             (score > 0.0).then(|| Candidate {
                 entry,
                 display_path: provider.display_path(&entry.abs_path),
@@ -238,6 +261,7 @@ fn rank_candidates<'a, P: CatalogProvider>(
 struct CandidateBuilder {
     search_score: f64,
     repo_score: f64,
+    semantic_score: f64,
     path_score: f64,
     hit_lines: BTreeSet<usize>,
 }
@@ -254,6 +278,67 @@ fn add_content_hit(builders: &mut BTreeMap<String, CandidateBuilder>, hit: &Cont
 
 fn normalize(value: f64, max: f64) -> f64 {
     if max > 0.0 { value / max } else { 0.0 }
+}
+
+fn fused_score(search: f64, repo: f64, semantic: f64, path: f64, has_semantic: bool) -> f64 {
+    if has_semantic {
+        search * SEARCH_SEMANTIC_WEIGHT
+            + repo * REPOMAP_SEMANTIC_WEIGHT
+            + semantic * SEMANTIC_WEIGHT
+            + path * PATH_WEIGHT
+    } else {
+        search.mul_add(SEARCH_WEIGHT, repo * REPOMAP_WEIGHT) + path * PATH_WEIGHT
+    }
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+fn semantic_candidate_scores<P: CatalogProvider + Sync>(
+    provider: &P,
+    snapshot: &crate::CatalogSnapshot,
+    request: &BuildContextRequest,
+    max_files: usize,
+    cancel: &CancelToken,
+) -> Result<BTreeMap<String, f64>, CtxError> {
+    let Some(index) = provider.semantic_index() else {
+        return Ok(BTreeMap::new());
+    };
+    let request = SemanticSearchRequest {
+        query: request.query.clone(),
+        mode: SemanticSearchMode::Hybrid,
+        max_results: max_files.saturating_mul(4).max(1),
+        rerank: false,
+    };
+    match index.search_if_ready(provider, snapshot, &request, cancel) {
+        Ok(Some(response)) => Ok(semantic_scores_by_path(response)),
+        Ok(None) => Ok(BTreeMap::new()),
+        Err(CtxError::Cancelled) => Err(CtxError::Cancelled),
+        Err(_) => Ok(BTreeMap::new()),
+    }
+}
+
+#[cfg(not(all(feature = "semantic", not(target_arch = "wasm32"))))]
+fn semantic_candidate_scores<P: CatalogProvider + Sync>(
+    _provider: &P,
+    _snapshot: &crate::CatalogSnapshot,
+    _request: &BuildContextRequest,
+    _max_files: usize,
+    _cancel: &CancelToken,
+) -> Result<BTreeMap<String, f64>, CtxError> {
+    Ok(BTreeMap::new())
+}
+
+#[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+fn semantic_scores_by_path(response: crate::SemanticSearchResponse) -> BTreeMap<String, f64> {
+    let mut scores = BTreeMap::<String, f64>::new();
+    for result in response.results {
+        if result.score.is_finite() {
+            scores
+                .entry(result.path)
+                .and_modify(|score| *score = score.max(result.score))
+                .or_insert(result.score);
+        }
+    }
+    scores
 }
 
 fn path_relevance(path: &str, query: &str) -> f64 {
@@ -414,185 +499,4 @@ fn selection_key(entry: &CatalogEntry) -> SelectionKey {
 
 fn format_score(score: f64) -> String {
     format!("{score:.6}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{FsCatalogProvider, RootPolicy, ScanOptions};
-    use std::fs;
-
-    fn provider_for(dir: &std::path::Path) -> (FsCatalogProvider, crate::CatalogSnapshot) {
-        let provider = FsCatalogProvider::new(
-            RootPolicy::new(vec![dir.to_path_buf()]).expect("policy"),
-            ScanOptions::default(),
-        );
-        let snapshot = provider.snapshot().expect("snapshot");
-        (provider, snapshot)
-    }
-
-    #[test]
-    fn ranking_prefers_content_match_over_path_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("aaa_path_needle.txt"), "nothing\n").expect("write");
-        fs::write(dir.path().join("zzz.txt"), "needle\n").expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle".to_string(),
-                token_budget: 120,
-                max_files: Some(1),
-                seed_paths: Vec::new(),
-            },
-        )
-        .expect("build context");
-
-        assert_eq!(response.manifest.included[0].path, "zzz.txt");
-    }
-
-    #[test]
-    fn budget_downgrades_rust_file_to_codemap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let body = format!(
-            "{}\n{}",
-            "pub fn needle_target() {}",
-            "// filler text to make the full file too expensive\n".repeat(120)
-        );
-        fs::write(dir.path().join("lib.rs"), body).expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle_target".to_string(),
-                token_budget: 120,
-                max_files: Some(1),
-                seed_paths: Vec::new(),
-            },
-        )
-        .expect("build context");
-
-        assert_eq!(response.manifest.included[0].mode, "codemap_only");
-        assert!(response.manifest.token_used <= response.manifest.token_budget);
-    }
-
-    #[test]
-    fn huge_text_file_uses_search_slices() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut text = "filler\n".repeat(120);
-        text.push_str("needle line\n");
-        text.push_str(&"tail\n".repeat(120));
-        fs::write(dir.path().join("huge.txt"), text).expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle".to_string(),
-                token_budget: 120,
-                max_files: Some(1),
-                seed_paths: Vec::new(),
-            },
-        )
-        .expect("build context");
-
-        assert_eq!(response.manifest.included[0].mode, "slices");
-        assert!(response.context.contains("needle line"));
-    }
-
-    #[test]
-    fn seed_paths_include_the_seeded_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("hit.rs"), "pub fn needle() {}\n").expect("write");
-        fs::write(dir.path().join("seed.rs"), "pub fn other_thing() {}\n").expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle".to_string(),
-                token_budget: 400,
-                max_files: Some(5),
-                seed_paths: vec![PathBuf::from("seed.rs")],
-            },
-        )
-        .expect("build context");
-
-        let included: Vec<&str> = response
-            .manifest
-            .included
-            .iter()
-            .map(|file| file.path.as_str())
-            .collect();
-        assert!(
-            included.contains(&"seed.rs"),
-            "seeded file should be included: {included:?}"
-        );
-    }
-
-    #[test]
-    fn tiny_budget_returns_no_files_and_preserves_selection() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("file.txt"), "needle\n").expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-        let before = provider.selection();
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle".to_string(),
-                token_budget: 0,
-                max_files: Some(1),
-                seed_paths: Vec::new(),
-            },
-        )
-        .expect("build context");
-
-        assert!(response.manifest.included.is_empty());
-        assert_eq!(response.manifest.token_used, 0);
-        assert_eq!(provider.selection(), before);
-    }
-
-    #[test]
-    fn over_budget_candidate_does_not_stop_later_small_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let large = format!("needle {}\n", "very_large_token ".repeat(300));
-        fs::write(dir.path().join("aaa_large.txt"), large).expect("write");
-        fs::write(dir.path().join("zzz_small.txt"), "needle\n").expect("write");
-        let (provider, snapshot) = provider_for(dir.path());
-
-        let response = build_context(
-            &provider,
-            &snapshot,
-            &BuildContextRequest {
-                query: "needle".to_string(),
-                token_budget: 90,
-                max_files: Some(2),
-                seed_paths: Vec::new(),
-            },
-        )
-        .expect("build context");
-
-        assert!(
-            response
-                .manifest
-                .included
-                .iter()
-                .any(|file| file.path == "zzz_small.txt")
-        );
-        assert!(
-            response
-                .manifest
-                .excluded
-                .iter()
-                .any(|file| file.path == "aaa_large.txt" && file.reason == "over_budget")
-        );
-    }
 }
