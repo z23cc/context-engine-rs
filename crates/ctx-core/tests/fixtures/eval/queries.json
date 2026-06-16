@@ -13,6 +13,18 @@
     { "id": "workspace_route", "query": "route a tool call to the correct registered workspace", "expected_files": ["crates/ctx-core/src/workspace.rs"], "expected_symbols": [] },
     { "id": "hashline_edit", "query": "apply a hashline anchored edit to a file", "expected_files": ["crates/ctx-core/src/edit/hashline.rs", "crates/ctx-core/src/edit/mod.rs"], "expected_symbols": [] },
     { "id": "file_tree", "query": "render an ascii directory tree within a size budget", "expected_files": ["crates/ctx-core/src/tree.rs"], "expected_symbols": [] },
-    { "id": "root_security", "query": "reject file access outside the allowed root directories", "expected_files": ["crates/ctx-core/src/security.rs"], "expected_symbols": [] }
+    { "id": "root_security", "query": "reject file access outside the allowed root directories", "expected_files": ["crates/ctx-core/src/security.rs"], "expected_symbols": [] },
+    { "id": "cancellation", "query": "cooperative cancellation token for long running operations", "expected_files": ["crates/ctx-core/src/cancel.rs"], "expected_symbols": ["CancelToken"] },
+    { "id": "tokenize_query", "query": "tokenize a query string into terms for ranking", "expected_files": ["crates/ctx-core/src/ranking.rs"], "expected_symbols": ["tokenize_query"] },
+    { "id": "codemap", "query": "extract function and type signatures using tree-sitter tags", "expected_files": ["crates/ctx-core/src/codemap/mod.rs", "crates/ctx-core/src/codemap/language.rs"], "expected_symbols": ["get_code_structure"] },
+    { "id": "snapshot", "query": "immutable snapshot of the catalog of files", "expected_files": ["crates/ctx-core/src/snapshot.rs"], "expected_symbols": ["CatalogSnapshot"] },
+    { "id": "manage_selection", "query": "add and remove files from the curated selection", "expected_files": ["crates/ctx-core/src/selection.rs"], "expected_symbols": ["manage_selection"] },
+    { "id": "build_context", "query": "pack relevant files into a token budget to build context", "expected_files": ["crates/ctx-core/src/build_context.rs"], "expected_symbols": ["build_context"] },
+    { "id": "count_tokens", "query": "count the number of tokens in a piece of text", "expected_files": ["crates/ctx-core/src/token.rs"], "expected_symbols": ["count_tokens"] },
+    { "id": "atomic_write", "query": "atomically write a file and fsync the parent directory", "expected_files": ["crates/ctx-core/src/semantic/persistence.rs"], "expected_symbols": [] },
+    { "id": "scope_excludes", "query": "default glob excludes for tests docs vendor and generated files", "expected_files": ["crates/ctx-core/src/semantic/config.rs"], "expected_symbols": [] },
+    { "id": "content_search", "query": "search file contents with regex and glob filters", "expected_files": ["crates/ctx-core/src/search/mod.rs"], "expected_symbols": ["search_snapshot"] },
+    { "id": "read_file", "query": "read a file with an optional line range", "expected_files": ["crates/ctx-core/src/read.rs"], "expected_symbols": ["read_file"] },
+    { "id": "git_ops", "query": "run git status diff log and blame through a command runner", "expected_files": ["crates/ctx-core/src/dispatch/git.rs"], "expected_symbols": [] }
   ]
 }
