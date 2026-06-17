@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# check-file-size.sh — soft file-size convention check (see docs/CONVENTIONS.md).
+# check-file-size.sh — hard file-size convention check (see docs/CONVENTIONS.md).
 #
-# Reports Rust source files whose NON-TEST line count exceeds the soft cap.
+# Reports Rust source files whose NON-TEST line count exceeds the cap.
 # "Non-test" = everything before the first `#[cfg(test)]` (tests live at the
-# bottom by convention). Advisory by default (exit 0). Pass --strict to fail.
+# bottom by convention). Fails by default. Pass --warn for advisory output.
 #
 set -euo pipefail
 
 CAP="${FILE_SIZE_CAP:-600}"
-STRICT=0
-[[ "${1:-}" == "--strict" ]] && STRICT=1
+WARN=0
+case "${1:-}" in
+  ""|--strict) ;;
+  --warn) WARN=1 ;;
+  *)
+    echo "usage: $0 [--strict|--warn]" >&2
+    exit 2
+    ;;
+esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -30,5 +37,5 @@ if (( over == 0 )); then
   echo "file-size: all source files within ${CAP} non-test lines"
   exit 0
 fi
-echo "file-size: ${over} file(s) over the ${CAP}-line soft cap (split by responsibility)"
-(( STRICT == 1 )) && exit 1 || exit 0
+echo "file-size: ${over} file(s) over the ${CAP}-line cap (split by responsibility)"
+(( WARN == 1 )) && exit 0 || exit 1

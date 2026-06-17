@@ -6,19 +6,22 @@ use clap::{Args, Parser, Subcommand};
 use ctx_core::semantic::{SemanticIndexScope, SemanticRuntimeConfig};
 use ctx_core::{
     FsCatalogProvider, RootPolicy, ScanOptions, WorkspaceRegistry,
-    handle_tool_call_json_with_resolver, tool_specs,
+    handle_tool_call_json_with_resolver, tool_specs as core_tool_specs,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     str::FromStr,
 };
 
+mod auth;
 mod cache;
+mod install;
+mod xai;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -41,10 +44,12 @@ enum CommandKind {
     Config(ConfigArgs),
     /// Warm the current project's semantic index cache.
     Warm(ServeArgs),
+    /// Manage xAI OAuth credentials.
+    Auth(auth::AuthArgs),
     /// Manage local caches.
     Cache(CacheArgs),
     /// Register ctx-mcp as an MCP server in Claude Code and/or Codex.
-    Install(InstallArgs),
+    Install(install::InstallArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -161,10 +166,11 @@ fn main() -> Result<()> {
             ConfigCommand::Roots(serve_args) => config_roots(serve_args),
         },
         CommandKind::Warm(args) => cache::warm(args),
+        CommandKind::Auth(args) => auth::run(args),
         CommandKind::Cache(args) => match args.command {
             CacheCommand::Purge(serve_args) => cache::purge(serve_args),
         },
-        CommandKind::Install(args) => install(args),
+        CommandKind::Install(args) => install::install(args),
     }
 }
 
@@ -320,21 +326,36 @@ fn handle_message(
         }
         _ if !*initialized => Some(jsonrpc_error(id, -32002, "not initialized")),
         "tools/list" => Some(jsonrpc_result(id, json!({ "tools": tool_specs() }))),
-        "tools/call" => Some(
-            match serde_json::to_string(&message.params)
-                .map_err(|err| err.to_string())
-                .and_then(|request| {
-                    handle_tool_call_json_with_resolver(registry, &request)
-                        .map_err(|err| err.to_string())
-                })
-                .and_then(|response| serde_json::from_str(&response).map_err(|err| err.to_string()))
-            {
-                Ok(value) => jsonrpc_result(id, value),
-                Err(err) => jsonrpc_error(id, -32000, err),
-            },
-        ),
+        "tools/call" => Some(match handle_tool_call(registry, &message.params) {
+            Ok(value) => jsonrpc_result(id, value),
+            Err(err) => jsonrpc_error(id, -32000, err),
+        }),
         _ => Some(jsonrpc_error(id, -32601, "method not found")),
     }
+}
+
+fn tool_specs() -> Value {
+    let mut tools = core_tool_specs().as_array().cloned().unwrap_or_default();
+    tools.extend(xai::tool_specs());
+    Value::Array(tools)
+}
+
+fn handle_tool_call(
+    registry: &WorkspaceRegistry,
+    params: &Value,
+) -> std::result::Result<Value, String> {
+    match xai::handle_tool_call(registry, params) {
+        Ok(Some(value)) => return Ok(value),
+        Ok(None) => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    serde_json::to_string(params)
+        .map_err(|err| err.to_string())
+        .and_then(|request| {
+            handle_tool_call_json_with_resolver(registry, &request).map_err(|err| err.to_string())
+        })
+        .and_then(|response| serde_json::from_str(&response).map_err(|err| err.to_string()))
 }
 
 fn jsonrpc_result(id: Value, result: Value) -> Value {
@@ -383,245 +404,6 @@ fn config_roots(args: ServeArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Args)]
-struct InstallArgs {
-    /// Workspace root to expose. Repeatable. Defaults to the current directory.
-    #[arg(long = "root")]
-    roots: Vec<PathBuf>,
-    /// Additional named workspace as name=path. Repeatable.
-    #[arg(long = "workspace")]
-    workspaces: Vec<WorkspaceArg>,
-    /// Name to register the MCP server under.
-    #[arg(long, default_value = "context-engine")]
-    name: String,
-    /// Configure Claude Code only (default: configure both).
-    #[arg(long)]
-    claude: bool,
-    /// Configure Codex only (default: configure both).
-    #[arg(long)]
-    codex: bool,
-    /// Claude Code config scope: local, user, or project.
-    #[arg(long, default_value = "local")]
-    scope: String,
-    /// Override the ctx-mcp executable path written into the config.
-    #[arg(long)]
-    command: Option<PathBuf>,
-    /// Print the commands that would run without executing them.
-    #[arg(long)]
-    dry_run: bool,
-}
-
-/// Decide which tools to configure: both unless exactly one flag is set.
-fn select_targets(claude: bool, codex: bool) -> (bool, bool) {
-    if claude == codex {
-        (true, true)
-    } else {
-        (claude, codex)
-    }
-}
-
-fn build_serve_args(roots: &[String], workspaces: &[(String, String)]) -> Vec<String> {
-    let mut args = vec!["serve".to_string()];
-    for root in roots {
-        args.push("--root".to_string());
-        args.push(root.clone());
-    }
-    for (name, path) in workspaces {
-        args.push("--workspace".to_string());
-        args.push(format!("{name}={path}"));
-    }
-    args
-}
-
-/// First match for `tool` on PATH, if any.
-fn which(tool: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(tool))
-        .find(|candidate| candidate.is_file())
-}
-
-/// The path to write into client configs. Prefers Homebrew's stable `bin`
-/// symlink over the versioned Cellar path so configs survive `brew upgrade`.
-fn resolve_command(override_cmd: Option<PathBuf>) -> Result<String> {
-    if let Some(cmd) = override_cmd {
-        return Ok(cmd.to_string_lossy().into_owned());
-    }
-    let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let exe_str = exe.to_string_lossy();
-    if let Some(idx) = exe_str.find("/Cellar/ctx-mcp/") {
-        let linked = PathBuf::from(format!("{}/bin/ctx-mcp", &exe_str[..idx]));
-        if linked.exists() {
-            return Ok(linked.to_string_lossy().into_owned());
-        }
-    }
-    Ok(exe_str.into_owned())
-}
-
-fn canonical(path: &Path) -> Result<String> {
-    let abs = std::fs::canonicalize(path)
-        .with_context(|| format!("path does not exist: {}", path.display()))?;
-    Ok(abs.to_string_lossy().into_owned())
-}
-
-fn shell_quote(value: &str) -> String {
-    let safe = !value.is_empty()
-        && value.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | '=' | ':' | ',' | '+')
-        });
-    if safe {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
-fn print_command(program: &str, args: &[String]) {
-    let mut line = String::from(program);
-    for arg in args {
-        line.push(' ');
-        line.push_str(&shell_quote(arg));
-    }
-    println!("{line}");
-}
-
-fn run_tool(program: &str, args: &[String]) -> Result<bool> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to run {program}"))?;
-    Ok(status.success())
-}
-
-fn install(args: InstallArgs) -> Result<()> {
-    let command = resolve_command(args.command.clone())?;
-
-    let mut roots: Vec<String> = Vec::new();
-    if args.roots.is_empty() {
-        roots.push(canonical(
-            &std::env::current_dir().context("failed to read current directory")?,
-        )?);
-    } else {
-        for root in &args.roots {
-            roots.push(canonical(root)?);
-        }
-    }
-    let workspaces: Vec<(String, String)> = args
-        .workspaces
-        .iter()
-        .map(|w| Ok((w.name.clone(), canonical(&w.path)?)))
-        .collect::<Result<_>>()?;
-
-    let serve_args = build_serve_args(&roots, &workspaces);
-    let (do_claude, do_codex) = select_targets(args.claude, args.codex);
-
-    println!("ctx-mcp: {command}");
-    println!("roots:   {}", roots.join(", "));
-    if !workspaces.is_empty() {
-        let rendered: Vec<String> = workspaces.iter().map(|(n, p)| format!("{n}={p}")).collect();
-        println!("workspaces: {}", rendered.join(", "));
-    }
-    println!();
-
-    let mut configured = false;
-    if do_claude {
-        configured |=
-            configure_claude(&args.name, &args.scope, &command, &serve_args, args.dry_run)?;
-    }
-    if do_codex {
-        configured |= configure_codex(&args.name, &command, &serve_args, args.dry_run)?;
-    }
-
-    if configured && !args.dry_run {
-        println!();
-        println!(
-            "Done. Restart Claude Code / Codex to pick up '{}'.",
-            args.name
-        );
-    }
-    Ok(())
-}
-
-fn configure_claude(
-    name: &str,
-    scope: &str,
-    command: &str,
-    serve_args: &[String],
-    dry_run: bool,
-) -> Result<bool> {
-    let mut add = vec![
-        "mcp".to_string(),
-        "add".to_string(),
-        "-s".to_string(),
-        scope.to_string(),
-        name.to_string(),
-        "--".to_string(),
-        command.to_string(),
-    ];
-    add.extend(serve_args.iter().cloned());
-
-    if which("claude").is_none() {
-        println!("\u{2022} Claude Code: `claude` CLI not found \u{2014} add it manually:");
-        print!("    ");
-        print_command("claude", &add);
-        return Ok(false);
-    }
-    if dry_run {
-        print_command("claude", &add);
-        return Ok(true);
-    }
-    // idempotent: drop any existing entry in this scope first
-    let _ = Command::new("claude")
-        .args(["mcp", "remove", "-s", scope, name])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if run_tool("claude", &add)? {
-        println!("\u{2713} Claude Code: registered '{name}' (scope: {scope})");
-        Ok(true)
-    } else {
-        bail!("claude mcp add failed");
-    }
-}
-
-fn configure_codex(
-    name: &str,
-    command: &str,
-    serve_args: &[String],
-    dry_run: bool,
-) -> Result<bool> {
-    let mut add = vec![
-        "mcp".to_string(),
-        "add".to_string(),
-        name.to_string(),
-        "--".to_string(),
-        command.to_string(),
-    ];
-    add.extend(serve_args.iter().cloned());
-
-    if which("codex").is_none() {
-        println!("\u{2022} Codex: `codex` CLI not found \u{2014} add it manually:");
-        print!("    ");
-        print_command("codex", &add);
-        return Ok(false);
-    }
-    if dry_run {
-        print_command("codex", &add);
-        return Ok(true);
-    }
-    let _ = Command::new("codex")
-        .args(["mcp", "remove", name])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if run_tool("codex", &add)? {
-        println!("\u{2713} Codex: registered '{name}'");
-        Ok(true)
-    } else {
-        bail!("codex mcp add failed");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,15 +411,15 @@ mod tests {
 
     #[test]
     fn select_targets_defaults_to_both() {
-        assert_eq!(select_targets(false, false), (true, true));
-        assert_eq!(select_targets(true, true), (true, true));
-        assert_eq!(select_targets(true, false), (true, false));
-        assert_eq!(select_targets(false, true), (false, true));
+        assert_eq!(install::select_targets(false, false), (true, true));
+        assert_eq!(install::select_targets(true, true), (true, true));
+        assert_eq!(install::select_targets(true, false), (true, false));
+        assert_eq!(install::select_targets(false, true), (false, true));
     }
 
     #[test]
     fn build_serve_args_includes_roots_and_workspaces() {
-        let args = build_serve_args(
+        let args = install::build_serve_args(
             &["/a".to_string(), "/b".to_string()],
             &[("named".to_string(), "/c".to_string())],
         );
@@ -657,17 +439,38 @@ mod tests {
 
     #[test]
     fn shell_quote_quotes_unsafe_values() {
-        assert_eq!(shell_quote("/abs/path"), "/abs/path");
-        assert_eq!(shell_quote("with space"), "'with space'");
-        assert_eq!(shell_quote(""), "''");
+        assert_eq!(install::shell_quote("/abs/path"), "/abs/path");
+        assert_eq!(install::shell_quote("with space"), "'with space'");
+        assert_eq!(install::shell_quote(""), "''");
     }
 
     #[test]
-    fn cli_parses_warm_and_cache_purge() {
+    fn cli_parses_warm_cache_and_auth() {
         let warm = Cli::try_parse_from(["ctx-mcp", "warm"]).expect("warm parse");
         assert!(matches!(warm.command, CommandKind::Warm(_)));
         let purge = Cli::try_parse_from(["ctx-mcp", "cache", "purge"]).expect("purge parse");
         assert!(matches!(purge.command, CommandKind::Cache(_)));
+        let login =
+            Cli::try_parse_from(["ctx-mcp", "auth", "login", "xai"]).expect("auth login parse");
+        assert!(matches!(login.command, CommandKind::Auth(_)));
+        let status = Cli::try_parse_from(["ctx-mcp", "auth", "status"]).expect("status parse");
+        assert!(matches!(status.command, CommandKind::Auth(_)));
+        let logout = Cli::try_parse_from(["ctx-mcp", "auth", "logout"]).expect("logout parse");
+        assert!(matches!(logout.command, CommandKind::Auth(_)));
+    }
+
+    #[test]
+    fn tool_specs_include_core_and_xai_tools() {
+        let specs = tool_specs();
+        let names: Vec<_> = specs
+            .as_array()
+            .expect("tool specs array")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"file_search"));
+        assert!(names.contains(&"xai_responses"));
+        assert!(names.contains(&"xai_x_search"));
     }
 
     fn args_with(roots: Vec<PathBuf>, workspaces: Vec<WorkspaceArg>) -> ServeArgs {

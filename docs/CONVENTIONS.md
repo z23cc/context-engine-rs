@@ -17,7 +17,7 @@ Size/complexity limits, tuned for both human review and AI-agent context cost
 ## Files — soft cap (advisory)
 
 - **Target ≤ 600 non-test lines per file** (lines before the first `#[cfg(test)]`).
-  Checked by `Scripts/check-file-size.sh` (advisory; `--strict` to fail).
+  Checked by `Scripts/check-file-size.sh` (hard gate by default; use `--warn` only for local advisory exploration).
 - Over the cap → split by responsibility into a module directory
   (`foo/{mod.rs, ...}`), not by arbitrary line count. A cohesive module that
   reads better whole is fine; a god-file that mixes concerns is not.
@@ -33,5 +33,5 @@ for cheap context and review while avoiding a maze of tiny files.
 ```bash
 cargo clippy --all-targets -- -D warnings            # functions ≤ 100, nesting
 cargo clippy --all-targets --features semantic -- -D warnings
-./Scripts/check-file-size.sh                          # file soft cap (advisory)
+./Scripts/check-file-size.sh                          # hard file-size gate
 ```

@@ -7,9 +7,9 @@ a codebase — no language server, no GUI, no daemon.
 
 ## Highlights
 
-- **20 MCP tools**: search, read, tree, codemap, repo-map, symbol nav, call
+- **27 MCP tools**: search, read, tree, codemap, repo-map, symbol nav, call
   hierarchy, structural AST search/rewrite, a 4-mode edit engine, read-only git,
-  semantic search, and context assembly.
+  semantic search, context assembly, plus optional xAI/Grok tools when OAuth is configured.
 - **Codemap over 11 languages** (tree-sitter): signatures **with return types**,
   struct/class **fields**, and full nested symbols — Rust, Python, JS, TS/TSX, Go,
   Java, C, C++, C#, Ruby, PHP.
@@ -47,6 +47,9 @@ One command registers `ctx-mcp` (idempotent, writes an absolute `--root`):
 ctx-mcp install            # both; root = current dir   (--claude / --codex / --dry-run)
 ctx-mcp warm               # optional: prebuild the current project's semantic index
 ctx-mcp cache purge        # delete the current project's semantic index cache
+ctx-mcp auth login xai     # optional: browser OAuth for xAI Grok subscription access
+ctx-mcp auth status        # show xAI OAuth status without printing secrets
+ctx-mcp auth logout        # remove stored xAI OAuth credentials
 ```
 
 Or configure manually — **Claude Code** (`.mcp.json`) / **Codex** (`~/.codex/config.toml`):
@@ -65,6 +68,30 @@ The stdio loop pins MCP `protocolVersion` `2024-11-05` and is **fail-closed**: n
 `--root` means catalog/read/search are refused. Numeric params also accept
 integer-valued strings (e.g. `"limit": "120"`).
 
+## xAI Grok OAuth
+
+`ctx-mcp` can store xAI Grok OAuth credentials for integrations that want to
+reuse a SuperGrok / X Premium+ browser subscription path instead of an API key:
+
+```bash
+ctx-mcp auth login xai          # opens the xAI browser OAuth PKCE flow
+ctx-mcp auth login xai --force  # discard reuse and start a fresh login
+ctx-mcp auth status --refresh   # refresh if expiring, then print status
+ctx-mcp auth logout             # non-interactive removal
+```
+
+Tokens are stored in `~/.ctx-mcp/auth.json` by default. Set
+`CTX_MCP_HOME` or `CTX_MCP_AUTH_FILE` to override the location. The stored
+bearer is only sent to `https://api.x.ai/v1` or another `https://*.x.ai` URL.
+
+The MCP server always lists Grok-backed tools, but they require `ctx-mcp auth
+login xai` before use: `xai_models`, `xai_responses`, `xai_x_search`,
+`xai_web_search`, `xai_image_generate`, `xai_tts`, `xai_transcribe`, and
+`xai_video_generate`. Media generation tools require an explicit workspace-gated
+`output_path` so large binary data is written to disk instead of returned inline.
+A 403 from xAI usually means the signed-in account does not have the required
+Grok/API entitlement.
+
 ## Tools
 
 | Group | Tools |
@@ -74,6 +101,7 @@ integer-valued strings (e.g. `"limit": "120"`).
 | Semantic | `semantic_search` (hybrid dense + BM25 + rerank; structured `index_state` = `ready`/`warming`/`bm25_only` + snapshot `generation` for freshness) |
 | Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` — root-gated, with unified diff (configurable context, optional ignore-whitespace) + syntax diagnostics; `ast_search` / `ast_edit` (structural — raw tree-sitter `query` mode **plus a `$META` pattern mode**) |
 | Context / ops | `manage_selection`, `workspace_context`, `build_context`, `git` (read-only), `manage_workspaces` |
+| xAI / Grok | `xai_models`, `xai_responses`, `xai_x_search`, `xai_web_search`, `xai_image_generate`, `xai_tts`, `xai_transcribe`, `xai_video_generate` |
 
 ## Semantic search (built in, on by default)
 
