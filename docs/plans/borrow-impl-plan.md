@@ -30,7 +30,7 @@ Existing facts (already verified):
 summary (declarations/signatures/import boundaries kept, bodies elided) instead of raw
 lines, with an elision footer giving concrete re-read ranges. Mirrors oh-my-pi
 `crates/pi-ast/src/summary.rs` (BFS unfold + per-language elidable-kind table) but
-implemented in context-engine-rs's deterministic style, reusing the existing tree-sitter
+implemented in nerve-workstation's deterministic style, reusing the existing tree-sitter
 codemap parse layer.
 
 **Reference implementation to study (read-only, in `oh-my-pi` root):**

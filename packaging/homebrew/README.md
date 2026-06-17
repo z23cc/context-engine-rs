@@ -35,7 +35,7 @@ builds an **arm64 bottle on the runner's macOS** (currently `macos-15` →
 to the tap (cross-repo push via the `TAP_DEPLOY_KEY` SSH deploy key).
 
 ```bash
-gh workflow run release.yml -R z23cc/context-engine-rs   # or the Actions "Run workflow" button
+gh workflow run release.yml -R z23cc/nerve-workstation   # or the Actions "Run workflow" button
 ```
 
 GitHub has **no macOS 27 runner**, so CI cannot produce an `arm64_golden_gate`

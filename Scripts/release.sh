@@ -22,7 +22,7 @@
 set -euo pipefail
 
 OWNER="z23cc"
-REPO="context-engine-rs"
+REPO="nerve-workstation"
 TAP_REPO="homebrew-tap"
 FORMULA="nerve-workstation"
 BIN="nerve"

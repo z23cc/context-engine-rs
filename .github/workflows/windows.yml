@@ -58,12 +58,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
-          if [[ "$tag" == v* ]] && gh release view "$tag" -R z23cc/context-engine-rs >/dev/null 2>&1; then
+          if [[ "$tag" == v* ]] && gh release view "$tag" -R z23cc/nerve-workstation >/dev/null 2>&1; then
             sha="$(sha256sum target/release/nerve.exe | cut -d' ' -f1)"
             echo "$sha  nerve.exe" > nerve.exe.sha256
             echo ">> nerve.exe sha256: $sha"
             gh release upload "$tag" target/release/nerve.exe nerve.exe.sha256 \
-              -R z23cc/context-engine-rs --clobber
+              -R z23cc/nerve-workstation --clobber
           else
             echo "no release for '$tag' — build/test verification only, skipping upload"
           fi
@@ -76,7 +76,7 @@ jobs:
           SCOOP_DEPLOY_KEY: ${{ secrets.SCOOP_DEPLOY_KEY }}
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
-          gh release view "$tag" -R z23cc/context-engine-rs >/dev/null 2>&1 || { echo "no release $tag; skipping scoop"; exit 0; }
+          gh release view "$tag" -R z23cc/nerve-workstation >/dev/null 2>&1 || { echo "no release $tag; skipping scoop"; exit 0; }
           ver="${tag#v}"
           sha="$(sha256sum target/release/nerve.exe | cut -d' ' -f1)"
           mkdir -p ~/.ssh
@@ -90,11 +90,11 @@ jobs:
           python - "$ver" "$tag" "$sha" >bucket-repo/bucket/nerve-workstation.json <<'PY'
           import json, sys
           ver, tag, sha = sys.argv[1], sys.argv[2], sys.argv[3]
-          base = "https://github.com/z23cc/context-engine-rs/releases/download"
+          base = "https://github.com/z23cc/nerve-workstation/releases/download"
           manifest = {
               "version": ver,
               "description": "Local AI workstation runtime and MCP adapter",
-              "homepage": "https://github.com/z23cc/context-engine-rs",
+              "homepage": "https://github.com/z23cc/nerve-workstation",
               "license": "MIT OR Apache-2.0",
               "architecture": {"64bit": {"url": f"{base}/{tag}/nerve.exe", "hash": sha}},
               "bin": "nerve.exe",
