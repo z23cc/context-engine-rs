@@ -33,7 +33,10 @@ update_checkpoint tool: the current plan, key decisions, progress, next steps, a
 pointers (path:line). It stays pinned across the whole task even as older context is \
 compacted, so replace it as things change. Store pointers and conclusions, not file \
 contents (you can re-read exactly); never store raw tool output, unverified guesses, \
-or volatile state.";
+or volatile state. Across sessions, when you confirm a durable fact worth keeping for next \
+time — a user preference, a non-obvious project convention, or a hard-won fix — call the \
+remember tool; record only verified, durable facts, never transient task state (use \
+update_checkpoint for that) or anything a tool can re-derive.";
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
