@@ -27,6 +27,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Current on-disk transcript schema. Bump when [`SessionRecord`] changes shape,
 /// and add a migration arm in [`migrate_to_current`] for the previous version.
 const SCHEMA_VERSION: u32 = 1;
+#[allow(dead_code)]
+const CHECKPOINT_STALENESS_MARKER: &str =
+    "[restored from a prior session — update or clear if the task changed]";
 
 /// A persisted agent run: metadata, the streamed events, and the final outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,9 @@ pub(crate) struct SessionRecord {
     /// best-effort from `task` + `outcome` when resumed.
     #[serde(default)]
     pub(crate) history: Vec<Message>,
+    /// Working-memory checkpoint restored into resumed sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) checkpoint: Option<String>,
     /// The streamed transcript, in order.
     #[serde(default)]
     pub(crate) events: Vec<SessionEvent>,
@@ -117,6 +123,7 @@ impl SessionRecord {
             model: model.to_string(),
             task: task.to_string(),
             history: Vec::new(),
+            checkpoint: None,
             events: Vec::new(),
             outcome: None,
         }
@@ -125,6 +132,20 @@ impl SessionRecord {
     /// Replace the stored provider-neutral conversation history.
     pub(crate) fn set_history(&mut self, history: Vec<Message>) {
         self.history = history;
+    }
+
+    /// Replace the stored working-memory checkpoint.
+    #[allow(dead_code)]
+    pub(crate) fn set_checkpoint(&mut self, checkpoint: Option<String>) {
+        self.checkpoint = checkpoint;
+    }
+
+    /// Checkpoint for resume, marked stale so the agent refreshes or clears it.
+    #[allow(dead_code)]
+    pub(crate) fn restore_with_staleness(&self) -> Option<String> {
+        self.checkpoint
+            .as_ref()
+            .map(|checkpoint| format!("{checkpoint}\n{CHECKPOINT_STALENESS_MARKER}"))
     }
 
     /// Conversation history for resume. New interactive-session records return
@@ -506,6 +527,7 @@ mod tests {
             model: "m-1".into(),
             task: "do the thing".into(),
             history: Vec::new(),
+            checkpoint: None,
             events: vec![
                 SessionEvent::TurnStarted { turn: 1 },
                 SessionEvent::AssistantText {
@@ -572,6 +594,46 @@ mod tests {
         assert!(record.history.is_empty());
         assert!(record.outcome.is_none());
         assert!(record.finished_at_ms.is_none());
+        assert!(record.checkpoint.is_none());
+    }
+
+    #[test]
+    fn checkpoint_is_skipped_when_absent() {
+        let record = sample("20260618T120000Z-000", 100);
+        let value = serde_json::to_value(&record).unwrap();
+        assert!(value.get("checkpoint").is_none());
+
+        let round_trip: SessionRecord = serde_json::from_value(value).unwrap();
+        assert!(round_trip.checkpoint.is_none());
+    }
+
+    #[test]
+    fn checkpoint_round_trips_when_present() {
+        let mut record = sample("20260618T120000Z-000", 100);
+        record.set_checkpoint(Some("next: inspect session manager".into()));
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            value.get("checkpoint").and_then(Value::as_str),
+            Some("next: inspect session manager")
+        );
+
+        let round_trip: SessionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            round_trip.checkpoint.as_deref(),
+            Some("next: inspect session manager")
+        );
+    }
+
+    #[test]
+    fn restore_with_staleness_appends_marker() {
+        let mut record = sample("20260618T120000Z-000", 100);
+        record.set_checkpoint(Some("remember this".into()));
+        assert_eq!(
+            record.restore_with_staleness().as_deref(),
+            Some(
+                "remember this\n[restored from a prior session — update or clear if the task changed]"
+            )
+        );
     }
 
     #[test]

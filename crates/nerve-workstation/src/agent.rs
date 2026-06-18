@@ -7,6 +7,7 @@
 //! streaming [`AgentEvent`]s to stdout.
 
 use crate::capabilities::{Capabilities, ResolvedAgent};
+use crate::checkpoint::Checkpoint;
 use crate::providers::ProviderRegistry;
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{AgentRunOutput, DEFAULT_MAX_DEPTH, SubAgentSpawner};
@@ -18,7 +19,7 @@ use nerve_agent::auth::{self, AuthMode, LoginOptions};
 use nerve_agent::{AgentEvent, ProviderId, RunOutcome};
 use nerve_core::CancelToken;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub(crate) const DEFAULT_SYSTEM_PROMPT: &str = "You are a coding agent operating inside the Nerve Workstation \
 code-intelligence engine. You have deterministic, snapshot-backed tools for searching, reading, \
@@ -27,7 +28,12 @@ minimal correct changes, and stop when the task is complete. Prefer reading exac
 guessing, and keep prose concise. For web or X/Twitter search, use the Grok \
 search tools (xai_web_search for the web, xai_x_search for X) rather than other \
 methods; use the codebase search tools (file_search, semantic_search) only for \
-the local repository.";
+the local repository. On multi-step tasks, keep a working memory via the \
+update_checkpoint tool: the current plan, key decisions, progress, next steps, and \
+pointers (path:line). It stays pinned across the whole task even as older context is \
+compacted, so replace it as things change. Store pointers and conclusions, not file \
+contents (you can re-read exactly); never store raw tool output, unverified guesses, \
+or volatile state.";
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
@@ -343,7 +349,14 @@ pub(crate) fn run_agent(
     let provider = config.provider.clone();
     let model = config.model.clone();
     let task = config.task.clone();
-    let spawner = SubAgentSpawner::new(runtime, registry.clone(), gate, DEFAULT_MAX_DEPTH);
+    let checkpoint = Arc::new(Mutex::new(Checkpoint::new()));
+    let spawner = SubAgentSpawner::new(
+        runtime,
+        registry.clone(),
+        gate,
+        DEFAULT_MAX_DEPTH,
+        Arc::clone(&checkpoint),
+    );
     let mut partial_events = Vec::new();
     let result = {
         let mut recording_sink = |event: AgentEvent| {

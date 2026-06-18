@@ -4,6 +4,7 @@ mod agent;
 mod agent_toolbox;
 mod auth;
 mod capabilities;
+mod checkpoint;
 mod cli;
 mod commands;
 mod daemon;

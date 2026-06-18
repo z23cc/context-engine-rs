@@ -7,6 +7,7 @@
 use crate::agent::{AgentRunConfig, DEFAULT_SYSTEM_PROMPT};
 use crate::agent_toolbox::RuntimeToolBox;
 use crate::capabilities::{Capabilities, ResolvedAgent};
+use crate::checkpoint::{Checkpoint, CheckpointHook, CheckpointToolBox};
 use crate::policy::ToolGate;
 use crate::providers::ProviderRegistry;
 use crate::tools::NerveRuntime;
@@ -19,7 +20,7 @@ use nerve_core::{CancelToken, WorkspaceResolver};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub(crate) const DEFAULT_MAX_DEPTH: usize = 2;
 const SPAWN_AGENT: &str = "spawn_agent";
@@ -37,6 +38,7 @@ pub(crate) struct SubAgentSpawner {
     registry: ProviderRegistry,
     gate: ToolGate,
     max_depth: usize,
+    checkpoint: Arc<Mutex<Checkpoint>>,
 }
 
 impl SubAgentSpawner {
@@ -45,12 +47,14 @@ impl SubAgentSpawner {
         registry: ProviderRegistry,
         gate: ToolGate,
         max_depth: usize,
+        checkpoint: Arc<Mutex<Checkpoint>>,
     ) -> Self {
         Self {
             runtime,
             registry,
             gate,
             max_depth,
+            checkpoint,
         }
     }
 
@@ -76,10 +80,12 @@ impl SubAgentSpawner {
             depth,
             parent,
         );
-        let toolbox = self.gate.clone().wrap(raw);
+        let gated = self.gate.clone().wrap(raw);
+        let toolbox = CheckpointToolBox::new(gated, Arc::clone(&self.checkpoint));
+        let checkpoint_hook = CheckpointHook::new(Arc::clone(&self.checkpoint));
         let mut orchestrator = Orchestrator::new(&*provider, &toolbox, def)
             .with_history(history)
-            .with_hooks(vec![&env_hook]);
+            .with_hooks(vec![&env_hook, &checkpoint_hook]);
         run_collecting(&mut orchestrator, &config.task, cancel, sink)
     }
 }

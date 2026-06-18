@@ -6,6 +6,7 @@
 //! emission.
 
 use crate::capabilities::{Capabilities, ResolvedAgent};
+use crate::checkpoint::Checkpoint;
 use crate::policy::{Approver, Policy, ToolGate};
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
@@ -24,6 +25,8 @@ use std::time::Duration;
 const APPROVAL_POLL: Duration = Duration::from_millis(100);
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
+type SessionCheckpoint = Arc<Mutex<Checkpoint>>;
+type ResumeRecord = (String, Vec<Message>, SessionRecord, SessionCheckpoint);
 
 pub(crate) struct SessionManager {
     runtime: Arc<tools::NerveRuntime>,
@@ -40,6 +43,7 @@ struct LiveSession {
     config: SessionConfig,
     history: Vec<Message>,
     record: SessionRecord,
+    checkpoint: SessionCheckpoint,
     status: SessionStatus,
     current_cancel: Option<CancelToken>,
 }
@@ -143,11 +147,12 @@ impl SessionManager {
     }
 
     fn start(&self, config: SessionConfig, resume: Option<String>) -> Result<Value, RuntimeError> {
-        let (id, history, record) = match resume {
+        let (id, history, record, checkpoint) = match resume {
             Some(id) => self.resume_record(&id)?,
             None => {
                 let record = SessionRecord::begin(&config.provider, &config.model, "");
-                (record.id.clone(), Vec::new(), record)
+                let checkpoint = new_checkpoint(None);
+                (record.id.clone(), Vec::new(), record, checkpoint)
             }
         };
         let session = LiveSession {
@@ -155,6 +160,7 @@ impl SessionManager {
             config,
             history,
             record,
+            checkpoint,
             status: SessionStatus::Idle,
             current_cancel: None,
         };
@@ -166,10 +172,7 @@ impl SessionManager {
         Ok(json!({ "session_id": id }))
     }
 
-    fn resume_record(
-        &self,
-        id: &str,
-    ) -> Result<(String, Vec<Message>, SessionRecord), RuntimeError> {
+    fn resume_record(&self, id: &str) -> Result<ResumeRecord, RuntimeError> {
         let store = self
             .store
             .as_ref()
@@ -178,7 +181,8 @@ impl SessionManager {
             RuntimeError::adapter(format!("failed to resume session {id}: {err}"))
         })?;
         let history = record.reconstructed_history();
-        Ok((record.id.clone(), history, record))
+        let checkpoint = new_checkpoint(record.restore_with_staleness());
+        Ok((record.id.clone(), history, record, checkpoint))
     }
 
     fn message(
@@ -187,9 +191,9 @@ impl SessionManager {
         text: &str,
         token: &CancelToken,
     ) -> Result<Value, RuntimeError> {
-        let (config, history) = self.begin_turn(session_id, text, token)?;
+        let (config, history, checkpoint) = self.begin_turn(session_id, text, token)?;
         self.emit(RuntimeEvent::turn_started(session_id.to_string()));
-        let result = self.run_turn(session_id, &config, history, text, token);
+        let result = self.run_turn(session_id, &config, history, checkpoint, text, token);
         self.finish_turn(session_id, result, token)
     }
 
@@ -198,7 +202,7 @@ impl SessionManager {
         session_id: &str,
         text: &str,
         token: &CancelToken,
-    ) -> Result<(SessionConfig, Vec<Message>), RuntimeError> {
+    ) -> Result<(SessionConfig, Vec<Message>, SessionCheckpoint), RuntimeError> {
         let mut sessions = self.sessions.lock().expect("session lock");
         let session = sessions
             .get_mut(session_id)
@@ -213,7 +217,11 @@ impl SessionManager {
         }
         session.status = SessionStatus::Running;
         session.current_cancel = Some(token.clone());
-        Ok((session.config.clone(), session.history.clone()))
+        Ok((
+            session.config.clone(),
+            session.history.clone(),
+            Arc::clone(&session.checkpoint),
+        ))
     }
 
     fn run_turn(
@@ -221,6 +229,7 @@ impl SessionManager {
         session_id: &str,
         config: &SessionConfig,
         history: Vec<Message>,
+        checkpoint: SessionCheckpoint,
         text: &str,
         token: &CancelToken,
     ) -> Result<TurnResult, RuntimeError> {
@@ -240,6 +249,7 @@ impl SessionManager {
             self.registry.clone(),
             gate,
             DEFAULT_MAX_DEPTH,
+            checkpoint,
         );
         let emit = Arc::clone(&self.emit);
         let session = session_id.to_string();
@@ -303,6 +313,9 @@ impl SessionManager {
             if let Some(outcome) = &turn.outcome {
                 session.record.finish(Some(outcome));
             }
+            session
+                .record
+                .set_checkpoint(Some(checkpoint_note(&session.checkpoint)));
             self.persist(&session.record);
         }
         drop(sessions);
@@ -387,6 +400,25 @@ struct TurnResult {
     history: Vec<Message>,
     events: Vec<AgentEvent>,
     outcome: Option<nerve_agent::RunOutcome>,
+}
+
+fn new_checkpoint(note: Option<String>) -> SessionCheckpoint {
+    let checkpoint = Arc::new(Mutex::new(Checkpoint::new()));
+    if let Some(note) = note {
+        lock_checkpoint(&checkpoint).replace(note);
+    }
+    checkpoint
+}
+
+fn checkpoint_note(checkpoint: &SessionCheckpoint) -> String {
+    lock_checkpoint(checkpoint).note.clone()
+}
+
+fn lock_checkpoint(checkpoint: &SessionCheckpoint) -> std::sync::MutexGuard<'_, Checkpoint> {
+    match checkpoint.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 impl LiveSession {

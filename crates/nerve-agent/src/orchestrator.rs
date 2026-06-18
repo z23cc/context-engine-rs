@@ -110,6 +110,9 @@ pub trait Hook: Send + Sync {
     /// prompt so the hook may augment it (e.g. inject environment context).
     fn on_start(&self, _system_prompt: &mut String) {}
 
+    /// Called for every provider request after it is built and before it is sent.
+    fn on_request(&self, _req: &mut ChatRequest) {}
+
     /// Called for every [`AgentEvent`] as it is streamed out (observe-only).
     fn on_event(&self, _event: &AgentEvent) {}
 
@@ -322,7 +325,7 @@ impl<'a> Orchestrator<'a> {
         cancel: &CancelToken,
         sink: &mut dyn FnMut(AgentEvent),
     ) -> AgentResult<ChatResponse> {
-        let req = ChatRequest {
+        let mut req = ChatRequest {
             model: self.def.model.clone(),
             system: Some(system_prompt.to_string()),
             messages: self.history.clone(),
@@ -331,6 +334,9 @@ impl<'a> Orchestrator<'a> {
             max_tokens: None,
             reasoning_effort: self.def.reasoning_effort.clone(),
         };
+        for hook in &self.hooks {
+            hook.on_request(&mut req);
+        }
 
         let response = self.provider.chat(&req, cancel, &mut |delta| match delta {
             ChatDelta::Text(text) => sink(AgentEvent::AssistantText(text)),
@@ -748,6 +754,7 @@ mod tests {
 
     /// A hook that augments the system prompt and records the lifecycle it sees.
     struct RecordingHook {
+        requests: std::sync::Mutex<Vec<Option<String>>>,
         events: std::sync::Mutex<Vec<String>>,
         ended: std::sync::Mutex<Option<String>>,
     }
@@ -755,6 +762,7 @@ mod tests {
     impl RecordingHook {
         fn new() -> Self {
             Self {
+                requests: std::sync::Mutex::new(Vec::new()),
                 events: std::sync::Mutex::new(Vec::new()),
                 ended: std::sync::Mutex::new(None),
             }
@@ -764,6 +772,13 @@ mod tests {
     impl Hook for RecordingHook {
         fn on_start(&self, system_prompt: &mut String) {
             system_prompt.push_str(" [augmented]");
+        }
+
+        fn on_request(&self, req: &mut ChatRequest) {
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push(req.system.clone());
         }
 
         fn on_event(&self, event: &AgentEvent) {
@@ -832,15 +847,42 @@ mod tests {
 
     #[test]
     fn run_without_hooks_leaves_system_prompt_untouched() {
-        let provider = MockProvider::new(vec![response("done", Vec::new(), FinishReason::Stop)]);
+        let provider = CapturingProvider::new();
         let toolbox = MockToolBox::new();
         let mut orch = Orchestrator::new(&provider, &toolbox, def());
 
         orch.run("go", &CancelToken::never(), &mut |_| {})
             .expect("run should complete");
 
-        // With no hooks the configured prompt is left exactly as-is.
+        // With no hooks the configured prompt is sent and stored exactly as-is.
+        assert_eq!(provider.captured().as_deref(), Some("be helpful"));
         assert_eq!(orch.def.system_prompt, "be helpful");
+    }
+
+    #[test]
+    fn hooks_observe_request_once_per_turn() {
+        let provider = MockProvider::new(vec![
+            response(
+                "calling tool",
+                vec![tool_call("call_1", serde_json::json!({"text": "hi"}))],
+                FinishReason::ToolUse,
+            ),
+            response("all done", Vec::new(), FinishReason::Stop),
+        ]);
+        let toolbox = MockToolBox::new();
+        let hook = RecordingHook::new();
+        let mut orch = Orchestrator::new(&provider, &toolbox, def()).with_hooks(vec![&hook]);
+
+        orch.run("go", &CancelToken::never(), &mut |_| {})
+            .expect("run should complete");
+
+        let requests = hook.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|system| system.as_deref() == Some("be helpful [augmented]"))
+        );
     }
 
     #[test]
