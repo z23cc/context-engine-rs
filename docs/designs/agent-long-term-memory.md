@@ -164,8 +164,8 @@ next session → on_start recalls the now-larger memory
 
 ## 10. Phasing
 - **This doc = L1 MVP** (file, agent-invoked remember, on_start recall).
-- Deferred: on-demand **L2** detail file; **auto-distillation** at `on_end`; **ROI/decay
-  pruning**; only if needed — SQLite + vector recall.
+- Deferred: on-demand **L2** detail file; **auto-distillation** (opt-in — full design in §13);
+  **ROI/decay pruning**; only if needed — SQLite + vector recall.
 
 ## 11. Open decisions
 1. Tool name: `remember` (recommended) vs `update_long_term_memory`.
@@ -173,8 +173,8 @@ next session → on_start recalls the now-larger memory
 3. Should `.nerve/memory.md` be git-committable (team-shared conventions) or always local?
    (Recommend: local by default — it's under the already-gitignored `.nerve/`; a future
    `--shared-memory` could point at a committed path.)
-4. Auto-distillation at `on_end` — defer (needs an extra LLM turn; agent-invoked `remember`
-   first).
+4. Auto-distillation — designed in §13 as an **opt-in** post-loop step (not a hook; `on_end`
+   cannot call the LLM). Off by default; agent-invoked `remember` is the zero-cost default.
 
 ## 12. References (file:line)
 - **GenericAgent** — `start_long_term_update` distillation + verified-only / "discard
@@ -185,3 +185,58 @@ next session → on_start recalls the now-larger memory
 - **nerve** — existing `Hook::on_start` / `EnvironmentHook` (recall seam), `CheckpointToolBox`
   (write-decorator pattern, `crates/nerve-workstation/src/checkpoint.rs`), `.nerve/` persistence
   (`crates/nerve-workstation/src/session.rs`).
+
+## 13. Auto-distillation (opt-in) — design
+
+Agent-invoked `remember` (shipped v0.0.41) populates memory only when the agent notices a
+durable fact mid-task — unreliable. Auto-distillation reliably extracts durable facts after
+a session. But it is the **junk hotspot** (an LLM auto-extracting over-records) and costs one
+extra LLM call per session — so it is **opt-in, off by default**, behind layered gates.
+
+### 13.1 Where it runs (zero `nerve-agent` change)
+Not a hook — `on_end` only observes `RunOutcome` and cannot make LLM calls. It is a post-loop
+step in the composition root (`subagent.rs::run_at_depth`, after `run_collecting`), reusing
+the run's provider + the `remember` tool as a **second, restricted `Orchestrator` run**.
+`AgentRunOutput { outcome, history }` already provides the finished `history` (review context)
+and `outcome.turns` (the cost gate), so no plumbing change is needed.
+
+### 13.2 The distiller
+- Provider: the run's provider.
+- Toolbox: **`remember` only** (`MemoryToolBox` over a no-op inner) — it can ONLY write memory.
+- Context: `with_history(output.history)` (cap/compact if large) + the **current memory**
+  (so it won't re-record — strip-recalled-before-store).
+- AgentDef: the strict distiller prompt below, `max_turns: 2`.
+
+### 13.3 The strict prompt (anti-junk core)
+> Review the session above. Your ONLY job: if it produced a DURABLE, VERIFIED fact worth
+> recalling in FUTURE sessions — a user preference, a non-obvious project convention, or a
+> hard-won fix/gotcha — call `remember` once per such fact. Apply a HIGH bar: most sessions
+> produce nothing worth keeping. Do NOT record anything a tool can re-derive (file locations,
+> code structure, APIs), transient task state, unverified guesses, unexecuted plans, or
+> anything already in project memory (shown below). If nothing qualifies, do nothing and stop.
+> When unsure, do not record.
+
+(GA "ignore if nothing verified"; oh-my-pi "capture only if reusable, else do nothing".)
+
+### 13.4 Cost gates
+- **Opt-in**: `--distill-memory` (CLI) / config; OFF by default.
+- **Top-level only** (`depth == 0`) — never subagents (would be N extra calls).
+- **Substantive + completed**: `outcome.turns >= DISTILL_MIN_TURNS` and the run finished
+  normally (not cancelled/errored). Trivial/failed runs distil nothing.
+
+### 13.5 Layered anti-junk (defense in depth — this is the hotspot)
+1. Opt-in (off by default). 2. `remember`-only toolbox. 3. High-bar prompt ("most → nothing").
+4. `remember`'s existing guards: dedup, 2000-char cap, forbidden-list, OverCap→prune.
+5. Pass current memory in → no re-records. 6. `max_turns: 2`.
+
+### 13.6 Testing
+- Mock provider calls `remember` for a durable fact → store gains it.
+- Mock provider returns Stop with no tool calls → memory unchanged ("nothing to keep").
+- Gates: `turns < DISTILL_MIN_TURNS` → never runs; `depth > 0` → never runs; flag off → never runs.
+
+### 13.7 Open decisions
+- `DISTILL_MIN_TURNS` value (or gate on edits-made rather than turn count).
+- Full vs compacted history into the distiller (cost vs recall fidelity).
+- Flag / config surface name.
+
+Build-ready; stays a separate opt-in phase until green-lit.

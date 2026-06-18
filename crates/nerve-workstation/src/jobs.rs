@@ -283,6 +283,7 @@ impl JobManager {
             reasoning_effort,
             tool_filter,
             api_key: None,
+            distill_memory: false,
         };
         let emit = Arc::clone(&self.emit);
         let job_id = job_id.to_string();

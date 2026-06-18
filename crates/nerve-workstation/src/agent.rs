@@ -126,6 +126,10 @@ struct AgentRunArgs {
     /// engine entirely — use only for trusted, non-interactive batch runs.
     #[arg(long = "allow-all", visible_alias = "yes", short = 'y')]
     allow_all: bool,
+    /// Distil durable facts into long-term memory after a substantive run
+    /// (opt-in; off by default — one extra LLM call per qualifying session).
+    #[arg(long = "distill-memory")]
+    distill_memory: bool,
     /// The task for the agent to perform.
     task: String,
 }
@@ -273,6 +277,7 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
         reasoning_effort: args.reasoning_effort.or(resolved.reasoning_effort),
         tool_filter: resolved.tool_filter,
         api_key: args.api_key,
+        distill_memory: args.distill_memory,
     };
     // P5: persist this run's transcript under the project's `.nerve/sessions`
     // (falling back to the global config home). A resolution failure only
@@ -335,6 +340,8 @@ pub(crate) struct AgentRunConfig {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) tool_filter: Option<Vec<String>>,
     pub(crate) api_key: Option<String>,
+    /// Opt-in: distil durable facts into long-term memory after a substantive run.
+    pub(crate) distill_memory: bool,
 }
 
 /// Build the toolbox + provider and drive the orchestrator. The single execution

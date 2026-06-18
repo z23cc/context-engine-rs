@@ -558,6 +558,7 @@ fn session_run_config(
             .or(resolved.reasoning_effort),
         tool_filter: config.tool_filter.clone().or(resolved.tool_filter),
         api_key: None,
+        distill_memory: false,
     }
 }
 

@@ -110,7 +110,27 @@ impl SubAgentSpawner {
         let mut orchestrator = Orchestrator::new(&*provider, &*toolbox, def)
             .with_history(history)
             .with_hooks(hooks);
-        run_collecting(&mut orchestrator, &config.task, cancel, sink)
+        let output = run_collecting(&mut orchestrator, &config.task, cancel, sink)?;
+
+        // Opt-in auto-distillation: after a substantive top-level run, a restricted
+        // second pass extracts durable facts into long-term memory (best-effort; off by
+        // default — see agent-long-term-memory.md §13). Subagents never distil.
+        if should_distill(
+            depth,
+            config.distill_memory,
+            output.outcome.turns,
+            &output.outcome.reason,
+        ) && let Some(store) = &memory_store
+        {
+            crate::memory::distill_session(
+                &*provider,
+                store,
+                &config.model,
+                output.history.clone(),
+                cancel,
+            );
+        }
+        Ok(output)
     }
 }
 
@@ -132,6 +152,13 @@ impl SpawnRunner for SubAgentSpawner {
             .map(|output| output.outcome)
             .map_err(|err| AgentError::Tool(format!("spawn_agent failed: {err}")))
     }
+}
+
+/// Gate for opt-in auto-distillation: only a top-level (`depth == 0`), opted-in run that
+/// did real work (`turns >= DISTILL_MIN_TURNS`) and completed normally (not cancelled)
+/// distils. Subagents and trivial/cancelled runs never trigger the extra LLM pass.
+fn should_distill(depth: usize, opted_in: bool, turns: u32, reason: &str) -> bool {
+    depth == 0 && opted_in && turns >= crate::memory::DISTILL_MIN_TURNS && reason != "cancelled"
 }
 
 fn run_collecting(
@@ -207,6 +234,7 @@ fn sub_config(parent: &ParentRun, args: SpawnAgentArgs) -> Result<AgentRunConfig
         reasoning_effort: resolved.reasoning_effort,
         tool_filter: resolved.tool_filter,
         api_key,
+        distill_memory: false,
     })
 }
 
@@ -372,6 +400,16 @@ mod tests {
     use nerve_agent::Usage;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn should_distill_gates_on_depth_optin_turns_and_completion() {
+        let floor = crate::memory::DISTILL_MIN_TURNS;
+        assert!(should_distill(0, true, floor, "stop"));
+        assert!(!should_distill(1, true, floor, "stop")); // subagents never distil
+        assert!(!should_distill(0, false, floor, "stop")); // opt-in required
+        assert!(!should_distill(0, true, floor - 1, "stop")); // below the turn floor
+        assert!(!should_distill(0, true, floor, "cancelled")); // cancelled runs skip
+    }
 
     struct FakeInner;
 

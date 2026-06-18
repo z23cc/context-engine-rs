@@ -4,7 +4,9 @@
 
 #![allow(dead_code)]
 
-use nerve_agent::{AgentError, AgentResult, Hook, ToolBox, ToolSpec};
+use nerve_agent::{
+    AgentDef, AgentError, AgentResult, Hook, LlmProvider, Message, Orchestrator, ToolBox, ToolSpec,
+};
 use nerve_core::CancelToken;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -13,8 +15,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(crate) const LONG_TERM_MAX_CHARS: usize = 2000;
+pub(crate) const DISTILL_MIN_TURNS: u32 = 4;
 const REMEMBER: &str = "remember";
 const MEMORY_HEADER: &str = "## Project memory (durable facts learned in past sessions)";
+
+pub(crate) const DISTILLER_SYSTEM_PROMPT: &str = concat!(
+    "Review the session above. Your ONLY job: if it produced a DURABLE, VERIFIED fact worth ",
+    "recalling in FUTURE sessions — a user preference, a non-obvious project convention, or a ",
+    "hard-won fix/gotcha — call `remember` once per such fact. Apply a HIGH bar: most sessions ",
+    "produce nothing worth keeping. Do NOT record anything a tool can re-derive (file locations, ",
+    "code structure, APIs), transient task state, unverified guesses, unexecuted plans, or ",
+    "anything already in project memory (shown below). If nothing qualifies, do nothing and stop. ",
+    "When unsure, do not record."
+);
 
 pub(crate) trait MemoryStore: Send + Sync {
     fn load(&self) -> Vec<String>;
@@ -79,6 +92,18 @@ impl MemoryStore for FileMemoryStore {
     }
 }
 
+pub(crate) struct NoOpToolBox;
+
+impl ToolBox for NoOpToolBox {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![]
+    }
+
+    fn call(&self, _name: &str, _args: &Value, _cancel: &CancelToken) -> AgentResult<Value> {
+        Err(AgentError::Tool("no tools available".into()))
+    }
+}
+
 pub(crate) struct MemoryToolBox<T: ToolBox> {
     inner: T,
     store: Arc<dyn MemoryStore>,
@@ -140,6 +165,32 @@ impl Hook for MemoryHook {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&block);
     }
+}
+
+pub(crate) fn distill_session(
+    provider: &dyn LlmProvider,
+    store: &Arc<dyn MemoryStore>,
+    model: &str,
+    history: Vec<Message>,
+    cancel: &CancelToken,
+) {
+    let mut system_prompt = DISTILLER_SYSTEM_PROMPT.to_string();
+    system_prompt.push_str("\n\nAlready in project memory (do not re-record):\n");
+    system_prompt.push_str(&bullet_list(&store.load()));
+
+    let def = AgentDef {
+        system_prompt,
+        model: model.into(),
+        max_turns: 2,
+        ..AgentDef::default()
+    };
+    let toolbox = MemoryToolBox::new(NoOpToolBox, Arc::clone(store));
+    let mut orchestrator = Orchestrator::new(provider, &toolbox, def).with_history(history);
+    let _ = orchestrator.run(
+        "Distill durable, verified session learnings into memory if any qualify.",
+        cancel,
+        &mut |_| {},
+    );
 }
 
 #[derive(Deserialize)]
@@ -209,6 +260,10 @@ fn recall_block_for(facts: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nerve_agent::{
+        ChatDelta, ChatRequest, ChatResponse, FinishReason, ProviderId, ToolCall, Usage,
+    };
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     struct FakeInner {
@@ -238,6 +293,91 @@ mod tests {
                 .expect("calls lock")
                 .push((name.to_string(), args.clone()));
             Ok(json!({ "name": name, "args": args }))
+        }
+    }
+
+    struct RecordingProvider {
+        responses: Mutex<VecDeque<ChatResponse>>,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl RecordingProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().expect("requests lock").clone()
+        }
+    }
+
+    impl LlmProvider for RecordingProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Anthropic
+        }
+
+        fn chat(
+            &self,
+            req: &ChatRequest,
+            _cancel: &CancelToken,
+            sink: &mut dyn FnMut(ChatDelta),
+        ) -> AgentResult<ChatResponse> {
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push(req.clone());
+            let response = self
+                .responses
+                .lock()
+                .expect("responses lock")
+                .pop_front()
+                .expect("scripted response");
+            if !response.content.is_empty() {
+                sink(ChatDelta::Text(response.content.clone()));
+            }
+            Ok(response)
+        }
+    }
+
+    struct FailingProvider;
+
+    impl LlmProvider for FailingProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Anthropic
+        }
+
+        fn chat(
+            &self,
+            _req: &ChatRequest,
+            _cancel: &CancelToken,
+            _sink: &mut dyn FnMut(ChatDelta),
+        ) -> AgentResult<ChatResponse> {
+            Err(AgentError::Provider("boom".into()))
+        }
+    }
+
+    fn tool_call(id: impl Into<String>, name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    fn response(
+        content: &str,
+        tool_calls: Vec<ToolCall>,
+        finish_reason: FinishReason,
+    ) -> ChatResponse {
+        ChatResponse {
+            content: content.into(),
+            reasoning: None,
+            tool_calls,
+            finish_reason,
+            usage: Usage::default(),
         }
     }
 
@@ -366,6 +506,84 @@ mod tests {
         hook.on_start(&mut prompt);
 
         assert_eq!(prompt, "base system");
+    }
+
+    #[test]
+    fn distill_session_remembers_tool_call_fact() {
+        let (_dir, store) = temp_store();
+        let store = shared_store(store);
+        let fact = "User wants release notes grouped by user-visible impact.";
+        let provider = RecordingProvider::new(vec![
+            response(
+                "remembering",
+                vec![tool_call("call_1", REMEMBER, json!({ "fact": fact }))],
+                FinishReason::ToolUse,
+            ),
+            response("", Vec::new(), FinishReason::Stop),
+        ]);
+
+        distill_session(
+            &provider,
+            &store,
+            "test-model",
+            vec![Message::user("Please prepare release notes.")],
+            &CancelToken::never(),
+        );
+
+        assert_eq!(store.load(), vec![fact]);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].tools.len(), 1);
+        assert_eq!(requests[0].tools[0].name, REMEMBER);
+    }
+
+    #[test]
+    fn distill_session_stop_without_tool_calls_leaves_store_unchanged() {
+        let (_dir, store) = temp_store();
+        assert_eq!(
+            store.remember("Existing durable fact."),
+            RememberOutcome::Added
+        );
+        let store = shared_store(store);
+        let before = store.load();
+        let provider = RecordingProvider::new(vec![response(
+            "nothing to keep",
+            Vec::new(),
+            FinishReason::Stop,
+        )]);
+
+        distill_session(
+            &provider,
+            &store,
+            "test-model",
+            vec![Message::user("Thanks")],
+            &CancelToken::never(),
+        );
+
+        assert_eq!(store.load(), before);
+        assert!(
+            provider.requests()[0]
+                .system
+                .as_deref()
+                .expect("system prompt")
+                .contains("- Existing durable fact.")
+        );
+    }
+
+    #[test]
+    fn distill_session_swallows_provider_errors() {
+        let (_dir, store) = temp_store();
+        let store = shared_store(store);
+
+        distill_session(
+            &FailingProvider,
+            &store,
+            "test-model",
+            vec![Message::user("hello")],
+            &CancelToken::never(),
+        );
+
+        assert!(store.load().is_empty());
     }
 
     #[test]
