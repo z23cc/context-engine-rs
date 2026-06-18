@@ -1,0 +1,13 @@
+# Rust / Tauri build output (keeps the engine workspace gates untouched)
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Generated icon source (produced by `bun run icon`)
+/app-icon.png
+
+# Node
+node_modules/
+
+# Bundles / OS cruft
+*.app
+.DS_Store

@@ -1,0 +1,37 @@
+[package]
+name = "nerve-desktop"
+version = "0.1.0"
+description = "Desktop shell that supervises the Nerve Workstation daemon and hosts its web GUI."
+edition = "2021"
+rust-version = "1.77"
+default-run = "nerve-desktop"
+publish = false
+
+# This `[workspace]` table makes `apps/desktop/src-tauri` its OWN cargo workspace
+# root. The engine workspace at the repository root therefore never resolves this
+# crate, so `cargo {clippy,test,fmt} --workspace` and `./Scripts/check-file-size.sh`
+# at the engine root are completely unaffected. (The root manifest also lists
+# `apps` under `exclude` as belt-and-suspenders.)
+[workspace]
+
+[lib]
+name = "nerve_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Unix-only: tao does not forward SIGINT/SIGTERM to Tauri's RunEvent, so we reap
+# the daemon child from our own async-signal-safe handler (see daemon.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# Used by `tauri build` for the production asset protocol.
+custom-protocol = ["tauri/custom-protocol"]
