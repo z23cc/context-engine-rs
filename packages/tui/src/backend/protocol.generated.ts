@@ -169,6 +169,11 @@ export type RuntimeEvent =
       session_id: string;
       tool: string;
       type: "approval_requested";
+    }
+  | {
+      kind: AuthEventKind;
+      provider: string;
+      type: "auth";
     };
 /**
  * Payload of a [`RuntimeEvent::Agent`] — one step of the agent loop. Defined as transport-neutral data; the host maps its own agent events onto these.
@@ -201,6 +206,10 @@ export type AgentEventKind =
       kind: "interrupted";
       reason: string;
     };
+/**
+ * Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.
+ */
+export type AuthEventKind = "login_pending" | "login_completed" | "login_failed" | "credential_refreshed";
 /**
  * Status values used by daemon-owned runtime jobs.
  */

@@ -1,16 +1,27 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nerve_agent::auth::{self, AuthMode, Credential, LoginStart, ProviderId};
 use nerve_agent::error::AgentError;
 use nerve_core::CancelToken;
-use nerve_runtime::{RuntimeCommand, RuntimeError};
+use nerve_runtime::{AuthEventKind, RuntimeCommand, RuntimeError, RuntimeEvent};
 use serde_json::{Value, json};
 
-#[derive(Default)]
+const PENDING_LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
+
+type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
+
 pub(crate) struct AuthManager {
-    pending: Mutex<HashMap<String, PendingLogin>>,
+    pending: Arc<Mutex<HashMap<String, PendingLogin>>>,
+    emit: Arc<EventEmitter>,
+}
+
+impl Default for AuthManager {
+    fn default() -> Self {
+        Self::new(Arc::new(|_| {}))
+    }
 }
 
 #[derive(Clone)]
@@ -20,6 +31,13 @@ struct PendingLogin {
 }
 
 impl AuthManager {
+    pub(crate) fn new(emit: Arc<EventEmitter>) -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            emit,
+        }
+    }
+
     pub(crate) fn handle_command(
         &self,
         command: RuntimeCommand,
@@ -28,6 +46,7 @@ impl AuthManager {
         if cancel.is_cancelled() {
             return Err(RuntimeError::cancelled());
         }
+        self.sweep_pending(now_ms());
         match command {
             RuntimeCommand::AuthStart { provider } => self.start(&provider, cancel),
             RuntimeCommand::AuthComplete {
@@ -48,18 +67,27 @@ impl AuthManager {
         if cancel.is_cancelled() {
             return Err(RuntimeError::cancelled());
         }
-        let start = strategy.start(&redirect_uri).map_err(agent_runtime_error)?;
+        let start = match strategy.start(&redirect_uri) {
+            Ok(start) => start,
+            Err(error) => {
+                self.emit_auth(provider, AuthEventKind::LoginFailed);
+                return Err(agent_runtime_error(error));
+            }
+        };
         if cancel.is_cancelled() {
             return Err(RuntimeError::cancelled());
         }
         let login_id = format!("login-{}", auth::oauth::random_urlsafe(18));
+        let created_at_ms = now_ms();
         self.pending.lock().expect("auth pending lock").insert(
             login_id.clone(),
             PendingLogin {
                 start: start.clone(),
-                created_at_ms: now_ms(),
+                created_at_ms,
             },
         );
+        self.schedule_pending_cleanup(login_id.clone(), created_at_ms);
+        self.emit_auth(provider, AuthEventKind::LoginPending);
         Ok(json!({
             "login_id": login_id,
             "provider": provider.as_str(),
@@ -85,16 +113,27 @@ impl AuthManager {
             .get(login_id)
             .cloned()
             .ok_or_else(|| RuntimeError::adapter(format!("unknown auth login_id: {login_id}")))?;
+        let provider = pending.start.provider;
         let callback = auth::oauth::parse_pasted_callback(input.trim());
-        let strategy = auth::strategy_for(pending.start.provider);
-        let credential = strategy
-            .complete(&pending.start, &callback, cancel)
-            .map_err(agent_runtime_error)?;
-        auth::save_credential(&credential).map_err(agent_runtime_error)?;
+        let strategy = auth::strategy_for(provider);
+        let credential = match strategy.complete(&pending.start, &callback, cancel) {
+            Ok(credential) => credential,
+            Err(error) => {
+                if !matches!(error, AgentError::Cancelled) {
+                    self.emit_auth(provider, AuthEventKind::LoginFailed);
+                }
+                return Err(agent_runtime_error(error));
+            }
+        };
+        if let Err(error) = auth::save_credential(&credential) {
+            self.emit_auth(provider, AuthEventKind::LoginFailed);
+            return Err(agent_runtime_error(error));
+        }
         self.pending
             .lock()
             .expect("auth pending lock")
             .remove(login_id);
+        self.emit_auth(provider, AuthEventKind::LoginCompleted);
         Ok(json!({
             "login_id": login_id,
             "created_at_ms": pending.created_at_ms,
@@ -125,6 +164,40 @@ impl AuthManager {
             "status": "logged_out",
         }))
     }
+
+    fn sweep_pending(&self, now_ms: u64) {
+        self.pending
+            .lock()
+            .expect("auth pending lock")
+            .retain(|_, pending| pending_is_fresh(pending.created_at_ms, now_ms));
+    }
+
+    fn schedule_pending_cleanup(&self, login_id: String, created_at_ms: u64) {
+        let pending = Arc::clone(&self.pending);
+        thread::spawn(move || {
+            thread::sleep(PENDING_LOGIN_TTL + Duration::from_secs(1));
+            pending
+                .lock()
+                .expect("auth pending lock")
+                .retain(|id, pending| {
+                    id != &login_id
+                        || pending.created_at_ms != created_at_ms
+                        || pending_is_fresh(pending.created_at_ms, now_ms())
+                });
+        });
+    }
+
+    fn emit_auth(&self, provider: ProviderId, kind: AuthEventKind) {
+        (self.emit)(RuntimeEvent::auth(provider.as_str(), kind));
+    }
+}
+
+fn pending_is_fresh(created_at_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(created_at_ms) <= pending_login_ttl_ms()
+}
+
+fn pending_login_ttl_ms() -> u64 {
+    PENDING_LOGIN_TTL.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn parse_provider(provider: &str) -> Result<ProviderId, RuntimeError> {
@@ -187,6 +260,59 @@ mod tests {
         );
         assert_eq!(parse_provider("grok").expect("grok"), ProviderId::Xai);
         assert!(parse_provider("unknown").is_err());
+    }
+
+    #[test]
+    fn pending_ttl_marks_old_entries_stale() {
+        let now = pending_login_ttl_ms() + 10_000;
+        assert!(pending_is_fresh(now - pending_login_ttl_ms(), now));
+        assert!(!pending_is_fresh(now - pending_login_ttl_ms() - 1, now));
+    }
+
+    #[test]
+    fn sweep_pending_removes_stale_entries() {
+        let manager = AuthManager::default();
+        manager.pending.lock().expect("auth pending lock").insert(
+            "old".to_string(),
+            PendingLogin {
+                start: auth::strategy_for(ProviderId::OpenAi)
+                    .start("http://127.0.0.1/callback")
+                    .expect("login start"),
+                created_at_ms: 1,
+            },
+        );
+        manager.sweep_pending(pending_login_ttl_ms() + 2);
+        assert!(
+            manager
+                .pending
+                .lock()
+                .expect("auth pending lock")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn auth_start_emits_pending_event() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let manager = AuthManager::new(Arc::new(move |event| {
+            captured.lock().expect("events lock").push(event);
+        }));
+        let result = manager
+            .handle_command(
+                RuntimeCommand::AuthStart {
+                    provider: "openai".to_string(),
+                },
+                &CancelToken::never(),
+            )
+            .expect("auth start");
+        assert_eq!(result["provider"], "openai");
+        let events = events.lock().expect("events lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            RuntimeEvent::auth("openai", AuthEventKind::LoginPending)
+        );
     }
 
     #[test]

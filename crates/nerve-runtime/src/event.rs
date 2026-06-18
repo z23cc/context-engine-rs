@@ -65,6 +65,22 @@ pub enum RuntimeEvent {
         tool: String,
         arguments: Value,
     },
+    /// A host-managed authentication lifecycle update.
+    Auth {
+        provider: String,
+        kind: AuthEventKind,
+    },
+}
+
+/// Authentication lifecycle event kind. Defined as pure protocol data; hosts map
+/// concrete credential/login implementation details onto these states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthEventKind {
+    LoginPending,
+    LoginCompleted,
+    LoginFailed,
+    CredentialRefreshed,
 }
 
 /// Payload of a [`RuntimeEvent::Agent`] — one step of the agent loop. Defined as
@@ -96,6 +112,14 @@ pub enum AgentEventKind {
 }
 
 impl RuntimeEvent {
+    #[must_use]
+    pub fn auth(provider: impl Into<String>, kind: AuthEventKind) -> Self {
+        Self::Auth {
+            provider: provider.into(),
+            kind,
+        }
+    }
+
     #[must_use]
     pub fn agent(job_id: impl Into<String>, event: AgentEventKind) -> Self {
         Self::Agent {

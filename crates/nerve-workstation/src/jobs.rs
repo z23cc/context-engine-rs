@@ -119,7 +119,7 @@ impl JobManager {
             policy,
             session_store,
             sessions,
-            auth: AuthManager::default(),
+            auth: AuthManager::new(Arc::clone(&emit)),
             jobs: Mutex::new(JobStore::default()),
             next_id: AtomicU64::new(1),
             emit,

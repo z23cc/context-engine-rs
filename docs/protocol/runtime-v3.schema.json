@@ -125,6 +125,16 @@
         }
       ]
     },
+    "AuthEventKind": {
+      "description": "Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.",
+      "enum": [
+        "login_pending",
+        "login_completed",
+        "login_failed",
+        "credential_refreshed"
+      ],
+      "type": "string"
+    },
     "RuntimeCapabilities": {
       "properties": {
         "events": {
@@ -849,6 +859,29 @@
             "request_id",
             "session_id",
             "tool",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A host-managed authentication lifecycle update.",
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/AuthEventKind"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "auth"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider",
             "type"
           ],
           "type": "object"

@@ -20,7 +20,7 @@ mod tool_spec;
 pub use adapter::RuntimeToolAdapter;
 pub use command::{RUNTIME_COMMAND_NAMES, RuntimeCommand, SessionApprovalDecision};
 pub use error::RuntimeError;
-pub use event::{AgentEventKind, RuntimeEvent};
+pub use event::{AgentEventKind, AuthEventKind, RuntimeEvent};
 pub use job::{
     RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
     RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
@@ -331,6 +331,15 @@ mod tests {
         assert_eq!(approval_value["request_id"], "request-1");
         assert_eq!(approval_value["tool"], "file_edit");
         assert_eq!(approval_value["arguments"]["path"], "README.md");
+    }
+
+    #[test]
+    fn auth_events_serialize_protocol_shape() {
+        let event = RuntimeEvent::auth("openai", AuthEventKind::LoginPending);
+        let value = serde_json::to_value(event).expect("auth event json");
+        assert_eq!(value["type"], "auth");
+        assert_eq!(value["provider"], "openai");
+        assert_eq!(value["kind"], "login_pending");
     }
 
     #[test]
