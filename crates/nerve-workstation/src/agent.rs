@@ -24,7 +24,10 @@ pub(crate) const DEFAULT_SYSTEM_PROMPT: &str = "You are a coding agent operating
 code-intelligence engine. You have deterministic, snapshot-backed tools for searching, reading, \
 navigating, and editing a codebase. Plan briefly, call tools to gather context before acting, make \
 minimal correct changes, and stop when the task is complete. Prefer reading exact lines over \
-guessing, and keep prose concise.";
+guessing, and keep prose concise. For web or X/Twitter search, use the Grok \
+search tools (xai_web_search for the web, xai_x_search for X) rather than other \
+methods; use the codebase search tools (file_search, semantic_search) only for \
+the local repository.";
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
