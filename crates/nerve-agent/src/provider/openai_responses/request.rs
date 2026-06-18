@@ -20,6 +20,9 @@ pub(super) fn build_body(req: &ChatRequest, client_metadata: Option<Value>) -> V
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
     body.insert("stream".into(), json!(true));
+    // The Codex backend rejects requests unless `store` is false; nerve resends
+    // full history each turn, so server-side response storage is unused anyway.
+    body.insert("store".into(), json!(false));
     body.insert("input".into(), Value::Array(to_input_items(&req.messages)));
 
     if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {

@@ -33,6 +33,10 @@ mod sse;
 
 /// `originator` header value identifying the Codex executor client.
 const CODEX_ORIGINATOR: &str = "codex_exec";
+/// ChatGPT/Codex **subscription** Responses endpoint. Subscription OAuth tokens
+/// must hit the ChatGPT backend, not the platform API (`api.openai.com`), which
+/// rejects them with HTTP 401 "Missing scopes: api.responses.write".
+const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 /// `User-Agent` advertised in OAuth (Codex) mode, in the `codex_exec/<ver>`
 /// style the Responses backend expects from a subscription client.
@@ -63,6 +67,11 @@ impl OpenAiResponsesProvider {
 
     /// The full URL of the Responses streaming endpoint.
     fn endpoint(&self) -> String {
+        if self.is_oauth() {
+            // Subscription (Codex) traffic targets the ChatGPT backend, not the
+            // platform API at api.openai.com (which needs api.responses.write).
+            return CODEX_RESPONSES_URL.to_string();
+        }
         let base = self.credential.base_url.trim_end_matches('/');
         format!("{base}/v1/responses")
     }
@@ -218,6 +227,19 @@ mod tests {
         cred.base_url = "https://api.openai.com/".into();
         let provider = OpenAiResponsesProvider::new(cred);
         assert_eq!(provider.endpoint(), "https://api.openai.com/v1/responses");
+    }
+
+    #[test]
+    fn oauth_endpoint_targets_codex_backend_not_platform_api() {
+        // Subscription tokens must hit the ChatGPT backend; the stored base_url
+        // is ignored for OAuth so existing credentials need no re-login.
+        let mut cred = credential(AuthMode::Oauth, Some("acct_9"));
+        cred.base_url = "https://api.openai.com".into();
+        let provider = OpenAiResponsesProvider::new(cred);
+        assert_eq!(
+            provider.endpoint(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
     }
 
     #[test]

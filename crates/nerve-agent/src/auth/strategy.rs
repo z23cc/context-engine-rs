@@ -223,6 +223,9 @@ const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const OPENAI_ORIGINATOR: &str = "nerve";
+/// ChatGPT/Codex subscription API base. OAuth tokens use the ChatGPT backend,
+/// not the platform API (`api.openai.com`), which 401s on subscription tokens.
+const OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_REDIRECT_HOST: &str = "localhost";
 const OPENAI_REDIRECT_PORT: u16 = 1455;
 const OPENAI_REDIRECT_PATH: &str = "/auth/callback";
@@ -301,7 +304,7 @@ impl OpenAiAuth {
             refresh_token,
             expires_at_unix: Some(oauth::expires_at(expires_in, EXPIRY_SKEW_SECS)),
             account_id,
-            base_url: ProviderId::OpenAi.default_base_url().to_string(),
+            base_url: OPENAI_CODEX_BASE_URL.to_string(),
         })
     }
 }
