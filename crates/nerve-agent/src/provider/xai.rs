@@ -119,6 +119,12 @@ fn build_body(req: &ChatRequest) -> Value {
     body.insert("model".to_string(), Value::String(req.model.clone()));
     body.insert("messages".to_string(), Value::Array(messages));
     body.insert("stream".to_string(), Value::Bool(true));
+    // Request a trailing usage chunk; without this xAI streams omit token usage
+    // and the run reports 0 in / 0 out.
+    body.insert(
+        "stream_options".to_string(),
+        json!({ "include_usage": true }),
+    );
     if let Some(temperature) = req.temperature {
         body.insert("temperature".to_string(), json!(clean_f32(temperature)));
     }
@@ -454,6 +460,7 @@ mod tests {
         let body = build_body(&sample_request());
         assert_eq!(body["model"], json!("grok-4"));
         assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["stream_options"], json!({ "include_usage": true }));
         assert_eq!(body["temperature"], json!(0.2));
         assert_eq!(body["max_tokens"], json!(256));
         assert_eq!(body["reasoning_effort"], json!("high"));
