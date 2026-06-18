@@ -239,13 +239,21 @@ fn resolve_from_store<'a, P>(
 where
     P: CatalogProvider + Sync,
 {
-    let resolved = if let Some(workspace) = workspace {
-        workspace_get(store, workspace)
-            .ok_or_else(|| NerveError::UnknownWorkspace(workspace.to_string()))?
-    } else if workspace_len(store) == 1 {
-        workspace_singleton(store).ok_or(NerveError::AmbiguousWorkspace)?
-    } else {
-        return Err(NerveError::AmbiguousWorkspace);
+    // A blank workspace arg counts as "unspecified": models often fill the
+    // optional `workspace` field with an empty string, which should behave like
+    // omitting it (resolve to the sole workspace, or stay ambiguous when several
+    // exist). A *non-empty* name must still match a registered workspace, so a
+    // removed/unknown name keeps erroring rather than silently re-routing.
+    let name = workspace
+        .map(str::trim)
+        .filter(|workspace| !workspace.is_empty());
+    let resolved = match name {
+        Some(name) => workspace_get(store, name)
+            .ok_or_else(|| NerveError::UnknownWorkspace(name.to_string()))?,
+        None if workspace_len(store) == 1 => {
+            workspace_singleton(store).ok_or(NerveError::AmbiguousWorkspace)?
+        }
+        None => return Err(NerveError::AmbiguousWorkspace),
     };
     Ok(ResolvedWorkspaceProvider::Shared(resolved))
 }

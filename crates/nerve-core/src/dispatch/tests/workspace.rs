@@ -110,6 +110,31 @@ fn registry_singleton_default_routes_to_only_workspace() {
 }
 
 #[test]
+fn registry_blank_workspace_routes_to_only_workspace() {
+    // A model may fill the optional `workspace` field with an empty string; that
+    // must behave like omitting it (resolve to the sole workspace), not error.
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("only.txt"), "needle\n").expect("write");
+
+    let registry: WorkspaceRegistry<FsCatalogProvider> = WorkspaceRegistry::new();
+    registry.insert("only", Arc::new(provider_for(dir.path())));
+
+    let response = handle_tool_call_with_resolver(
+        &registry,
+        &json!({
+            "name": "file_search",
+            "arguments": { "pattern": "needle", "mode": "content", "workspace": "" }
+        }),
+    )
+    .expect("blank workspace routes to the only workspace");
+
+    assert_eq!(
+        response["structuredContent"]["content_matches"][0]["path"],
+        Value::String("only.txt".to_string())
+    );
+}
+
+#[test]
 fn manage_workspaces_add_remove_and_routes_new_workspace() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(
