@@ -355,6 +355,18 @@ mod tests {
     }
 
     #[test]
+    fn gui_html_drives_the_session_chat_surface() {
+        // S3: the primary surface is a multi-turn chat over the `session.*`
+        // command family, including the approval round-trip. All of this rides
+        // the same Protocol v3 jobs/events — no new transport or method.
+        assert!(GUI_HTML.contains("session.start"));
+        assert!(GUI_HTML.contains("session.message"));
+        assert!(GUI_HTML.contains("session.respond"));
+        assert!(GUI_HTML.contains("session.interrupt"));
+        assert!(GUI_HTML.contains("approval_requested"));
+    }
+
+    #[test]
     fn route_rpc_body_reports_parse_error_with_null_id() {
         let (_root, router) = test_router();
         let response = route_rpc_body(&router, "not json").expect("parse-error response");

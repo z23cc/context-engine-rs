@@ -19,6 +19,7 @@
     --warn: #d29922;
     --err: #f85149;
     --reason: #a78bfa;
+    --user: #1f6feb;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
@@ -42,15 +43,10 @@
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
-  header h1 {
-    font-size: 15px;
-    font-weight: 650;
-    margin: 0;
-    letter-spacing: 0.2px;
-  }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: 0.2px; }
   header h1 .sub { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 12px; }
   .status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); box-shadow: 0 0 0 0 transparent; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
   .dot.ok { background: var(--ok); }
   .dot.warn { background: var(--warn); }
   .dot.err { background: var(--err); }
@@ -76,10 +72,7 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
   }
   .tools { overflow-y: auto; padding: 6px; min-height: 0; flex: 1 1 auto; }
-  .tool {
-    padding: 8px 10px; border-radius: 6px; cursor: default;
-    border: 1px solid transparent;
-  }
+  .tool { padding: 8px 10px; border-radius: 6px; border: 1px solid transparent; }
   .tool:hover { background: var(--panel-2); border-color: var(--border); }
   .tool .name { font-family: var(--mono); font-size: 12.5px; color: var(--text); word-break: break-all; }
   .tool .desc { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.4; }
@@ -91,11 +84,21 @@
   .badge.mcp { color: var(--accent); border-color: #284a78; }
   .badge.xai { color: var(--reason); border-color: #443c6e; }
 
-  /* ---- Content ---- */
+  /* ---- Content shell ---- */
   section.content { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .tabs { flex: 0 0 auto; display: flex; gap: 4px; padding: 8px 14px 0; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tab {
+    font-family: var(--sans); font-size: 13px; font-weight: 600; cursor: pointer; color: var(--muted);
+    background: transparent; border: 1px solid transparent; border-bottom: none;
+    border-radius: 7px 7px 0 0; padding: 8px 16px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); background: var(--bg); border-color: var(--border); }
+  .view { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .hidden { display: none !important; }
 
-  .composer { flex: 0 0 auto; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  .row { display: flex; gap: 12px; margin-bottom: 10px; }
+  /* ---- Shared form bits ---- */
+  .row { display: flex; gap: 12px; }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field.grow { flex: 1 1 auto; }
   .field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
@@ -104,16 +107,13 @@
     color: var(--text); font-family: var(--sans); font-size: 13.5px; padding: 8px 10px;
   }
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
-  textarea { resize: vertical; min-height: 64px; font-family: var(--mono); font-size: 13px; line-height: 1.45; }
+  textarea { resize: vertical; font-family: var(--mono); font-size: 13px; line-height: 1.45; }
   .invalid { border-color: var(--err) !important; }
-
-  details.advanced { margin: 2px 0 10px; }
+  details.advanced { margin: 2px 0 0; }
   details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
   details.advanced[open] > summary { color: var(--text); }
   .adv-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 10px; }
   .adv-grid .field.span2 { grid-column: span 2; }
-
-  .actions { display: flex; gap: 10px; align-items: center; }
   button {
     font-family: var(--sans); font-size: 13.5px; font-weight: 600; cursor: pointer;
     border-radius: 6px; padding: 9px 18px; border: 1px solid transparent;
@@ -123,44 +123,116 @@
   button.primary:not(:disabled):hover { background: var(--accent-press); }
   button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
   button.ghost:not(:disabled):hover { background: var(--panel-2); }
-  .hint { color: var(--dim); font-size: 12px; margin-left: auto; font-family: var(--mono); }
+  button.small { padding: 6px 12px; font-size: 12.5px; }
+  .hint { color: var(--dim); font-size: 12px; font-family: var(--mono); }
 
-  /* ---- Stream ---- */
-  .stream { flex: 1 1 auto; overflow-y: auto; padding: 14px 18px; min-height: 0; }
-  .stream:empty::before {
-    content: "Run an agent task to stream turns, reasoning, and tool calls here.";
+  /* ---- Chat: setup ---- */
+  .setup { flex: 0 0 auto; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .setup .row { margin-bottom: 10px; }
+  .setup .actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  .setup .actions .hint { margin-left: auto; }
+
+  /* ---- Chat: session bar ---- */
+  .session-bar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+    padding: 9px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .session-bar .sid { font-family: var(--mono); color: var(--text); }
+  .session-bar .meta { color: var(--muted); font-family: var(--mono); }
+  .session-bar .spacer { margin-left: auto; }
+
+  /* ---- Chat: transcript ---- */
+  .transcript { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px; min-height: 0; }
+  .transcript:empty::before {
+    content: "Start a session, then send a message to begin chatting.";
     color: var(--dim); font-size: 13px;
   }
-  .evt { margin-bottom: 10px; max-width: 1000px; }
-  .evt .role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 4px; }
-  .evt .body { white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-size: 13.5px; }
-  .evt.msg .body { color: var(--text); }
-  .evt.reason { opacity: 0.92; }
-  .evt.reason .role { color: var(--reason); }
-  .evt.reason .body { color: var(--muted); font-style: italic; white-space: pre-wrap; }
-  .evt.turn {
-    font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600;
-    margin: 16px 0 8px; padding-top: 8px; border-top: 1px solid var(--border);
+  .turn-user { display: flex; justify-content: flex-end; margin: 10px 0; }
+  .turn-user .bubble {
+    background: var(--user); color: #fff; border-radius: 12px 12px 3px 12px;
+    padding: 9px 13px; max-width: 78%; white-space: pre-wrap; word-break: break-word;
+    line-height: 1.5; font-size: 13.5px;
   }
-  .evt.sys { font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; gap: 8px; }
-  .evt.sys .tag { color: var(--dim); }
-  .evt.sys.ok .txt { color: var(--ok); }
-  .evt.sys.warn .txt { color: var(--warn); }
-  .evt.sys.err .txt { color: var(--err); }
-  .evt.tool { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 9px 11px; }
-  .evt.tool .role { font-family: var(--mono); color: var(--text); text-transform: none; letter-spacing: 0; }
-  .evt.tool pre {
+  .turn-assistant { margin: 10px 0 18px; max-width: 92%; }
+  .turn-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+  }
+  .turn-head .avatar { color: var(--accent); font-size: 12px; }
+  .turn-status { text-transform: none; letter-spacing: 0; color: var(--dim); font-family: var(--mono); font-size: 11px; }
+  .turn-status.thinking { color: var(--accent); }
+  .turn-status.thinking::after {
+    content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px;
+    border-radius: 50%; background: var(--accent); animation: pulse 1s infinite ease-in-out;
+  }
+  @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+  .turn-body { display: flex; flex-direction: column; gap: 8px; }
+
+  .blk { white-space: pre-wrap; word-break: break-word; line-height: 1.55; font-size: 13.5px; }
+  .blk.msg { color: var(--text); }
+  .blk.reason { color: var(--muted); font-style: italic; opacity: 0.9; border-left: 2px solid var(--reason); padding-left: 10px; }
+  .blk.sys { font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; gap: 8px; }
+  .blk.sys .tag { color: var(--dim); }
+  .blk.sys.ok .txt { color: var(--ok); }
+  .blk.sys.warn .txt { color: var(--warn); }
+  .blk.sys.err .txt { color: var(--err); }
+  .blk.divider { font-family: var(--mono); font-size: 11px; color: var(--dim); border-top: 1px dashed var(--border); padding-top: 6px; }
+
+  /* ---- Tool cards (shared chat + one-shot) ---- */
+  .tool-card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); padding: 9px 11px; }
+  .tool-card .role { font-family: var(--mono); font-size: 12.5px; color: var(--text); display: flex; align-items: center; gap: 7px; }
+  .tool-card pre {
     margin: 7px 0 0; font-family: var(--mono); font-size: 12px; line-height: 1.45;
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
     padding: 8px 10px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   }
-  .evt.tool .out { color: var(--muted); }
-  .evt.tool.err { border-color: #5b2b2b; }
+  .tool-card pre.out { color: var(--muted); }
+  .tool-card.err { border-color: #5b2b2b; }
   .pill { font-size: 10px; font-family: var(--mono); padding: 1px 7px; border-radius: 999px; font-weight: 700; }
   .pill.ok { background: rgba(63,185,80,0.16); color: var(--ok); }
   .pill.err { background: rgba(248,81,73,0.16); color: var(--err); }
+  .pill.run { background: rgba(79,156,249,0.16); color: var(--accent); }
 
-  /* ---- Outcome ---- */
+  /* ---- Approval card ---- */
+  .approval { border: 1px solid #4a3c12; border-radius: 8px; background: rgba(210,153,34,0.08); padding: 10px 12px; }
+  .approval .ap-head { font-size: 12px; color: var(--warn); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .approval .ap-head .verdict { margin-left: auto; font-family: var(--mono); font-size: 11px; }
+  .approval pre {
+    margin: 8px 0; font-family: var(--mono); font-size: 12px; line-height: 1.45;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .approval .ap-actions { display: flex; gap: 8px; }
+  .approval.allowed { border-color: #234a25; background: rgba(63,185,80,0.06); }
+  .approval.allowed .ap-head { color: var(--ok); }
+  .approval.denied { border-color: #5b2b2b; background: rgba(248,81,73,0.06); }
+  .approval.denied .ap-head { color: var(--err); }
+  button.allow { background: var(--ok); color: #06101f; }
+  button.deny { background: transparent; color: var(--err); border-color: #5b2b2b; }
+
+  /* ---- Chat: composer ---- */
+  .composer-chat { flex: 0 0 auto; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--panel); }
+  .composer-chat .crow { display: flex; gap: 10px; align-items: flex-end; }
+  .composer-chat textarea { flex: 1 1 auto; min-height: 52px; max-height: 200px; }
+  .composer-chat .cbtns { display: flex; flex-direction: column; gap: 8px; }
+  .composer-chat .cstatus { display: flex; align-items: center; gap: 7px; margin-top: 8px; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .composer-chat.disabled { opacity: 0.55; }
+  .think-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .think-dot.on { background: var(--accent); animation: pulse 1s infinite ease-in-out; }
+
+  /* ---- One-shot view ---- */
+  .composer { flex: 0 0 auto; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .composer .row { margin-bottom: 10px; }
+  .composer .actions { display: flex; gap: 10px; align-items: center; }
+  .composer .actions .hint { margin-left: auto; }
+  .composer textarea { width: 100%; min-height: 64px; }
+  .stream { flex: 1 1 auto; overflow-y: auto; padding: 14px 18px; min-height: 0; }
+  .stream:empty::before {
+    content: "Run a one-shot agent task to stream turns, reasoning, and tool calls here.";
+    color: var(--dim); font-size: 13px;
+  }
+  .stream .turn-assistant { max-width: 1000px; }
   .outcome { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel-2); padding: 14px 18px; max-height: 40%; overflow-y: auto; }
   .outcome.hidden { display: none; }
   .outcome h3 { margin: 0 0 10px; font-size: 13px; }
@@ -176,7 +248,7 @@
 </head>
 <body>
   <header>
-    <h1>Nerve Workstation<span class="sub">runtime GUI</span></h1>
+    <h1>Nerve Workstation<span class="sub">session chat</span></h1>
     <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">connecting…</span></div>
     <div id="serverMeta" class="server-meta"></div>
   </header>
@@ -191,57 +263,113 @@
     </aside>
 
     <section class="content">
-      <div class="composer">
-        <div class="row">
-          <div class="field grow">
-            <label for="provider">Provider</label>
-            <input id="provider" type="text" placeholder="anthropic" autocomplete="off" spellcheck="false">
+      <div class="tabs">
+        <button class="tab active" data-mode="chat" id="tabChat">Chat</button>
+        <button class="tab" data-mode="oneshot" id="tabOneShot">One-shot</button>
+      </div>
+
+      <!-- ============ CHAT (primary) ============ -->
+      <div id="chatView" class="view">
+        <div id="setup" class="setup">
+          <div class="row">
+            <div class="field grow">
+              <label for="provider">Provider</label>
+              <input id="provider" type="text" placeholder="anthropic" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field grow">
+              <label for="model">Model</label>
+              <input id="model" type="text" placeholder="claude-sonnet-4" autocomplete="off" spellcheck="false">
+            </div>
           </div>
-          <div class="field grow">
-            <label for="model">Model</label>
-            <input id="model" type="text" placeholder="claude-sonnet-4" autocomplete="off" spellcheck="false">
+          <details class="advanced">
+            <summary>Advanced options</summary>
+            <div class="adv-grid">
+              <div class="field span2">
+                <label for="system">System prompt</label>
+                <input id="system" type="text" placeholder="(optional override)" autocomplete="off">
+              </div>
+              <div class="field span2">
+                <label for="agent">Agent</label>
+                <input id="agent" type="text" placeholder="(optional named agent)" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="maxTurns">Max turns</label>
+                <input id="maxTurns" type="number" min="1" step="1" placeholder="40" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="effort">Reasoning effort</label>
+                <input id="effort" type="text" placeholder="low | medium | high" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="temp">Temperature</label>
+                <input id="temp" type="number" min="0" max="2" step="0.1" placeholder="(default)" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="resume">Resume (session id)</label>
+                <input id="resume" type="text" placeholder="(optional)" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field span2">
+                <label for="toolFilterIn">Tool filter (comma-separated)</label>
+                <input id="toolFilterIn" type="text" placeholder="read_file, file_search" autocomplete="off" spellcheck="false">
+              </div>
+            </div>
+          </details>
+          <div class="actions">
+            <button id="start" class="primary">Start session</button>
+            <span id="startHint" class="hint"></span>
           </div>
         </div>
-        <div class="row">
-          <div class="field grow">
-            <label for="task">Task</label>
-            <textarea id="task" placeholder="Describe the task for the agent…"></textarea>
-          </div>
+
+        <div id="sessionBar" class="session-bar hidden">
+          <span class="dot ok"></span>
+          <span class="meta" id="sessionModel"></span>
+          <span class="sid" id="sessionId"></span>
+          <span class="spacer"></span>
+          <button id="newSession" class="ghost small">New session</button>
         </div>
-        <details class="advanced">
-          <summary>Advanced options</summary>
-          <div class="adv-grid">
-            <div class="field span2">
-              <label for="system">System prompt</label>
-              <input id="system" type="text" placeholder="(optional override)" autocomplete="off">
-            </div>
-            <div class="field">
-              <label for="maxTurns">Max turns</label>
-              <input id="maxTurns" type="number" min="1" step="1" placeholder="40" autocomplete="off">
-            </div>
-            <div class="field">
-              <label for="effort">Reasoning effort</label>
-              <input id="effort" type="text" placeholder="low | medium | high" autocomplete="off">
-            </div>
-            <div class="field">
-              <label for="temp">Temperature</label>
-              <input id="temp" type="number" min="0" max="2" step="0.1" placeholder="(default)" autocomplete="off">
-            </div>
-            <div class="field span2">
-              <label for="toolFilterIn">Tool filter (comma-separated)</label>
-              <input id="toolFilterIn" type="text" placeholder="read_file, file_search" autocomplete="off" spellcheck="false">
+
+        <div id="transcript" class="transcript"></div>
+
+        <div id="composer" class="composer-chat disabled">
+          <div class="crow">
+            <textarea id="msg" placeholder="Start a session to chat…" disabled></textarea>
+            <div class="cbtns">
+              <button id="send" class="primary" disabled>Send</button>
+              <button id="stop" class="ghost" disabled>Stop</button>
             </div>
           </div>
-        </details>
-        <div class="actions">
-          <button id="run" class="primary">Run</button>
-          <button id="cancel" class="ghost" disabled>Cancel</button>
-          <span id="jobHint" class="hint"></span>
+          <div class="cstatus"><span id="thinkDot" class="think-dot"></span><span id="thinkText">no session</span></div>
         </div>
       </div>
 
-      <div id="stream" class="stream"></div>
-      <div id="outcome" class="outcome hidden"></div>
+      <!-- ============ ONE-SHOT (secondary) ============ -->
+      <div id="oneShotView" class="view hidden">
+        <div class="composer">
+          <div class="row">
+            <div class="field grow">
+              <label for="osProvider">Provider</label>
+              <input id="osProvider" type="text" placeholder="anthropic" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field grow">
+              <label for="osModel">Model</label>
+              <input id="osModel" type="text" placeholder="claude-sonnet-4" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field grow">
+              <label for="osTask">Task</label>
+              <textarea id="osTask" placeholder="Describe the one-shot task for the agent…"></textarea>
+            </div>
+          </div>
+          <div class="actions">
+            <button id="osRun" class="primary">Run</button>
+            <button id="osCancel" class="ghost" disabled>Cancel</button>
+            <span id="osHint" class="hint"></span>
+          </div>
+        </div>
+        <div id="osStream" class="stream"></div>
+        <div id="osOutcome" class="outcome hidden"></div>
+      </div>
     </section>
   </main>
 
@@ -257,6 +385,18 @@
     if (text != null) e.textContent = text;
     return e;
   }
+  function pretty(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+  }
+  function errText(error) {
+    if (!error) return "error";
+    return (error.kind ? error.kind + ": " : "") + (error.message || "error");
+  }
+  function genId(prefix) {
+    return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+  }
 
   // ---- JSON-RPC over POST /rpc -----------------------------------------
   let rpcId = 0;
@@ -271,140 +411,567 @@
     if (!res.ok) throw new Error("HTTP " + res.status);
     const json = await res.json();
     if (json && json.error) {
-      const m = json.error.message || ("rpc error " + json.error.code);
-      throw new Error(m);
+      throw new Error(json.error.message || ("rpc error " + json.error.code));
     }
     return json ? json.result : undefined;
   }
 
-  // ---- connection status ------------------------------------------------
   function setStatus(state, text) {
     $("#statusDot").className = "dot " + state;
     $("#statusText").textContent = text;
   }
 
-  // ---- state ------------------------------------------------------------
-  let currentJobId = null;
-  let running = false;
-  let curMsg = null;     // active assistant-text block being streamed into
-  let curReason = null;  // active reasoning block being streamed into
+  // ---- unified job registry --------------------------------------------
+  // Every operation is a runtime job; we correlate its terminal lifecycle
+  // event (job_completed / job_failed / job_cancelled) back to what it was.
+  const jobs = new Map(); // job_id -> { kind, id }
 
-  // ---- stream rendering -------------------------------------------------
-  function streamEl() { return $("#stream"); }
-  function autoscroll() {
-    const s = streamEl();
-    // Only stick to bottom if the user is already near it.
-    if (s.scrollHeight - s.scrollTop - s.clientHeight < 120) s.scrollTop = s.scrollHeight;
-  }
-  function clearStream() { streamEl().textContent = ""; curMsg = null; curReason = null; }
-
-  function sys(text, cls) {
-    const b = el("div", "evt sys " + (cls || ""));
-    b.append(el("span", "tag", "•"), el("span", "txt", text));
-    streamEl().append(b);
-    autoscroll();
-  }
-  function addTurn(n) {
-    streamEl().append(el("div", "evt turn", "turn " + n));
-    autoscroll();
-  }
-  function appendMessage(text) {
-    if (!curMsg) {
-      curMsg = el("div", "evt msg");
-      curMsg.append(el("div", "role", "assistant"), el("div", "body"));
-      streamEl().append(curMsg);
+  async function startJob(kind, command) {
+    const id = genId(kind);
+    jobs.set(id, { kind, id });
+    try {
+      await rpc("runtime/jobs/start", { job_id: id, command });
+      return id;
+    } catch (e) {
+      jobs.delete(id);
+      throw e;
     }
-    curMsg.querySelector(".body").textContent += text;
+  }
+
+  // =======================================================================
+  // CHAT (primary surface) — multi-turn session.* over /rpc + /events
+  // =======================================================================
+  const chat = {
+    session: null,        // { id, provider, model } once started
+    pending: null,        // { provider, model } captured at session.start
+    starting: false,      // a session.start job is in flight
+    phase: "idle",        // idle | thinking
+    turnEl: null,         // active assistant-turn container
+    curMsg: null,         // streaming assistant-text block in the active turn
+    curReason: null,      // streaming reasoning block in the active turn
+    lastTool: null,       // last tool card awaiting its tool_finished
+    approvals: new Map(), // request_id -> { card }
+  };
+
+  function transcript() { return $("#transcript"); }
+  function autoscroll() {
+    const t = transcript();
+    if (t.scrollHeight - t.scrollTop - t.clientHeight < 140) t.scrollTop = t.scrollHeight;
+  }
+  function turnBody() { return chat.turnEl ? chat.turnEl.querySelector(".turn-body") : null; }
+
+  function chatSys(text, cls) {
+    const host = turnBody() || transcript();
+    const b = el("div", "blk sys " + (cls || ""));
+    b.append(el("span", "tag", "•"), el("span", "txt", text));
+    host.append(b);
+    autoscroll();
+  }
+
+  function addUserBubble(text) {
+    const wrap = el("div", "turn-user");
+    wrap.append(el("div", "bubble", text));
+    transcript().append(wrap);
+    autoscroll();
+  }
+
+  function startAssistantTurn() {
+    const turn = el("div", "turn-assistant");
+    const head = el("div", "turn-head");
+    head.append(el("span", "avatar", "◆"));
+    head.append(el("span", "label", "assistant"));
+    head.append(el("span", "turn-status thinking", "thinking"));
+    turn.append(head);
+    turn.append(el("div", "turn-body"));
+    transcript().append(turn);
+    chat.turnEl = turn;
+    chat.curMsg = null;
+    chat.curReason = null;
+    chat.lastTool = null;
+    chat.approvals.clear();
+    autoscroll();
+  }
+
+  function finalizeTurn() {
+    if (chat.turnEl) {
+      const s = chat.turnEl.querySelector(".turn-status");
+      if (s) { s.className = "turn-status"; s.textContent = ""; }
+      // Any approval still pending was abandoned (interrupt / turn end).
+      chat.approvals.forEach((a) => markApproval(a.card, "stale"));
+      chat.approvals.clear();
+    }
+    chat.curMsg = null;
+    chat.curReason = null;
+    chat.lastTool = null;
+  }
+
+  function appendAssistantText(text) {
+    const body = turnBody();
+    if (!body) return;
+    if (!chat.curMsg) { chat.curMsg = el("div", "blk msg"); body.append(chat.curMsg); }
+    chat.curMsg.textContent += text;
     autoscroll();
   }
   function appendReasoning(text) {
-    if (!curReason) {
-      curReason = el("div", "evt reason");
-      curReason.append(el("div", "role", "reasoning"), el("div", "body"));
-      streamEl().append(curReason);
-    }
-    curReason.querySelector(".body").textContent += text;
-    autoscroll();
-  }
-  function pretty(v) {
-    if (v == null) return "";
-    if (typeof v === "string") return v;
-    try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
-  }
-  function addToolStart(tool, args) {
-    const b = el("div", "evt tool");
-    b.append(el("div", "role", "→ " + (tool || "tool")));
-    const pre = el("pre", "args");
-    pre.textContent = pretty(args);
-    b.append(pre);
-    streamEl().append(b);
-    autoscroll();
-  }
-  function addToolFinish(tool, ok, output) {
-    const b = el("div", "evt tool " + (ok ? "" : "err"));
-    const head = el("div", "role");
-    head.append(el("span", "pill " + (ok ? "ok" : "err"), ok ? "ok" : "error"));
-    head.append(document.createTextNode(" " + (tool || "tool")));
-    b.append(head);
-    const pre = el("pre", "out");
-    pre.textContent = output || "";
-    b.append(pre);
-    streamEl().append(b);
+    const body = turnBody();
+    if (!body) return;
+    if (!chat.curReason) { chat.curReason = el("div", "blk reason"); body.append(chat.curReason); }
+    chat.curReason.textContent += text;
     autoscroll();
   }
 
-  // ---- event dispatch (SSE) --------------------------------------------
-  function handleAgent(a) {
+  function addToolCard(tool, args) {
+    const body = turnBody();
+    if (!body) return null;
+    const card = el("div", "tool-card");
+    const role = el("div", "role");
+    role.append(el("span", "pill run", "run"));
+    role.append(document.createTextNode(" " + (tool || "tool")));
+    card.append(role);
+    const pre = el("pre", "args");
+    pre.textContent = pretty(args);
+    card.append(pre);
+    body.append(card);
+    autoscroll();
+    return card;
+  }
+  function finishToolCard(tool, ok, output) {
+    const card = chat.lastTool;
+    chat.lastTool = null;
+    if (!card) return;
+    if (!ok) card.classList.add("err");
+    const role = card.querySelector(".role");
+    role.textContent = "";
+    role.append(el("span", "pill " + (ok ? "ok" : "err"), ok ? "ok" : "error"));
+    role.append(document.createTextNode(" " + (tool || "tool")));
+    const out = el("pre", "out");
+    out.textContent = output || "";
+    card.append(out);
+    autoscroll();
+  }
+
+  // ---- approval prompt ----
+  function markApproval(card, state) {
+    if (!card) return;
+    card.classList.remove("allowed", "denied");
+    if (state === "allow") card.classList.add("allowed");
+    else if (state === "deny") card.classList.add("denied");
+    const verdict = card.querySelector(".verdict");
+    if (verdict) verdict.textContent = state === "allow" ? "allowed" : state === "deny" ? "denied" : "(closed)";
+    card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  }
+
+  function addApprovalCard(requestId, tool, args) {
+    const body = turnBody();
+    if (!body) return;
+    const card = el("div", "approval");
+    const head = el("div", "ap-head");
+    head.append(el("span", null, "⚠ approval requested · " + (tool || "tool")));
+    head.append(el("span", "verdict", "pending"));
+    card.append(head);
+    const pre = el("pre", null, pretty(args));
+    card.append(pre);
+    const actions = el("div", "ap-actions");
+    const allow = el("button", "allow small", "Allow");
+    const deny = el("button", "deny small", "Deny");
+    allow.addEventListener("click", () => respond(requestId, "allow", card));
+    deny.addEventListener("click", () => respond(requestId, "deny", card));
+    actions.append(allow, deny);
+    card.append(actions);
+    body.append(card);
+    chat.approvals.set(requestId, { card });
+    autoscroll();
+  }
+
+  async function respond(requestId, decision, card) {
+    markApproval(card, decision);
+    chat.approvals.delete(requestId);
+    try {
+      await startJob("respond", {
+        kind: "session.respond",
+        session_id: chat.session.id,
+        request_id: requestId,
+        decision: decision,
+      });
+    } catch (e) {
+      chatSys("respond failed: " + e.message, "err");
+    }
+  }
+
+  // ---- chat control state ----
+  function refreshChatControls() {
+    const haveSession = !!chat.session;
+    const thinking = chat.phase === "thinking";
+    $("#msg").disabled = !haveSession;
+    $("#send").disabled = !haveSession || thinking;
+    $("#stop").disabled = !thinking;
+    $("#composer").classList.toggle("disabled", !haveSession);
+    $("#start").disabled = chat.starting;
+    const dot = $("#thinkDot");
+    dot.className = "think-dot" + (thinking ? " on" : "");
+    $("#thinkText").textContent = !haveSession ? "no session" : thinking ? "thinking…" : "ready";
+    if (!haveSession) $("#msg").placeholder = "Start a session to chat…";
+    else $("#msg").placeholder = "Message… (Enter to send, Shift+Enter for newline)";
+  }
+
+  function setThinking(on) {
+    chat.phase = on ? "thinking" : "idle";
+    if (!on && chat.turnEl) {
+      const s = chat.turnEl.querySelector(".turn-status");
+      if (s) { s.className = "turn-status"; s.textContent = ""; }
+    }
+    refreshChatControls();
+  }
+
+  function markInvalid(node, bad) { node.classList.toggle("invalid", bad); }
+
+  // ---- start a session ----
+  async function startSession() {
+    if (chat.starting || chat.session) return;
+    const provider = $("#provider").value.trim();
+    const model = $("#model").value.trim();
+    markInvalid($("#provider"), !provider);
+    markInvalid($("#model"), !model);
+    if (!provider || !model) { $("#startHint").textContent = "provider and model are required"; return; }
+
+    const command = { kind: "session.start", provider: provider, model: model };
+    const sysP = $("#system").value.trim(); if (sysP) command.system_prompt = sysP;
+    const agentN = $("#agent").value.trim(); if (agentN) command.agent = agentN;
+    const resume = $("#resume").value.trim(); if (resume) command.resume = resume;
+    const mt = $("#maxTurns").value.trim(); if (mt) { const n = parseInt(mt, 10); if (!isNaN(n)) command.max_turns = n; }
+    const temp = $("#temp").value.trim(); if (temp) { const f = parseFloat(temp); if (!isNaN(f)) command.temperature = f; }
+    const effort = $("#effort").value.trim(); if (effort) command.reasoning_effort = effort;
+    const tf = $("#toolFilterIn").value.trim();
+    if (tf) { const list = tf.split(",").map((s) => s.trim()).filter(Boolean); if (list.length) command.tool_filter = list; }
+
+    chat.starting = true;
+    chat.pending = { provider, model };
+    $("#startHint").textContent = "starting…";
+    refreshChatControls();
+    try {
+      await startJob("start", command);
+    } catch (e) {
+      chat.starting = false;
+      $("#startHint").textContent = "failed: " + e.message;
+      refreshChatControls();
+    }
+  }
+
+  function adoptSession(id) {
+    chat.session = { id: id, provider: chat.pending ? chat.pending.provider : "", model: chat.pending ? chat.pending.model : "" };
+    chat.starting = false;
+    $("#startHint").textContent = "";
+    $("#setup").classList.add("hidden");
+    $("#sessionBar").classList.remove("hidden");
+    $("#sessionModel").textContent = chat.session.provider + " / " + chat.session.model;
+    $("#sessionId").textContent = id;
+    refreshChatControls();
+    $("#msg").focus();
+  }
+
+  function resetChat() {
+    chat.session = null;
+    chat.pending = null;
+    chat.starting = false;
+    chat.phase = "idle";
+    chat.turnEl = null;
+    chat.curMsg = null;
+    chat.curReason = null;
+    chat.lastTool = null;
+    chat.approvals.clear();
+    transcript().textContent = "";
+    $("#setup").classList.remove("hidden");
+    $("#sessionBar").classList.add("hidden");
+    $("#startHint").textContent = "";
+    refreshChatControls();
+  }
+
+  // ---- send a message ----
+  async function send() {
+    if (!chat.session || chat.phase === "thinking") return;
+    const text = $("#msg").value.trim();
+    if (!text) return;
+    $("#msg").value = "";
+    addUserBubble(text);
+    startAssistantTurn();
+    setThinking(true);
+    try {
+      await startJob("message", { kind: "session.message", session_id: chat.session.id, text: text });
+    } catch (e) {
+      chatSys("failed to send: " + e.message, "err");
+      setThinking(false);
+    }
+  }
+
+  async function interrupt() {
+    if (!chat.session) return;
+    try {
+      await startJob("interrupt", { kind: "session.interrupt", session_id: chat.session.id });
+      chatSys("⏹ interrupt requested", "warn");
+    } catch (e) {
+      chatSys("interrupt failed: " + e.message, "err");
+    }
+  }
+
+  async function newSession() {
+    if (chat.session) {
+      try { await startJob("close", { kind: "session.close", session_id: chat.session.id }); } catch (e) { /* best effort */ }
+    }
+    resetChat();
+  }
+
+  // ---- session event handling ----
+  function isCurrent(sessionId) { return chat.session && sessionId === chat.session.id; }
+
+  function onSessionStarted(sessionId) {
+    // Bootstrapping event: adopt while a start is in flight and unclaimed.
+    if (chat.starting && !chat.session) adoptSession(sessionId);
+  }
+  function onTurnStarted(sessionId) {
+    if (!isCurrent(sessionId)) return;
+    if (!chat.turnEl) startAssistantTurn();
+    setThinking(true);
+  }
+  function onSessionIdle(sessionId) {
+    if (!isCurrent(sessionId)) return;
+    finalizeTurn();
+    setThinking(false);
+  }
+  function onSessionClosed(sessionId) {
+    if (!isCurrent(sessionId)) return;
+    chatSys("session closed", "warn");
+    resetChat();
+  }
+  function onApprovalRequested(ev) {
+    if (!isCurrent(ev.session_id)) return;
+    if (!chat.turnEl) startAssistantTurn();
+    addApprovalCard(ev.request_id, ev.tool, ev.arguments);
+  }
+  function onSessionAgent(sessionId, a) {
+    if (!isCurrent(sessionId)) return;
+    if (!chat.turnEl) startAssistantTurn();
     switch (a.kind) {
-      case "turn_started": curMsg = null; curReason = null; addTurn(a.turn); break;
-      case "message": curReason = null; appendMessage(a.text || ""); break;
-      case "reasoning": curMsg = null; appendReasoning(a.text || ""); break;
-      case "tool_started": curMsg = null; curReason = null; addToolStart(a.tool, a.arguments); break;
-      case "tool_finished": curMsg = null; curReason = null; addToolFinish(a.tool, !!a.ok, a.output); break;
-      case "interrupted": curMsg = null; curReason = null; sys("interrupted: " + (a.reason || ""), "warn"); break;
+      case "turn_started":
+        chat.curMsg = null; chat.curReason = null;
+        if (a.turn && a.turn > 1) turnBody().append(el("div", "blk divider", "step " + a.turn));
+        break;
+      case "message": chat.curReason = null; appendAssistantText(a.text || ""); break;
+      case "reasoning": chat.curMsg = null; appendReasoning(a.text || ""); break;
+      case "tool_started":
+        chat.curMsg = null; chat.curReason = null;
+        chat.lastTool = addToolCard(a.tool, a.arguments);
+        break;
+      case "tool_finished":
+        chat.curMsg = null; chat.curReason = null;
+        finishToolCard(a.tool, !!a.ok, a.output);
+        break;
+      case "interrupted":
+        chat.curMsg = null; chat.curReason = null;
+        chatSys("interrupted: " + (a.reason || ""), "warn");
+        break;
+      default: break;
+    }
+  }
+
+  // ---- chat job terminals ----
+  function chatStartTerminal(job, kind, error) {
+    if (kind === "completed") {
+      // session_started normally already adopted the id; fall back to the result.
+      if (!chat.session) {
+        rpc("runtime/jobs/get", { job_id: job.id, include_result: true })
+          .then((r) => { const id = r && r.job && r.job.result && r.job.result.session_id; if (id) adoptSession(id); })
+          .catch(() => {});
+      }
+      return;
+    }
+    chat.starting = false;
+    $("#startHint").textContent = "session.start " + kind + (error ? ": " + errText(error) : "");
+    refreshChatControls();
+  }
+  function chatMessageTerminal(kind, error) {
+    setThinking(false);
+    finalizeTurn();
+    if (kind === "failed" && error) chatSys("× turn failed · " + errText(error), "err");
+    else if (kind === "cancelled") chatSys("turn cancelled", "warn");
+  }
+
+  // =======================================================================
+  // ONE-SHOT (secondary surface) — agent.run jobs
+  // =======================================================================
+  const one = { jobId: null, running: false, turnEl: null, curMsg: null, curReason: null, lastTool: null };
+
+  function osStream() { return $("#osStream"); }
+  function osScroll() { const s = osStream(); if (s.scrollHeight - s.scrollTop - s.clientHeight < 120) s.scrollTop = s.scrollHeight; }
+  function osTurn() { return one.turnEl ? one.turnEl.querySelector(".turn-body") : null; }
+  function osSys(text, cls) {
+    const host = osTurn() || osStream();
+    const b = el("div", "blk sys " + (cls || ""));
+    b.append(el("span", "tag", "•"), el("span", "txt", text));
+    host.append(b); osScroll();
+  }
+  function osNewTurn(n) {
+    const turn = el("div", "turn-assistant");
+    const head = el("div", "turn-head");
+    head.append(el("span", "avatar", "◆"));
+    head.append(el("span", "label", "turn " + n));
+    turn.append(head); turn.append(el("div", "turn-body"));
+    osStream().append(turn);
+    one.turnEl = turn; one.curMsg = null; one.curReason = null; one.lastTool = null;
+    osScroll();
+  }
+  function osText(text) {
+    const body = osTurn(); if (!body) { osNewTurn(1); }
+    if (!one.curMsg) { one.curMsg = el("div", "blk msg"); osTurn().append(one.curMsg); }
+    one.curMsg.textContent += text; osScroll();
+  }
+  function osReason(text) {
+    const body = osTurn(); if (!body) { osNewTurn(1); }
+    if (!one.curReason) { one.curReason = el("div", "blk reason"); osTurn().append(one.curReason); }
+    one.curReason.textContent += text; osScroll();
+  }
+  function osToolStart(tool, args) {
+    const body = osTurn(); if (!body) osNewTurn(1);
+    const card = el("div", "tool-card");
+    const role = el("div", "role");
+    role.append(el("span", "pill run", "run"));
+    role.append(document.createTextNode(" " + (tool || "tool")));
+    card.append(role);
+    const pre = el("pre", "args"); pre.textContent = pretty(args); card.append(pre);
+    osTurn().append(card); one.lastTool = card; osScroll();
+  }
+  function osToolFinish(tool, ok, output) {
+    const card = one.lastTool; one.lastTool = null;
+    if (!card) return;
+    if (!ok) card.classList.add("err");
+    const role = card.querySelector(".role"); role.textContent = "";
+    role.append(el("span", "pill " + (ok ? "ok" : "err"), ok ? "ok" : "error"));
+    role.append(document.createTextNode(" " + (tool || "tool")));
+    const out = el("pre", "out"); out.textContent = output || ""; card.append(out); osScroll();
+  }
+
+  function osSetRunning(on) {
+    one.running = on;
+    $("#osRun").disabled = on;
+    $("#osCancel").disabled = !on;
+    $("#osRun").textContent = on ? "Running…" : "Run";
+  }
+  function osHideOutcome() { const o = $("#osOutcome"); o.classList.add("hidden"); o.textContent = ""; }
+
+  async function osRunTask() {
+    if (one.running) return;
+    const provider = $("#osProvider").value.trim();
+    const model = $("#osModel").value.trim();
+    const task = $("#osTask").value.trim();
+    markInvalid($("#osProvider"), !provider);
+    markInvalid($("#osModel"), !model);
+    markInvalid($("#osTask"), !task);
+    if (!provider || !model || !task) { $("#osHint").textContent = "provider, model, and task are required"; return; }
+
+    osStream().textContent = ""; one.turnEl = null; osHideOutcome();
+    osSetRunning(true);
+    const command = { kind: "agent.run", provider: provider, model: model, task: task };
+    osSys("starting agent.run · " + provider + " / " + model);
+    try {
+      one.jobId = await startJob("oneshot", command);
+      $("#osHint").textContent = one.jobId;
+    } catch (e) {
+      osSys("failed to start: " + e.message, "err");
+      osSetRunning(false);
+    }
+  }
+  async function osCancelTask() {
+    if (!one.jobId) return;
+    try { await rpc("runtime/jobs/cancel", { job_id: one.jobId }); osSys("cancel requested", "warn"); }
+    catch (e) { osSys("cancel failed: " + e.message, "err"); }
+  }
+  function onOneShotAgent(jobId, a) {
+    if (jobId !== one.jobId) return;
+    switch (a.kind) {
+      case "turn_started": osNewTurn(a.turn); break;
+      case "message": one.curReason = null; osText(a.text || ""); break;
+      case "reasoning": one.curMsg = null; osReason(a.text || ""); break;
+      case "tool_started": one.curMsg = null; one.curReason = null; osToolStart(a.tool, a.arguments); break;
+      case "tool_finished": one.curMsg = null; one.curReason = null; osToolFinish(a.tool, !!a.ok, a.output); break;
+      case "interrupted": osSys("interrupted: " + (a.reason || ""), "warn"); break;
+      default: break;
+    }
+  }
+  async function osTerminal(kind, error) {
+    if (error) osSys("job failed · " + errText(error), "err");
+    else osSys("job " + kind, kind === "completed" ? "ok" : "warn");
+    osSetRunning(false);
+    if (!one.jobId) return;
+    try {
+      const r = await rpc("runtime/jobs/get", { job_id: one.jobId, include_result: true });
+      if (r && r.job) osRenderOutcome(r.job);
+    } catch (e) { osSys("could not fetch result: " + e.message, "err"); }
+  }
+  function osRenderOutcome(job) {
+    const o = $("#osOutcome");
+    o.textContent = ""; o.classList.remove("hidden");
+    o.append(el("h3", null, "Outcome"));
+    const grid = el("div", "grid");
+    const add = (k, v) => { grid.append(el("div", "k", k), el("div", "v", v == null ? "—" : String(v))); };
+    add("status", job.status);
+    const r = job.result || {};
+    if (job.error) add("error", errText(job.error));
+    if (r.reason != null) add("reason", r.reason);
+    if (r.turns != null) add("turns", r.turns);
+    if (r.usage) { add("input tokens", r.usage.input_tokens); add("output tokens", r.usage.output_tokens); }
+    o.append(grid);
+    if (r.final_text) {
+      o.append(el("h4", null, "Final text"));
+      const pre = el("pre", "final"); pre.textContent = r.final_text; o.append(pre);
+    }
+  }
+
+  // =======================================================================
+  // Shared event dispatch (SSE) — route by event type, then by id
+  // =======================================================================
+  function onJobTerminal(jobId, kind, error) {
+    const job = jobs.get(jobId);
+    if (!job) return;
+    jobs.delete(jobId);
+    switch (job.kind) {
+      case "oneshot": osTerminal(kind, error); break;
+      case "start": chatStartTerminal(job, kind, error); break;
+      case "message": chatMessageTerminal(kind, error); break;
+      case "respond":
+      case "interrupt":
+      case "close":
+        if (kind !== "completed" && error) chatSys("× " + job.kind + " failed: " + errText(error), "err");
+        break;
       default: break;
     }
   }
 
   function handleEvent(ev) {
     if (!ev || typeof ev !== "object") return;
-    // Lifecycle and agent events both carry job_id; filter to the active run.
-    if (currentJobId && ev.job_id && ev.job_id !== currentJobId) return;
     switch (ev.type) {
-      case "job_started":
-        sys("job started · " + ev.command + (ev.tool_name ? " · " + ev.tool_name : ""));
-        break;
-      case "job_progress":
-        sys(ev.stage + ": " + ev.message, "");
-        break;
-      case "job_cancel_requested":
-        sys("cancellation requested", "warn");
-        break;
-      case "job_completed":
-        onTerminal("completed", null);
-        break;
-      case "job_failed":
-        onTerminal("failed", ev.error);
-        break;
-      case "job_cancelled":
-        onTerminal("cancelled", null);
-        break;
-      case "agent":
-        handleAgent(ev.event || {});
-        break;
-      default:
-        break;
+      // job lifecycle (carry job_id)
+      case "job_started": break;
+      case "job_progress": break;
+      case "job_cancel_requested": break;
+      case "job_completed": onJobTerminal(ev.job_id, "completed", null); break;
+      case "job_failed": onJobTerminal(ev.job_id, "failed", ev.error); break;
+      case "job_cancelled": onJobTerminal(ev.job_id, "cancelled", null); break;
+      // one-shot agent steps (carry job_id)
+      case "agent": onOneShotAgent(ev.job_id, ev.event || {}); break;
+      // session lifecycle + steps (carry session_id)
+      case "session_started": onSessionStarted(ev.session_id); break;
+      case "turn_started": onTurnStarted(ev.session_id); break;
+      case "session_idle": onSessionIdle(ev.session_id); break;
+      case "session_closed": onSessionClosed(ev.session_id); break;
+      case "session_agent": onSessionAgent(ev.session_id, ev.event || {}); break;
+      case "approval_requested": onApprovalRequested(ev); break;
+      default: break;
     }
   }
 
   function connectEvents() {
     let es;
-    try {
-      es = new EventSource("/events");
-    } catch (e) {
-      setStatus("err", "events unavailable");
-      return;
-    }
+    try { es = new EventSource("/events"); }
+    catch (e) { setStatus("err", "events unavailable"); return; }
     es.onopen = () => setStatus("ok", "connected");
     es.onerror = () => setStatus("warn", "reconnecting…");
     es.onmessage = (e) => {
@@ -415,115 +982,9 @@
     };
   }
 
-  // ---- terminal: fetch final job snapshot, render outcome ---------------
-  async function onTerminal(kind, error) {
-    if (error) sys("job failed · " + (error.kind || "error") + ": " + (error.message || ""), "err");
-    else sys("job " + kind, kind === "completed" ? "ok" : "warn");
-    setRunning(false);
-    if (!currentJobId) return;
-    try {
-      const r = await rpc("runtime/jobs/get", { job_id: currentJobId, include_result: true });
-      if (r && r.job) renderOutcome(r.job);
-    } catch (e) {
-      sys("could not fetch job result: " + e.message, "err");
-    }
-  }
-
-  function renderOutcome(job) {
-    const o = $("#outcome");
-    o.textContent = "";
-    o.classList.remove("hidden");
-    o.append(el("h3", null, "Outcome"));
-    const grid = el("div", "grid");
-    const add = (k, v) => { grid.append(el("div", "k", k), el("div", "v", v == null ? "—" : String(v))); };
-    add("status", job.status);
-    const r = job.result || {};
-    if (job.error) add("error", (job.error.kind || "error") + ": " + (job.error.message || ""));
-    if (r.reason != null) add("reason", r.reason);
-    if (r.turns != null) add("turns", r.turns);
-    if (r.usage) {
-      add("input tokens", r.usage.input_tokens);
-      add("output tokens", r.usage.output_tokens);
-    }
-    o.append(grid);
-    if (r.final_text) {
-      o.append(el("h4", null, "Final text"));
-      const pre = el("pre", "final");
-      pre.textContent = r.final_text;
-      o.append(pre);
-    }
-  }
-  function hideOutcome() { const o = $("#outcome"); o.classList.add("hidden"); o.textContent = ""; }
-
-  // ---- run / cancel -----------------------------------------------------
-  function setRunning(on) {
-    running = on;
-    $("#run").disabled = on;
-    $("#cancel").disabled = !on;
-    $("#run").textContent = on ? "Running…" : "Run";
-  }
-
-  function genJobId() {
-    const rand = Math.random().toString(36).slice(2, 8);
-    return "gui-" + Date.now().toString(36) + "-" + rand;
-  }
-
-  function markInvalid(node, bad) { node.classList.toggle("invalid", bad); }
-
-  async function run() {
-    if (running) return;
-    const provider = $("#provider").value.trim();
-    const model = $("#model").value.trim();
-    const task = $("#task").value.trim();
-    markInvalid($("#provider"), !provider);
-    markInvalid($("#model"), !model);
-    markInvalid($("#task"), !task);
-    if (!provider || !model || !task) {
-      sys("provider, model, and task are all required", "warn");
-      return;
-    }
-
-    const command = { kind: "agent.run", provider: provider, model: model, task: task };
-    const sysP = $("#system").value.trim();
-    if (sysP) command.system_prompt = sysP;
-    const mt = $("#maxTurns").value.trim();
-    if (mt) { const n = parseInt(mt, 10); if (!isNaN(n)) command.max_turns = n; }
-    const temp = $("#temp").value.trim();
-    if (temp) { const f = parseFloat(temp); if (!isNaN(f)) command.temperature = f; }
-    const effort = $("#effort").value.trim();
-    if (effort) command.reasoning_effort = effort;
-    const tf = $("#toolFilterIn").value.trim();
-    if (tf) {
-      const list = tf.split(",").map((s) => s.trim()).filter(Boolean);
-      if (list.length) command.tool_filter = list;
-    }
-
-    currentJobId = genJobId();
-    clearStream();
-    hideOutcome();
-    setRunning(true);
-    $("#jobHint").textContent = currentJobId;
-    sys("starting agent.run · " + provider + " / " + model);
-
-    try {
-      await rpc("runtime/jobs/start", { job_id: currentJobId, command: command });
-    } catch (e) {
-      sys("failed to start job: " + e.message, "err");
-      setRunning(false);
-    }
-  }
-
-  async function cancel() {
-    if (!currentJobId) return;
-    try {
-      await rpc("runtime/jobs/cancel", { job_id: currentJobId });
-      sys("cancel requested", "warn");
-    } catch (e) {
-      sys("cancel failed: " + e.message, "err");
-    }
-  }
-
-  // ---- info + tool catalog ----------------------------------------------
+  // =======================================================================
+  // Info + tool catalog
+  // =======================================================================
   function renderInfo(info) {
     if (!info) return;
     const name = (info.serverInfo && info.serverInfo.name) || "nerve";
@@ -533,10 +994,9 @@
     meta.textContent = "";
     meta.append(el("b", null, name + " v" + version));
     meta.append(document.createTextNode("  ·  protocol v" + proto));
-    // Prefill nothing, but surface command kinds as a placeholder hint.
     const kinds = info.capabilities && info.capabilities.jobs && info.capabilities.jobs.commandKinds;
-    if (Array.isArray(kinds) && kinds.indexOf("agent.run") === -1) {
-      sys("warning: daemon does not advertise agent.run", "warn");
+    if (Array.isArray(kinds) && kinds.indexOf("session.start") === -1) {
+      setStatus("warn", "daemon lacks session.start");
     }
   }
 
@@ -574,38 +1034,45 @@
       item.title = desc;
       host.append(item);
     }
-    if (shown === 0) {
-      host.append(el("div", "tool", allTools.length ? "No tools match the filter." : "No tools reported."));
-    }
+    if (shown === 0) host.append(el("div", "tool", allTools.length ? "No tools match the filter." : "No tools reported."));
   }
 
-  // ---- init -------------------------------------------------------------
+  // ---- mode tabs ----
+  function setMode(mode) {
+    const chatOn = mode === "chat";
+    $("#tabChat").classList.toggle("active", chatOn);
+    $("#tabOneShot").classList.toggle("active", !chatOn);
+    $("#chatView").classList.toggle("hidden", !chatOn);
+    $("#oneShotView").classList.toggle("hidden", chatOn);
+  }
+
+  // =======================================================================
+  // init + wire up
+  // =======================================================================
   async function init() {
     connectEvents();
-    try {
-      const info = await rpc("runtime/info");
-      renderInfo(info);
-    } catch (e) {
-      setStatus("err", "rpc error");
-      sys("runtime/info failed: " + e.message, "err");
-    }
-    try {
-      const res = await rpc("runtime/tools/list");
-      renderTools(res && res.tools);
-    } catch (e) {
-      $("#toolCount").textContent = "(error)";
-      sys("runtime/tools/list failed: " + e.message, "err");
-    }
+    refreshChatControls();
+    try { renderInfo(await rpc("runtime/info")); }
+    catch (e) { setStatus("err", "rpc error"); }
+    try { const res = await rpc("runtime/tools/list"); renderTools(res && res.tools); }
+    catch (e) { $("#toolCount").textContent = "(error)"; }
   }
 
-  // ---- wire up ----------------------------------------------------------
-  $("#run").addEventListener("click", run);
-  $("#cancel").addEventListener("click", cancel);
-  $("#toolFilter").addEventListener("input", (e) => paintTools(e.target.value || ""));
-  // Cmd/Ctrl+Enter from the task box submits.
-  $("#task").addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
+  $("#start").addEventListener("click", startSession);
+  $("#send").addEventListener("click", send);
+  $("#stop").addEventListener("click", interrupt);
+  $("#newSession").addEventListener("click", newSession);
+  $("#msg").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
+  $("#osRun").addEventListener("click", osRunTask);
+  $("#osCancel").addEventListener("click", osCancelTask);
+  $("#osTask").addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); osRunTask(); }
+  });
+  $("#toolFilter").addEventListener("input", (e) => paintTools(e.target.value || ""));
+  $("#tabChat").addEventListener("click", () => setMode("chat"));
+  $("#tabOneShot").addEventListener("click", () => setMode("oneshot"));
 
   init();
 })();
