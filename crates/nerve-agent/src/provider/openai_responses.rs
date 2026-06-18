@@ -126,7 +126,7 @@ impl OpenAiResponsesProvider {
         sink: &mut dyn FnMut(ChatDelta),
     ) -> AgentResult<ChatResponse> {
         let agent = http_agent(HTTP_TIMEOUT);
-        let mut reader = post_sse(&agent, &self.endpoint(), &self.headers(), body)?;
+        let mut reader = post_sse(&agent, &self.endpoint(), &self.headers(), body, cancel)?;
         let mut assembler = sse::Assembler::default();
 
         loop {

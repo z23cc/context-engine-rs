@@ -9,8 +9,10 @@
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
+use nerve_core::CancelToken;
 use serde_json::Value;
 
+use super::retry::{Attempt, RetryPolicy, is_retryable_status, with_retry};
 use crate::error::{AgentError, AgentResult};
 
 /// User-Agent string sent with every request.
@@ -66,29 +68,67 @@ pub fn post_json(
         .map_err(|err| AgentError::Parse(format!("invalid JSON response: {err}: {text}")))
 }
 
-/// POST a JSON body and open a streaming Server-Sent Events response.
+/// POST a JSON body and open a streaming Server-Sent Events response, retrying
+/// transient failures (rate limits, 5xx, connection resets) with exponential
+/// backoff.
 ///
-/// On a non-2xx status the body is drained and returned as an [`AgentError::Http`].
+/// Retries wrap only the connect-and-status phase — before any event is read —
+/// so a retry never re-emits already-streamed deltas. A non-retryable status
+/// (e.g. 400/401) fails immediately, and `cancel` aborts between tries and
+/// during a backoff wait.
 pub fn post_sse(
     agent: &ureq::Agent,
     url: &str,
     headers: &[(String, String)],
     body: &Value,
+    cancel: &CancelToken,
 ) -> AgentResult<SseReader> {
+    with_retry(&RetryPolicy::default(), cancel, || {
+        send_sse_once(agent, url, headers, body)
+    })
+}
+
+/// One connect attempt: open the stream on 2xx, otherwise classify the failure
+/// (transport error or non-2xx status) as retryable or fatal for [`with_retry`].
+fn send_sse_once(
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &[(String, String)],
+    body: &Value,
+) -> Attempt<SseReader> {
     let req = with_headers(agent.post(url), headers).header("Accept", "text/event-stream");
-    let mut response = req
-        .send_json(body)
-        .map_err(|err| AgentError::Http(err.to_string()))?;
+    let mut response = match req.send_json(body) {
+        Ok(response) => response,
+        // Transport failure (connection reset, DNS, TLS, timeout): transient.
+        Err(err) => {
+            return Attempt::Retry {
+                error: AgentError::Http(err.to_string()),
+                retry_after: None,
+            };
+        }
+    };
 
     let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        let text = response.body_mut().read_to_string().unwrap_or_default();
-        return Err(AgentError::Http(format!("HTTP {status}: {text}")));
+    if (200..300).contains(&status) {
+        let reader = response.into_body().into_reader();
+        return Attempt::Done(SseReader {
+            reader: BufReader::new(Box::new(reader)),
+        });
     }
-    let reader = response.into_body().into_reader();
-    Ok(SseReader {
-        reader: BufReader::new(Box::new(reader)),
-    })
+
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    let text = response.body_mut().read_to_string().unwrap_or_default();
+    let error = AgentError::Http(format!("HTTP {status}: {text}"));
+    if is_retryable_status(status) {
+        Attempt::Retry { error, retry_after }
+    } else {
+        Attempt::Fatal(error)
+    }
 }
 
 /// A line-oriented reader over an SSE response body.

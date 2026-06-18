@@ -71,7 +71,7 @@ impl LlmProvider for AnthropicProvider {
         let agent = http_agent(REQUEST_TIMEOUT);
         let headers = wire::build_headers(&self.credential);
         let body = wire::build_body(req, &self.credential);
-        let mut reader = post_sse(&agent, &self.messages_url(), &headers, &body)?;
+        let mut reader = post_sse(&agent, &self.messages_url(), &headers, &body, cancel)?;
         drive_stream(&mut reader, cancel, sink)
     }
 }

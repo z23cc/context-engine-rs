@@ -13,6 +13,7 @@ use crate::message::{ChatDelta, ChatRequest, ChatResponse, ToolSpec};
 pub mod anthropic;
 pub mod http;
 pub mod openai_responses;
+mod retry;
 pub mod xai;
 
 /// A streaming chat-completion provider for one vendor.

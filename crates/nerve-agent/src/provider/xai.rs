@@ -67,7 +67,7 @@ impl LlmProvider for XaiProvider {
     ) -> AgentResult<ChatResponse> {
         let body = build_body(req);
         let agent = http_agent(REQUEST_TIMEOUT);
-        let mut reader = post_sse(&agent, &self.endpoint(), &self.headers(), &body)?;
+        let mut reader = post_sse(&agent, &self.endpoint(), &self.headers(), &body, cancel)?;
         drive_stream(&mut reader, cancel, sink)
     }
 }
