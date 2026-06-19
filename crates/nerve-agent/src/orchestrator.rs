@@ -106,6 +106,8 @@ pub enum AgentEvent {
     },
     /// The run was interrupted (cancellation or guardrail) with a reason.
     Interrupted(String),
+    /// Token usage from the latest provider response (per-response delta).
+    Usage { input_tokens: u32, output_tokens: u32 },
     /// The run completed with a terminal reason.
     Done { reason: String },
 }
@@ -275,6 +277,10 @@ impl<'a> Orchestrator<'a> {
             let response = self.execute_turn(turn_system.as_ref(), &tools, cancel, sink)?;
             requests += 1;
             accumulate_usage(&mut usage, &response.usage);
+            sink(AgentEvent::Usage {
+                input_tokens: response.usage.input_tokens,
+                output_tokens: response.usage.output_tokens,
+            });
             if !response.content.is_empty() {
                 final_text = response.content.clone();
             }
@@ -670,20 +676,22 @@ mod tests {
             vec![
                 "turn",          // turn 1 started
                 "text",          // "calling tool"
+                "usage",         // turn 1 token usage
                 "tool_started",  // echo
                 "tool_finished", // echo ok
                 "turn",          // turn 2 started
                 "text",          // "all done"
+                "usage",         // turn 2 token usage
                 "done",          // completed
             ]
         );
 
         assert!(matches!(
-            &events[2],
+            &events[3],
             AgentEvent::ToolStarted { name, .. } if name == "echo"
         ));
         assert!(matches!(
-            &events[3],
+            &events[4],
             AgentEvent::ToolFinished { ok: true, output, .. } if output.contains("\"text\":\"hi\"")
         ));
         assert!(matches!(
@@ -1059,6 +1067,7 @@ mod tests {
             AgentEvent::ToolStarted { .. } => "tool_started",
             AgentEvent::ToolFinished { .. } => "tool_finished",
             AgentEvent::Interrupted(_) => "interrupted",
+            AgentEvent::Usage { .. } => "usage",
             AgentEvent::Done { .. } => "done",
         }
     }

@@ -457,6 +457,9 @@ fn emit_event(event: AgentEvent) {
             println!("   {status} {name} -> {}", truncate(&output, 200));
         }
         AgentEvent::Interrupted(reason) => println!("\n\u{26a0} interrupted: {reason}"),
+        // The CLI prints a final token total in the run summary, so per-turn
+        // usage deltas are not echoed here.
+        AgentEvent::Usage { .. } => {}
         AgentEvent::Done { reason } => println!("\n\u{25cf} {reason}"),
     }
 }

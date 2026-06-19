@@ -122,6 +122,32 @@
             "reason"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "input_tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "usage"
+              ],
+              "type": "string"
+            },
+            "output_tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "input_tokens",
+            "kind",
+            "output_tokens"
+          ],
+          "type": "object"
         }
       ]
     },

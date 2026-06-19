@@ -109,6 +109,10 @@ pub enum AgentEventKind {
     Interrupted {
         reason: String,
     },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
 }
 
 impl RuntimeEvent {

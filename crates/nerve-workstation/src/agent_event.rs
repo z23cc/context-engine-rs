@@ -25,6 +25,13 @@ pub(crate) fn agent_event_kind(event: AgentEvent) -> Option<AgentEventKind> {
             output,
         },
         AgentEvent::Interrupted(reason) => AgentEventKind::Interrupted { reason },
+        AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => AgentEventKind::Usage {
+            input_tokens: u64::from(input_tokens),
+            output_tokens: u64::from(output_tokens),
+        },
         AgentEvent::Done { .. } => return None,
     })
 }

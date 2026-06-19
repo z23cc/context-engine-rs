@@ -201,6 +201,9 @@ impl SessionRecord {
             AgentEvent::Interrupted(reason) => self.events.push(SessionEvent::Interrupted {
                 reason: reason.clone(),
             }),
+            // Per-turn token usage is surfaced live via the protocol; the
+            // transcript keeps only the final total in the outcome.
+            AgentEvent::Usage { .. } => {}
             AgentEvent::Done { reason } => self.events.push(SessionEvent::Done {
                 reason: reason.clone(),
             }),

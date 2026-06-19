@@ -211,6 +211,11 @@ export type AgentEventKind =
   | {
       kind: "interrupted";
       reason: string;
+    }
+  | {
+      input_tokens: number;
+      kind: "usage";
+      output_tokens: number;
     };
 /**
  * Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.
