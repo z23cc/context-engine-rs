@@ -248,13 +248,14 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
     let registry = ProviderRegistry::from_args(&args.serve)?;
     // P3: a named `--agent` populates the run; explicit flags override the def.
     let resolved = resolve_agent_def(&args)?;
-    let provider = args.provider.or(resolved.provider).ok_or_else(|| {
-        anyhow!("no provider: pass --provider or use --agent NAME that defines one")
-    })?;
-    let model = args
-        .model
-        .or(resolved.model)
-        .ok_or_else(|| anyhow!("no model: pass --model or use --agent NAME that defines one"))?;
+    // Precedence: explicit flag -> --agent def -> saved default -> interactive
+    // picker (TTY only). Keeps `nerve agent run` usable with zero flags once a
+    // default is configured. See runconfig / docs agent-config-and-model-selection.
+    let (provider, model) = crate::runconfig::resolve(
+        args.provider.or(resolved.provider),
+        args.model.or(resolved.model),
+        true,
+    )?;
     let runtime = Arc::new(crate::mcp::attach(
         tools::runtime(workspace::registry(&args.serve)?),
         &args.serve,

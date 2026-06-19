@@ -2,9 +2,10 @@
 //!
 //! The terminal UI is a runtime-protocol *client*, not the engine: it ships as a
 //! separate executable (`nerve-chat`, a self-contained bun build) and speaks to
-//! the engine only over the daemon's stdio protocol. This command merely locates
-//! that binary and hands control to it, so the engine and the client stay
-//! decoupled (north-star: client surfaces ride the protocol, never the kernel).
+//! the engine only over the daemon's stdio protocol. This command resolves the
+//! provider/model (flag -> saved default -> first-run picker), then locates that
+//! binary and hands control to it — engine and client stay decoupled (north-star:
+//! client surfaces ride the protocol, never the kernel).
 
 use anyhow::{Result, anyhow};
 use clap::Args;
@@ -13,27 +14,55 @@ use std::process::Command;
 
 #[derive(Debug, Args)]
 pub(crate) struct ChatArgs {
-    /// Arguments forwarded verbatim to the bundled `nerve-chat` client, e.g.
-    /// `--provider anthropic --model claude-sonnet-4 [--root PATH] [--agent NAME]`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub(crate) forwarded: Vec<String>,
+    /// Model provider (`claude`/`chatgpt`/`xai`). Falls back to the saved default,
+    /// then a first-run interactive picker.
+    #[arg(long)]
+    provider: Option<String>,
+    /// Model id (e.g. `claude-sonnet-4`/`gpt-5.5`/`grok-4-fast`). Falls back to
+    /// the saved default, then the interactive picker.
+    #[arg(long)]
+    model: Option<String>,
+    /// Project root the daemon operates on (defaults to the current directory).
+    #[arg(long)]
+    root: Option<PathBuf>,
+    /// Named agent / skill definition to start the session with.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Engine binary used to spawn the daemon (defaults to this `nerve`).
+    #[arg(long)]
+    binary: Option<PathBuf>,
 }
 
-/// Locate `nerve-chat` and hand off to it. Prepends `--binary <this nerve>` so the
-/// client spawns the matching engine; any user-supplied `--binary` is forwarded
-/// after and wins (the client keeps the last occurrence).
+/// Resolve provider/model (flag -> saved default -> picker), locate `nerve-chat`,
+/// and hand off to it. The engine binary is passed explicitly so the client
+/// spawns the matching daemon.
 pub(crate) fn chat(args: ChatArgs) -> Result<()> {
+    let (provider, model) = crate::runconfig::resolve(args.provider, args.model, true)?;
     let binary = locate_chat_binary();
     let mut command = Command::new(&binary);
-    if let Ok(current) = std::env::current_exe() {
-        command.arg("--binary").arg(current);
+    let engine = match args.binary {
+        Some(path) => Some(path),
+        None => std::env::current_exe().ok(),
+    };
+    if let Some(engine) = engine {
+        command.arg("--binary").arg(engine);
     }
-    command.args(&args.forwarded);
+    command
+        .arg("--provider")
+        .arg(&provider)
+        .arg("--model")
+        .arg(&model);
+    if let Some(root) = &args.root {
+        command.arg("--root").arg(root);
+    }
+    if let Some(agent) = &args.agent {
+        command.arg("--agent").arg(agent);
+    }
     handoff(command, &binary)
 }
 
-/// Resolution order: `NERVE_CHAT_BIN` → sibling of the running `nerve` (Homebrew
-/// installs both into the same `bin/`) → bare name for a `PATH` search.
+/// Resolution order: `NERVE_CHAT_BIN` -> sibling of the running `nerve` (Homebrew
+/// installs both into the same `bin/`) -> bare name for a `PATH` search.
 fn locate_chat_binary() -> PathBuf {
     if let Ok(path) = std::env::var("NERVE_CHAT_BIN") {
         let candidate = PathBuf::from(path);

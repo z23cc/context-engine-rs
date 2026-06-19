@@ -16,6 +16,7 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "session.get",
     "session.list",
     "session.close",
+    "session.set_model",
     "auth.start",
     "auth.complete",
     "auth.status",
@@ -103,6 +104,15 @@ pub enum RuntimeCommand {
     /// Close a host-managed session.
     #[serde(rename = "session.close")]
     SessionClose { session_id: String },
+    /// Switch the model (and optionally provider) of a live session in place,
+    /// keeping its history and checkpoint. Takes effect from the next turn.
+    #[serde(rename = "session.set_model")]
+    SessionSetModel {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        model: String,
+    },
     /// Start a host-managed OAuth login and return an authorization URL.
     #[serde(rename = "auth.start")]
     AuthStart { provider: String },
@@ -146,6 +156,7 @@ impl RuntimeCommand {
             Self::SessionGet { .. } => "session.get",
             Self::SessionList => "session.list",
             Self::SessionClose { .. } => "session.close",
+            Self::SessionSetModel { .. } => "session.set_model",
             Self::AuthStart { .. } => "auth.start",
             Self::AuthComplete { .. } => "auth.complete",
             Self::AuthStatus { .. } => "auth.status",
@@ -167,6 +178,7 @@ impl RuntimeCommand {
             | Self::SessionGet { .. }
             | Self::SessionList
             | Self::SessionClose { .. }
+            | Self::SessionSetModel { .. }
             | Self::AuthStart { .. }
             | Self::AuthComplete { .. }
             | Self::AuthStatus { .. }
@@ -177,4 +189,35 @@ impl RuntimeCommand {
 
 fn default_arguments() -> BTreeMap<String, Value> {
     BTreeMap::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_set_model_round_trips() {
+        let value = serde_json::json!({
+            "kind": "session.set_model",
+            "session_id": "s1",
+            "model": "grok-4-fast",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse set_model");
+        assert_eq!(command.name(), "session.set_model");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::SessionSetModel {
+                session_id,
+                provider,
+                model,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(provider, None);
+                assert_eq!(model, "grok-4-fast");
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+        // session.set_model is listed in the canonical command-name set.
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"session.set_model"));
+    }
 }

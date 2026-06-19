@@ -474,6 +474,35 @@
           "type": "object"
         },
         {
+          "description": "Switch the model (and optionally provider) of a live session in place, keeping its history and checkpoint. Takes effect from the next turn.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "session.set_model"
+              ],
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "model",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Start a host-managed OAuth login and return an authorization URL.",
           "properties": {
             "kind": {

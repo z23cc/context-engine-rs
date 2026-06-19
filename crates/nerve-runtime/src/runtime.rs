@@ -107,7 +107,8 @@ where
             | RuntimeCommand::SessionRespond { .. }
             | RuntimeCommand::SessionGet { .. }
             | RuntimeCommand::SessionList
-            | RuntimeCommand::SessionClose { .. } => Err(RuntimeError::adapter(
+            | RuntimeCommand::SessionClose { .. }
+            | RuntimeCommand::SessionSetModel { .. } => Err(RuntimeError::adapter(
                 "session commands are executed by the host session manager, not the core runtime",
             )),
             RuntimeCommand::AuthStart { .. }

@@ -81,6 +81,12 @@ export type RuntimeCommand =
       session_id: string;
     }
   | {
+      kind: "session.set_model";
+      model: string;
+      provider?: string | null;
+      session_id: string;
+    }
+  | {
       kind: "auth.start";
       provider: string;
     }

@@ -13,9 +13,7 @@ use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
 use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::{AgentEvent, Message};
 use nerve_core::{CancelToken, WorkspaceResolver};
-use nerve_runtime::{
-    AgentEventKind, RuntimeCommand, RuntimeError, RuntimeEvent, SessionApprovalDecision,
-};
+use nerve_runtime::{RuntimeCommand, RuntimeError, RuntimeEvent, SessionApprovalDecision};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,6 +140,11 @@ impl SessionManager {
             RuntimeCommand::SessionGet { session_id } => self.get(&session_id),
             RuntimeCommand::SessionList => Ok(json!({ "sessions": self.list() })),
             RuntimeCommand::SessionClose { session_id } => self.close(&session_id),
+            RuntimeCommand::SessionSetModel {
+                session_id,
+                provider,
+                model,
+            } => self.set_model(&session_id, provider, model),
             _ => Err(RuntimeError::adapter("expected session.* command")),
         }
     }
@@ -391,6 +394,21 @@ impl SessionManager {
         Ok(json!({ "closed": removed }))
     }
 
+    /// Swap a live session's model/provider in place; affects the next turn only.
+    fn set_model(
+        &self,
+        session_id: &str,
+        provider: Option<String>,
+        model: String,
+    ) -> Result<Value, RuntimeError> {
+        let mut sessions = self.sessions.lock().expect("session lock");
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| RuntimeError::adapter(format!("unknown session: {session_id}")))?;
+        session.retarget(provider, model);
+        Ok(json!({ "session": session.snapshot() }))
+    }
+
     fn emit(&self, event: RuntimeEvent) {
         (self.emit)(event);
     }
@@ -422,6 +440,14 @@ fn lock_checkpoint(checkpoint: &SessionCheckpoint) -> std::sync::MutexGuard<'_, 
 }
 
 impl LiveSession {
+    /// Point this session at a new model/provider for its next turn.
+    fn retarget(&mut self, provider: Option<String>, model: String) {
+        if let Some(provider) = provider {
+            self.config.provider = provider;
+        }
+        self.config.model = model;
+    }
+
     fn snapshot(&self) -> Value {
         json!({
             "session_id": self.id,
@@ -564,25 +590,8 @@ fn session_run_config(
 }
 
 fn map_session_agent_event(session_id: &str, event: AgentEvent) -> Option<RuntimeEvent> {
-    let kind = match event {
-        AgentEvent::TurnStarted(turn) => AgentEventKind::TurnStarted {
-            turn: u64::from(turn),
-        },
-        AgentEvent::AssistantText(text) => AgentEventKind::Message { text },
-        AgentEvent::Reasoning(text) => AgentEventKind::Reasoning { text },
-        AgentEvent::ToolStarted { name, args } => AgentEventKind::ToolStarted {
-            tool: name,
-            arguments: args,
-        },
-        AgentEvent::ToolFinished { name, ok, output } => AgentEventKind::ToolFinished {
-            tool: name,
-            ok,
-            output,
-        },
-        AgentEvent::Interrupted(reason) => AgentEventKind::Interrupted { reason },
-        AgentEvent::Done { .. } => return None,
-    };
-    Some(RuntimeEvent::session_agent(session_id.to_string(), kind))
+    crate::agent_event::agent_event_kind(event)
+        .map(|kind| RuntimeEvent::session_agent(session_id.to_string(), kind))
 }
 
 #[cfg(test)]
@@ -631,5 +640,35 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("approval request not emitted")
+    }
+
+    #[test]
+    fn retarget_switches_model_and_keeps_history() {
+        let mut session = LiveSession {
+            id: "s1".into(),
+            config: SessionConfig {
+                workspace: None,
+                provider: "claude".into(),
+                model: "m1".into(),
+                system_prompt: None,
+                agent: None,
+                max_turns: None,
+                temperature: None,
+                reasoning_effort: None,
+                tool_filter: None,
+            },
+            history: vec![Message::user("hi")],
+            record: SessionRecord::begin("claude", "m1", ""),
+            checkpoint: new_checkpoint(None),
+            status: SessionStatus::Idle,
+            current_cancel: None,
+        };
+        session.retarget(Some("xai".into()), "grok-4-fast".into());
+        assert_eq!(session.config.provider, "xai");
+        assert_eq!(session.config.model, "grok-4-fast");
+        assert_eq!(session.history.len(), 1);
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot["provider"], "xai");
+        assert_eq!(snapshot["model"], "grok-4-fast");
     }
 }

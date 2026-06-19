@@ -12,8 +12,8 @@ use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::AgentEvent;
 use nerve_core::CancelToken;
 use nerve_runtime::{
-    AgentEventKind, RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobGetRequest,
-    RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
+    RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
+    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -432,6 +432,7 @@ fn is_session_command(command: &RuntimeCommand) -> bool {
             | RuntimeCommand::SessionGet { .. }
             | RuntimeCommand::SessionList
             | RuntimeCommand::SessionClose { .. }
+            | RuntimeCommand::SessionSetModel { .. }
     )
 }
 
@@ -446,25 +447,8 @@ fn is_auth_command(command: &RuntimeCommand) -> bool {
 }
 
 fn map_agent_event(job_id: &str, event: AgentEvent) -> Option<RuntimeEvent> {
-    let kind = match event {
-        AgentEvent::TurnStarted(turn) => AgentEventKind::TurnStarted {
-            turn: u64::from(turn),
-        },
-        AgentEvent::AssistantText(text) => AgentEventKind::Message { text },
-        AgentEvent::Reasoning(text) => AgentEventKind::Reasoning { text },
-        AgentEvent::ToolStarted { name, args } => AgentEventKind::ToolStarted {
-            tool: name,
-            arguments: args,
-        },
-        AgentEvent::ToolFinished { name, ok, output } => AgentEventKind::ToolFinished {
-            tool: name,
-            ok,
-            output,
-        },
-        AgentEvent::Interrupted(reason) => AgentEventKind::Interrupted { reason },
-        AgentEvent::Done { .. } => return None,
-    };
-    Some(RuntimeEvent::agent(job_id.to_string(), kind))
+    crate::agent_event::agent_event_kind(event)
+        .map(|kind| RuntimeEvent::agent(job_id.to_string(), kind))
 }
 
 fn now_ms() -> u64 {

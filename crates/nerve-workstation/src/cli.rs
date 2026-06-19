@@ -167,36 +167,21 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_chat_passthrough() {
-        // Everything after `chat` is captured verbatim for the bundled client,
-        // including leading-hyphen flags it doesn't itself declare.
+    fn cli_parses_chat_flags() {
+        // Flags are explicit and all optional — the saved default / picker fills
+        // any gaps at runtime.
         let parsed = Cli::try_parse_from([
             "nerve",
             "chat",
             "--provider",
-            "anthropic",
+            "claude",
             "--model",
             "claude-sonnet-4",
             "--root",
             ".",
         ])
         .expect("chat parse");
-        match parsed.command {
-            CommandKind::Chat(args) => assert_eq!(
-                args.forwarded,
-                [
-                    "--provider",
-                    "anthropic",
-                    "--model",
-                    "claude-sonnet-4",
-                    "--root",
-                    "."
-                ]
-            ),
-            other => panic!("expected chat, got {other:?}"),
-        }
-        // No-arg `nerve chat` is valid at the CLI layer (the client reports the
-        // missing provider/model itself).
+        assert!(matches!(parsed.command, CommandKind::Chat(_)));
         let bare = Cli::try_parse_from(["nerve", "chat"]).expect("bare chat parse");
         assert!(matches!(bare.command, CommandKind::Chat(_)));
     }
