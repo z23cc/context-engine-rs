@@ -5,9 +5,9 @@
 //!
 //! The interactive LLM path needs provider credentials, so it is exercised by
 //! hand, not in CI; the protocol client, the render path, and the key/command
-//! reductions are what the tests cover. The approval modal (`Mode::Approval`)
-//! key path is stubbed here (T4 fills it on top of the dispatch + `ApprovalState`
-//! hook this wave lands).
+//! reductions are what the tests cover. The approval modal (`Mode::Approval`) is
+//! rendered in [`render`] and answered in [`input`] (`on_approval_key` →
+//! `session.respond`).
 
 mod events;
 mod input;
@@ -29,10 +29,20 @@ use state::State;
 use terminal::TerminalGuard;
 
 /// Run the interactive shell against a daemon spawned from `spec`, starting a
-/// session with `provider`/`model`.
-pub async fn run(spec: DaemonSpec, provider: String, model: String) -> Result<()> {
+/// session with `provider`/`model` (and an optional named `agent`/skill def).
+pub async fn run(
+    spec: DaemonSpec,
+    provider: String,
+    model: String,
+    agent: Option<String>,
+) -> Result<()> {
     let (client, events) = NerveClient::connect(spec).await?;
-    let mut shell = Shell::new(client, events, State::new(provider.clone(), model.clone()));
+    let mut shell = Shell::new(
+        client,
+        events,
+        State::new(provider.clone(), model.clone()),
+        agent,
+    );
     shell.startup(provider, model).await;
     let result = shell.event_loop().await;
     shell.client.shutdown().await;
@@ -43,14 +53,22 @@ pub(crate) struct Shell {
     pub(crate) client: NerveClient,
     events: broadcast::Receiver<RuntimeEvent>,
     pub(crate) state: State,
+    /// Named agent/skill def the session starts with (carried so `/new` reuses it).
+    agent: Option<String>,
 }
 
 impl Shell {
-    fn new(client: NerveClient, events: broadcast::Receiver<RuntimeEvent>, state: State) -> Self {
+    fn new(
+        client: NerveClient,
+        events: broadcast::Receiver<RuntimeEvent>,
+        state: State,
+        agent: Option<String>,
+    ) -> Self {
         Self {
             client,
             events,
             state,
+            agent,
         }
     }
 
@@ -61,23 +79,21 @@ impl Shell {
             "connected · {} tools · type a message · /help for commands",
             self.state.tools
         ));
-        if let Err(err) = self
-            .client
-            .start_job(Self::session_start_command(provider, model), None)
-            .await
-        {
+        let command = self.session_start_command(provider, model);
+        if let Err(err) = self.client.start_job(command, None).await {
             self.state.note(format!("session.start failed: {err}"));
         }
     }
 
-    /// Build a `session.start` command for the current provider/model.
-    pub(crate) fn session_start_command(provider: String, model: String) -> RuntimeCommand {
+    /// Build a `session.start` command for the given provider/model, carrying the
+    /// agent/skill def the shell was launched with.
+    pub(crate) fn session_start_command(&self, provider: String, model: String) -> RuntimeCommand {
         RuntimeCommand::SessionStart {
             workspace: None,
             provider,
             model,
             system_prompt: None,
-            agent: None,
+            agent: self.agent.clone(),
             resume: None,
             max_turns: None,
             temperature: None,

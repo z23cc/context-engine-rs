@@ -1,0 +1,7 @@
+---
+source: crates/nerve-tui/src/app/render.rs
+expression: rendered
+---
+«yellow»⚠ allow  «bold»run_command  «red»[exec]
+«dim»│ «dim»ls -la /tmp
+«bold»[a]llow once · «bold»[A]lways · «bold»[d]eny · «bold»[D]eny always · «dim»Esc cancel

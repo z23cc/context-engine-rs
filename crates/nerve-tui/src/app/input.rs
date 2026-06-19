@@ -19,12 +19,12 @@
 //!   mouse wheel      scroll (handled in the event loop)
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use nerve_runtime::{ApprovalMode, RuntimeCommand};
+use nerve_runtime::{ApprovalMode, RuntimeCommand, SessionApprovalDecision};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::Shell;
-use super::state::{Mode, Tone};
+use super::state::{ApprovalState, Mode, Tone};
 use crate::ui::commands::{
     COMMANDS, CommandSpec, HELP_TEXT, SlashCommand, approval_mode_label, format_models,
     match_commands, parse_approval_mode, parse_command, provider_models_tool,
@@ -45,8 +45,9 @@ impl Shell {
             return false;
         }
         if self.state.mode == Mode::Approval {
-            // T4 fills approval handling; T3 only reserves the short-circuit so an
-            // approval keypress never falls through to the editor.
+            // Approval keys never reach the editor; a non-decision key keeps the
+            // prompt up. Mirrors the TS `#onApprovalKey`.
+            self.on_approval_key(key).await;
             return false;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -110,6 +111,25 @@ impl Shell {
         }
         self.state.editor.insert(text);
         self.state.palette_index = 0;
+    }
+
+    /// Handle a key while the approval modal is up. A decision key sends a
+    /// `session.respond`, clears the modal, returns to input, and pushes a notice;
+    /// other keys are ignored so the prompt persists. Ports the TS `#onApprovalKey`.
+    async fn on_approval_key(&mut self, key: KeyEvent) {
+        let Some(decision) = approval_decision_for_key(key) else {
+            return;
+        };
+        // Take the pending approval; without one there is nothing to answer.
+        let Some(approval) = self.state.approval.take() else {
+            self.state.mode = Mode::Input;
+            return;
+        };
+        self.state.mode = Mode::Input;
+        let tool = approval.tool.clone();
+        self.send(respond_command(approval, decision)).await;
+        self.state
+            .note(format!("{} {}", decision_verb(decision), tool));
     }
 
     /// Ctrl-C: interrupt an in-flight turn, else quit. Returns `true` to exit.
@@ -353,7 +373,7 @@ impl Shell {
             self.state.provider, self.state.model
         ));
         let command =
-            Self::session_start_command(self.state.provider.clone(), self.state.model.clone());
+            self.session_start_command(self.state.provider.clone(), self.state.model.clone());
         self.send(command).await;
     }
 
@@ -416,6 +436,53 @@ fn newline_chord(modifiers: KeyModifiers) -> bool {
     modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
 }
 
+/// Map an approval keypress to a [`SessionApprovalDecision`], or `None` if the key
+/// isn't a decision (so the prompt stays up). Case matters: lowercase = once,
+/// uppercase = "always". `Esc` cancels (deny once). Ports `approvalDecisionForKey`:
+///   a/y → allow · A → allow_always · d/n → deny · D → deny_always · Esc → deny
+#[must_use]
+fn approval_decision_for_key(key: KeyEvent) -> Option<SessionApprovalDecision> {
+    use SessionApprovalDecision::{Allow, AllowAlways, Deny, DenyAlways};
+    if key.code == KeyCode::Esc {
+        return Some(Deny);
+    }
+    // Only bare character keys are decisions; a control chord (Ctrl-A etc.) is not
+    // — the TS only inspects `key.type === "char"`, never the ctrl-decoded keys.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('a' | 'y') => Some(Allow),
+        KeyCode::Char('A') => Some(AllowAlways),
+        KeyCode::Char('d' | 'n') => Some(Deny),
+        KeyCode::Char('D') => Some(DenyAlways),
+        _ => None,
+    }
+}
+
+/// Build the `session.respond` command answering a pending approval. Pure so the
+/// session/request routing is testable without a live client. Ports the TS
+/// `#send({ kind: "session.respond", … })`.
+#[must_use]
+fn respond_command(approval: ApprovalState, decision: SessionApprovalDecision) -> RuntimeCommand {
+    RuntimeCommand::SessionRespond {
+        session_id: approval.session_id,
+        request_id: approval.request_id,
+        decision,
+    }
+}
+
+/// Past-tense verb for a decision notice. Ports the TS `decisionVerb`.
+#[must_use]
+fn decision_verb(decision: SessionApprovalDecision) -> &'static str {
+    match decision {
+        SessionApprovalDecision::Allow => "allowed",
+        SessionApprovalDecision::AllowAlways => "always-allowed",
+        SessionApprovalDecision::Deny => "denied",
+        SessionApprovalDecision::DenyAlways => "always-denied",
+    }
+}
+
 /// Compact-JSON a value for a notice/header (a string is passed through). Mirrors
 /// the TS `safeJson`. Currently used by tests; kept here next to its siblings.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -444,6 +511,87 @@ mod tests {
         assert!(newline_chord(KeyModifiers::SHIFT));
         assert!(!newline_chord(KeyModifiers::NONE));
         assert!(!newline_chord(KeyModifiers::CONTROL));
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn approval_decision_key_map() {
+        use SessionApprovalDecision::{Allow, AllowAlways, Deny, DenyAlways};
+        // lowercase = once, uppercase = "always"; a/y allow, d/n deny, Esc denies.
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('a'))),
+            Some(Allow)
+        );
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('y'))),
+            Some(Allow)
+        );
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('A'))),
+            Some(AllowAlways)
+        );
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('d'))),
+            Some(Deny)
+        );
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('n'))),
+            Some(Deny)
+        );
+        assert_eq!(
+            approval_decision_for_key(key(KeyCode::Char('D'))),
+            Some(DenyAlways)
+        );
+        assert_eq!(approval_decision_for_key(key(KeyCode::Esc)), Some(Deny));
+    }
+
+    #[test]
+    fn approval_decision_ignores_non_decision_keys() {
+        // Arrows / Enter / unrelated chars keep the prompt up (return None).
+        assert_eq!(approval_decision_for_key(key(KeyCode::Up)), None);
+        assert_eq!(approval_decision_for_key(key(KeyCode::Enter)), None);
+        assert_eq!(approval_decision_for_key(key(KeyCode::Char('z'))), None);
+        // A control chord is not a decision (Ctrl-A must not allow).
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(approval_decision_for_key(ctrl_a), None);
+    }
+
+    #[test]
+    fn decision_verb_is_past_tense() {
+        use SessionApprovalDecision::{Allow, AllowAlways, Deny, DenyAlways};
+        assert_eq!(decision_verb(Allow), "allowed");
+        assert_eq!(decision_verb(AllowAlways), "always-allowed");
+        assert_eq!(decision_verb(Deny), "denied");
+        assert_eq!(decision_verb(DenyAlways), "always-denied");
+    }
+
+    #[test]
+    fn respond_command_routes_session_and_request() {
+        use nerve_runtime::RiskTier;
+        let approval = ApprovalState {
+            tool: "edit".into(),
+            args: "{}".into(),
+            request_id: "req-7".into(),
+            session_id: "sess-3".into(),
+            tier: RiskTier::Edit,
+            preview: String::new(),
+        };
+        let command = respond_command(approval, SessionApprovalDecision::AllowAlways);
+        match command {
+            RuntimeCommand::SessionRespond {
+                session_id,
+                request_id,
+                decision,
+            } => {
+                assert_eq!(session_id, "sess-3");
+                assert_eq!(request_id, "req-7");
+                assert_eq!(decision, SessionApprovalDecision::AllowAlways);
+            }
+            other => panic!("expected SessionRespond, got {other:?}"),
+        }
     }
 
     #[test]

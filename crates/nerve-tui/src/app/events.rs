@@ -36,8 +36,8 @@ pub fn apply_event(state: &mut State, event: &RuntimeEvent) -> bool {
             tier,
             preview,
         } => {
-            // T3 stages the modal state; T4 renders/handles it. Mirrors the TS
-            // `approval_requested` arm (compact-JSON args, defaulted tier/preview).
+            // Stage the modal state; render/handling live in `render`/`input`.
+            // Mirrors the TS `approval_requested` arm (compact-JSON args).
             state.mode = Mode::Approval;
             state.approval = Some(ApprovalState {
                 tool: tool.clone(),

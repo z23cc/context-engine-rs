@@ -31,17 +31,17 @@ pub enum ToolStatus {
     Error,
 }
 
-/// Which input the shell is showing: the editor, or the approval modal. T4 fills
-/// the modal behavior; T3 carries the [`ApprovalState`] so key dispatch can
-/// short-circuit and the header/render path can branch.
+/// Which input the shell is showing: the editor, or the approval modal. In
+/// `Approval` the render path draws the modal and key dispatch routes to
+/// `on_approval_key` (a decision answers `session.respond`; other keys persist).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Input,
     Approval,
 }
 
-/// A pending approval request the modal will render (T4). Mirrors the TS
-/// `state.approval`.
+/// A pending approval request the modal renders and `on_approval_key` answers.
+/// Mirrors the TS `state.approval`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalState {
     pub tool: String,

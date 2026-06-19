@@ -6,27 +6,33 @@
 //! emitted ANSI strings, this builds ratatui [`Line`]s of styled [`Span`]s; the
 //! row math (header / transcript / palette / status / input, top-anchored, with a
 //! flush-right token meter) matches the TS, including the multi-row input window
-//! and the bare-slash command palette. The approval modal body (T4) is stubbed:
-//! T3 reserves the row and the cursor-suppression branch.
+//! and the bare-slash command palette. In approval mode the input rows are
+//! replaced by the bordered approval modal (`approval_lines`, ports the TS
+//! `approvalLines`) and the cursor is suppressed.
 
 use ratatui::Frame;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::state::{Mode, State};
+use nerve_runtime::RiskTier;
+
+use super::state::{ApprovalState, Mode, State};
 use crate::ui::commands::{CommandSpec, approval_mode_label, match_commands};
 use crate::ui::editor::EditorLayout;
 use crate::ui::models::model_info;
 use crate::ui::palette;
-use crate::ui::render::{self, RenderOptions, SPINNER, format_duration};
-use crate::ui::width::{truncate_to_width, width as disp_width};
+use crate::ui::render::{self, RenderOptions, SPINNER, format_duration, preview_line};
+use crate::ui::width::{truncate_to_width, width as disp_width, wrap_styled};
 
 /// Max rows the input editor expands to before it scrolls internally. Ports
 /// `MAX_INPUT_ROWS`.
 const MAX_INPUT_ROWS: usize = 6;
 /// Max palette rows shown at once. Ports the TS `Math.min(palette.length, 6)`.
 const MAX_PALETTE_ROWS: usize = 6;
+/// Max preview rows shown in the approval modal before `… +N more`. Ports the TS
+/// `APPROVAL_PREVIEW_ROWS`.
+const APPROVAL_PREVIEW_ROWS: usize = 8;
 
 /// A composed frame: every row as a styled [`Line`], plus the input cursor's
 /// (col, row) when the editor is focused (`None` in the approval modal). The
@@ -246,18 +252,14 @@ struct InputBlock {
 
 fn input_block(state: &State, width: usize) -> InputBlock {
     if state.mode == Mode::Approval {
-        // T4 fills the modal; T3 reserves a single placeholder row and hides the
-        // cursor so the layout/row math is already correct.
-        let body = state
+        // The approval modal replaces the editor rows and hides the cursor. Ports
+        // the TS `inputBlock`'s approval branch (`approvalLines`, cursorRow: -1).
+        let lines = state
             .approval
             .as_ref()
-            .map(|a| format!(" approval pending: {} ", a.tool))
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |approval| approval_lines(approval, width));
         return InputBlock {
-            lines: vec![truncate_line(
-                Line::from(Span::styled(body, palette::yellow())),
-                width,
-            )],
+            lines,
             cursor_row: None,
             cursor_col: 0,
         };
@@ -306,6 +308,80 @@ fn horizontal_window(text: &str, avail: usize) -> String {
         chars.remove(0);
     }
     chars.into_iter().collect()
+}
+
+/// Color + label a risk tier (`exec`=red, `edit`=yellow, read-only=dim) as a
+/// bracketed badge span. Ports the TS `tierBadge`.
+#[must_use]
+fn tier_badge(tier: RiskTier) -> Span<'static> {
+    let (label, color) = match tier {
+        RiskTier::ReadOnly => ("read-only", palette::dim()),
+        RiskTier::Edit => ("edit", palette::yellow()),
+        RiskTier::Exec => ("exec", Style::default().fg(Color::Red)),
+    };
+    Span::styled(format!("[{label}]"), color)
+}
+
+/// Render the multi-option approval prompt as a left-bordered block. Ports the TS
+/// `approvalLines`:
+///   ⚠ allow  <tool>  [<tier>]
+///   │ <preview line 1>
+///   │ …
+///   [a]llow once · [A]lways · [d]eny · [D]eny always · Esc cancel
+/// Falls back to a compact args view when the event carried no preview.
+#[must_use]
+fn approval_lines(approval: &ApprovalState, width: usize) -> Vec<Line<'static>> {
+    let header = Line::from(vec![
+        Span::styled("⚠ allow", palette::yellow()),
+        Span::raw("  "),
+        Span::styled(approval.tool.clone(), palette::bold()),
+        Span::raw("  "),
+        tier_badge(approval.tier),
+    ]);
+    let inner = width.saturating_sub(2).max(1);
+    let trimmed = approval.preview.trim();
+    let body_source = if trimmed.is_empty() {
+        preview_line(&approval.args)
+    } else {
+        trimmed.to_string()
+    };
+    let all_rows = wrap_styled(&body_source, inner, palette::dim());
+    let hidden = all_rows.len().saturating_sub(APPROVAL_PREVIEW_ROWS);
+    let mut lines = Vec::with_capacity(all_rows.len().min(APPROVAL_PREVIEW_ROWS) + 2);
+    lines.push(truncate_line(header, width));
+    for row in all_rows.into_iter().take(APPROVAL_PREVIEW_ROWS) {
+        let mut spans = vec![Span::styled("│ ".to_string(), palette::dim())];
+        spans.extend(row.spans);
+        lines.push(truncate_line(Line::from(spans), width));
+    }
+    if hidden > 0 {
+        let plural = if hidden > 1 { "s" } else { "" };
+        lines.push(truncate_line(
+            Line::from(Span::styled(
+                format!("│ … +{hidden} more line{plural}"),
+                palette::dim(),
+            )),
+            width,
+        ));
+    }
+    lines.push(truncate_line(options_line(), width));
+    lines
+}
+
+/// The fixed approval options footer. Ports the TS options string.
+#[must_use]
+fn options_line() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("[a]", palette::bold()),
+        Span::raw("llow once · "),
+        Span::styled("[A]", palette::bold()),
+        Span::raw("lways · "),
+        Span::styled("[d]", palette::bold()),
+        Span::raw("eny · "),
+        Span::styled("[D]", palette::bold()),
+        Span::raw("eny always · "),
+        Span::styled("Esc cancel", palette::dim()),
+    ])
 }
 
 /// Wrap a line in a full-width reversed bar (header/status chrome): truncate to
@@ -500,6 +576,150 @@ mod tests {
         });
         let composed = compose(&state, 80, 12);
         assert!(composed.cursor.is_none());
+    }
+
+    fn approving(tool: &str, tier: RiskTier, args: &str, preview: &str) -> State {
+        let mut state = sample();
+        state.mode = Mode::Approval;
+        state.approval = Some(ApprovalState {
+            tool: tool.into(),
+            args: args.into(),
+            request_id: "req-1".into(),
+            session_id: "sess-1".into(),
+            tier,
+            preview: preview.into(),
+        });
+        state
+    }
+
+    /// Find a span whose content matches `needle` and return its style (for badge
+    /// color assertions).
+    fn span_style(line: &Line<'static>, needle: &str) -> Option<Style> {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains(needle))
+            .map(|s| s.style)
+    }
+
+    #[test]
+    fn approval_modal_renders_header_preview_and_options() {
+        let state = approving("edit", RiskTier::Edit, "{}", "@@ -1 +1 @@\n-old\n+new");
+        let lines = approval_lines(state.approval.as_ref().unwrap(), 80);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("⚠ allow"), "{text}");
+        assert!(text.contains("edit"), "{text}");
+        assert!(text.contains("[edit]"), "{text}"); // tier badge
+        assert!(text.contains("│ @@ -1 +1 @@"), "{text}"); // bordered preview
+        assert!(text.contains("│ -old"), "{text}");
+        assert!(text.contains("[a]llow once"), "{text}");
+        assert!(text.contains("[A]lways"), "{text}");
+        assert!(text.contains("[d]eny"), "{text}");
+        assert!(text.contains("[D]eny always"), "{text}");
+        assert!(text.contains("Esc cancel"), "{text}");
+    }
+
+    #[test]
+    fn approval_tier_badge_is_colored_by_risk() {
+        use ratatui::style::Color;
+        let exec = approving("run_command", RiskTier::Exec, "{}", "rm -rf /");
+        let header = &approval_lines(exec.approval.as_ref().unwrap(), 60)[0];
+        assert_eq!(
+            span_style(header, "[exec]").and_then(|s| s.fg),
+            Some(Color::Red),
+        );
+        let edit = approving("edit", RiskTier::Edit, "{}", "x");
+        let header = &approval_lines(edit.approval.as_ref().unwrap(), 60)[0];
+        assert_eq!(
+            span_style(header, "[edit]").and_then(|s| s.fg),
+            Some(Color::Yellow),
+        );
+        let read = approving("read_file", RiskTier::ReadOnly, "{}", "x");
+        let header = &approval_lines(read.approval.as_ref().unwrap(), 60)[0];
+        let badge = span_style(header, "[read-only]").expect("read-only badge");
+        assert!(badge.add_modifier.contains(Modifier::DIM));
+        assert!(badge.fg.is_none());
+    }
+
+    #[test]
+    fn approval_falls_back_to_args_when_preview_empty() {
+        let state = approving("edit", RiskTier::Edit, r#"{"path":"a.rs"}"#, "");
+        let lines = approval_lines(state.approval.as_ref().unwrap(), 60);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        // No preview → the compact args view is the body source.
+        assert!(text.contains(r#"{"path":"a.rs"}"#), "{text}");
+        assert!(text.contains("[a]llow once"), "{text}");
+    }
+
+    #[test]
+    fn approval_preview_overflow_shows_more_marker() {
+        let preview = (1..=20)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let state = approving("edit", RiskTier::Edit, "{}", &preview);
+        let lines = approval_lines(state.approval.as_ref().unwrap(), 60);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        // 20 lines, capped at 8 → 12 hidden.
+        assert!(text.contains("… +12 more lines"), "{text}");
+        // Exactly the first 8 preview rows are shown.
+        assert!(text.contains("│ line8"), "{text}");
+        assert!(!text.contains("│ line9"), "{text}");
+    }
+
+    #[test]
+    fn approval_modal_replaces_input_rows() {
+        let state = approving("edit", RiskTier::Edit, "{}", "a\nb");
+        let composed = compose(&state, 60, 14);
+        let text = composed
+            .lines
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The editor prompt (`❯ type here`) is gone; the modal is shown instead.
+        assert!(!text.contains("type here"), "{text}");
+        assert!(text.contains("⚠ allow"), "{text}");
+        assert!(composed.cursor.is_none());
+    }
+
+    /// Serialize a styled line as `«tag»text` segments so a snapshot pins glyphs
+    /// + colors (mirrors `tests/render_snapshots.rs`'s `fmt_line`).
+    fn styled_line(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|s| {
+                let mut parts = Vec::new();
+                if let Some(fg) = s.style.fg {
+                    parts.push(format!("{fg:?}").to_lowercase());
+                }
+                let m = s.style.add_modifier;
+                if m.contains(Modifier::BOLD) {
+                    parts.push("bold".into());
+                }
+                if m.contains(Modifier::DIM) {
+                    parts.push("dim".into());
+                }
+                let tag = parts.join("+");
+                if tag.is_empty() {
+                    s.content.to_string()
+                } else {
+                    format!("«{tag}»{}", s.content)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn snapshot_approval_modal_exec() {
+        let state = approving(
+            "run_command",
+            RiskTier::Exec,
+            r#"{"cmd":"ls -la"}"#,
+            "ls -la /tmp",
+        );
+        let lines = approval_lines(state.approval.as_ref().unwrap(), 80);
+        let rendered = lines.iter().map(styled_line).collect::<Vec<_>>().join("\n");
+        insta::assert_snapshot!(rendered);
     }
 
     #[test]

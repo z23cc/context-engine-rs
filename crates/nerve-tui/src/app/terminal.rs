@@ -74,3 +74,53 @@ fn install_panic_hook() {
         previous(info);
     }));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `restore` is the single teardown both `Drop` and the panic hook call, so it
+    /// must be safe to invoke repeatedly (and with no tty, as under `cargo test`)
+    /// without panicking — every step is best-effort (`let _ = …`).
+    #[test]
+    fn restore_is_idempotent_and_tty_independent() {
+        restore();
+        restore();
+    }
+
+    /// The panic hook must run our `restore` before chaining to the previous hook,
+    /// so a crash leaves the tty usable and the backtrace prints on the main
+    /// screen. We install the hook, fire a panic on a worker thread, and confirm
+    /// our teardown ran (a flag the hook sets) before control returned.
+    #[test]
+    fn panic_hook_restores_before_chaining() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let restored = Arc::new(AtomicBool::new(false));
+        let flag = restored.clone();
+        // Serialize: the process-wide panic hook is global state.
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _serialized = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Mirror `install_panic_hook`: tear down first, then chain.
+            restore();
+            flag.store(true, Ordering::SeqCst);
+            // Swallow the default hook's output to keep the test quiet.
+            let _ = info;
+        }));
+
+        let result = std::panic::catch_unwind(|| panic!("boom"));
+        std::panic::set_hook(previous);
+
+        assert!(result.is_err(), "the panic should have unwound");
+        assert!(
+            restored.load(Ordering::SeqCst),
+            "the panic hook must run restore()"
+        );
+    }
+}

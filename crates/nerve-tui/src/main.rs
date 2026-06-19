@@ -2,8 +2,12 @@
 //!
 //! Subcommands:
 //!   nerve-tui smoke [--root PATH] [--binary PATH]   no-LLM round-trip
-//!   nerve-tui       [--root PATH] [--binary PATH] [--provider P] [--model M]
+//!   nerve-tui [--root PATH] [--binary PATH] [--provider P] [--model M] [--agent NAME]
 //!                                                   interactive shell
+//!
+//! The shell flags mirror exactly what `nerve chat` hands its client binary
+//! (`--binary`/`--provider`/`--model`/`--root`/`--agent`), so `NERVE_CHAT_BIN`
+//! pointed at this binary drives it end-to-end (see `commands/chat.rs`).
 //!
 //! Args are parsed by hand (no clap) to keep the dep surface small, mirroring
 //! the TS smoke parser; `--root` defaults to the current directory.
@@ -21,6 +25,7 @@ struct Args {
     binary: Option<PathBuf>,
     provider: Option<String>,
     model: Option<String>,
+    agent: Option<String>,
 }
 
 #[tokio::main]
@@ -55,7 +60,7 @@ async fn run(raw: Vec<String>) -> Result<()> {
                 Some(binary) => spec.with_binary(binary),
                 None => spec,
             };
-            app::run(spec, provider, model).await
+            app::run(spec, provider, model, args.agent).await
         }
     }
 }
@@ -83,6 +88,7 @@ fn parse_args(raw: &[String]) -> Result<Args> {
             "--binary" => args.binary = Some(PathBuf::from(value(&mut iter, "--binary")?)),
             "--provider" => args.provider = Some(value(&mut iter, "--provider")?),
             "--model" => args.model = Some(value(&mut iter, "--model")?),
+            "--agent" => args.agent = Some(value(&mut iter, "--agent")?),
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -116,6 +122,6 @@ fn print_usage() {
     println!(
         "usage:\n  \
          nerve-tui smoke [--root PATH] [--binary PATH]\n  \
-         nerve-tui [--root PATH] [--binary PATH] [--provider P] [--model M]"
+         nerve-tui [--root PATH] [--binary PATH] [--provider P] [--model M] [--agent NAME]"
     );
 }
