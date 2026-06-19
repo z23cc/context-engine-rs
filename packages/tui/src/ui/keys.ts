@@ -57,6 +57,7 @@ export function decodeKeys(data: string): Key[] {
   let i = 0;
   while (i < data.length) {
     const ch = data[i];
+    if (ch === undefined) break;
     const code = data.charCodeAt(i);
     if (ch === "\x1b") {
       const consumed = decodeEscape(data.slice(i), keys);

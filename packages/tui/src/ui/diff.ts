@@ -19,11 +19,11 @@ export function isDiff(text: string): boolean {
 
 /** Visualize leading whitespace: tabs -> dim →, spaces -> dim ·. */
 function visualizeIndent(text: string): string {
-  const match = text.match(/^([ \t]+)/);
-  if (!match) return text;
+  const indent = text.match(/^([ \t]+)/)?.[1];
+  if (!indent) return text;
   let visible = "";
-  for (const ch of match[1]) visible += ch === "\t" ? `${DIM}→ ${DIM_OFF}` : `${DIM}·${DIM_OFF}`;
-  return visible + text.slice(match[1].length);
+  for (const ch of indent) visible += ch === "\t" ? `${DIM}→ ${DIM_OFF}` : `${DIM}·${DIM_OFF}`;
+  return visible + text.slice(indent.length);
 }
 
 /** Inverse-highlight the differing middle (shared prefix/suffix stays plain). */
@@ -63,6 +63,7 @@ export function renderDiff(diffText: string): string[] {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
+    if (line === undefined) break;
     if (line.startsWith("@@")) {
       out.push(style.cyan(line));
       i += 1;
@@ -71,11 +72,11 @@ export function renderDiff(diffText: string): string[] {
       i += 1;
     } else if (isRemoved(line)) {
       const removed: string[] = [];
-      while (i < lines.length && isRemoved(lines[i])) removed.push(lines[i++].slice(1));
+      while (i < lines.length && isRemoved(lines[i]!)) removed.push(lines[i++]!.slice(1));
       const added: string[] = [];
-      while (i < lines.length && isAdded(lines[i])) added.push(lines[i++].slice(1));
+      while (i < lines.length && isAdded(lines[i]!)) added.push(lines[i++]!.slice(1));
       if (removed.length === 1 && added.length === 1) {
-        const pair = intraLine(removed[0], added[0]);
+        const pair = intraLine(removed[0]!, added[0]!);
         out.push(style.red(`-${visualizeIndent(pair.removed)}`));
         out.push(style.green(`+${visualizeIndent(pair.added)}`));
       } else {

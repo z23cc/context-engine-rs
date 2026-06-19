@@ -41,7 +41,8 @@ export function parseInline(text: string): Run[] {
         continue;
       }
     }
-    if ((ch === "*" || ch === "_") && text[i + 1] !== undefined && !/\s/.test(text[i + 1])) {
+    const next = text[i + 1];
+    if ((ch === "*" || ch === "_") && next !== undefined && !/\s/.test(next)) {
       const end = text.indexOf(ch, i + 1);
       if (end > i + 1) {
         flush();
@@ -136,24 +137,24 @@ export function renderMarkdown(text: string, width: number): string[] {
     }
     const heading = raw.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
-      out.push(...wrapRuns(parseInline(heading[2]), width).map((l) => style.bold(style.cyan(l))));
+      out.push(...wrapRuns(parseInline(heading[2] ?? ""), width).map((l) => style.bold(style.cyan(l))));
       continue;
     }
     const quote = raw.match(/^>\s?(.*)$/);
     if (quote) {
       out.push(
-        ...wrapRuns(parseInline(quote[1]), Math.max(1, width - 2)).map((l) => style.dim(`│ ${l}`)),
+        ...wrapRuns(parseInline(quote[1] ?? ""), Math.max(1, width - 2)).map((l) => style.dim(`│ ${l}`)),
       );
       continue;
     }
     const bullet = raw.match(/^(\s*)[-*+]\s+(.*)$/);
     if (bullet) {
-      out.push(...renderListItem(`${bullet[1]}• `, bullet[2], width));
+      out.push(...renderListItem(`${bullet[1]}• `, bullet[2] ?? "", width));
       continue;
     }
     const numbered = raw.match(/^(\s*)(\d+)\.\s+(.*)$/);
     if (numbered) {
-      out.push(...renderListItem(`${numbered[1]}${numbered[2]}. `, numbered[3], width));
+      out.push(...renderListItem(`${numbered[1]}${numbered[2]}. `, numbered[3] ?? "", width));
       continue;
     }
     out.push(...wrapRuns(parseInline(raw), width));

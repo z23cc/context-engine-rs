@@ -3,7 +3,7 @@
 // renderer and raw-mode keyboard input. oh-my-pi-inspired, pure TS, no native
 // deps — keeps the standalone `bun build --compile` binary self-contained.
 
-import { stdin, stdout } from "node:process";
+import { stderr, stdin, stdout } from "node:process";
 import { NerveClient } from "../backend/nerveClient.ts";
 import type { AgentEventKind, RuntimeCommand, RuntimeEvent } from "../backend/types.ts";
 import { padTo, SPINNER, stringWidth, style, truncateToWidth } from "./ansi.ts";
@@ -123,7 +123,7 @@ function inputBlock(
     rows.length > MAX_INPUT_ROWS
       ? Math.min(Math.max(0, cursorRow - (MAX_INPUT_ROWS - 1)), rows.length - MAX_INPUT_ROWS)
       : 0;
-  const accent = THEMES[state.themeIndex % THEMES.length].accent;
+  const accent = THEMES[state.themeIndex % THEMES.length]!.accent;
   const lines: string[] = [];
   for (let i = 0; i < visible; i += 1) {
     const globalRow = top + i;
@@ -175,6 +175,7 @@ export class App {
   #spinnerTimer?: ReturnType<typeof setInterval>;
   #unsub?: () => void;
   #closing = false;
+  #crashed = false;
 
   constructor(args: ChatArgs) {
     this.#args = args;
@@ -215,7 +216,11 @@ export class App {
     this.#note(`connected · ${this.#state.tools} tools · type a message · /help for commands`);
     this.#screen.start();
     this.#screen.onResize(() => this.#render());
-    process.on("exit", () => this.#screen.stop());
+    // Restore the terminal no matter how we exit. A throw inside the stdin/key
+    // path (or any stray rejection) must never leave it in raw + alt-screen mode.
+    process.on("exit", this.#onExit);
+    process.on("uncaughtException", this.#onFatal);
+    process.on("unhandledRejection", this.#onFatal);
     this.#unsub = this.#client.onEvent((event) => this.#onEvent(event));
     this.#setupStdin();
     this.#spinnerTimer = setInterval(() => {
@@ -240,7 +245,11 @@ export class App {
     stdin.resume();
     stdin.setEncoding("utf8");
     stdin.on("data", (chunk: string) => {
-      for (const key of decodeKeys(chunk)) this.#onKey(key);
+      try {
+        for (const key of decodeKeys(chunk)) this.#onKey(key);
+      } catch (error) {
+        this.#crash(error);
+      }
     });
   }
 
@@ -364,6 +373,7 @@ export class App {
         return true;
       case "enter": {
         const sel = palette[this.#state.paletteIndex % len];
+        if (!sel) return false;
         if (this.#state.input !== `/${sel.name}`) {
           this.#completePalette(palette);
           return true;
@@ -377,6 +387,7 @@ export class App {
 
   #completePalette(palette: CommandSpec[]): void {
     const sel = palette[this.#state.paletteIndex % palette.length];
+    if (!sel) return;
     this.#state.input = `/${sel.name} `;
     this.#state.cursor = this.#state.input.length;
     this.#state.paletteIndex = 0;
@@ -422,7 +433,7 @@ export class App {
           this.#state.hint = "usage: /provider <name> [model]";
           break;
         }
-        const [name, ...parts] = rest.split(/\s+/);
+        const [name = "", ...parts] = rest.split(/\s+/);
         this.#switchModel(name, parts[0] ?? this.#state.model);
         break;
       }
@@ -441,7 +452,7 @@ export class App {
         break;
       case "theme":
         this.#state.themeIndex = (this.#state.themeIndex + 1) % THEMES.length;
-        this.#state.hint = `theme: ${THEMES[this.#state.themeIndex].name}`;
+        this.#state.hint = `theme: ${THEMES[this.#state.themeIndex]!.name}`;
         break;
       default:
         this.#state.hint = `unknown command: /${cmd} — try /help`;
@@ -593,12 +604,12 @@ export class App {
   #finishTool(tool: string, ok: boolean, output: string): void {
     for (let i = this.#state.blocks.length - 1; i >= 0; i -= 1) {
       const block = this.#state.blocks[i];
-      if (block.kind === "tool" && block.status === "running" && block.tool === tool) {
-        block.status = ok ? "ok" : "error";
-        block.output = output;
-        block.durationMs = Date.now() - (block.startedAt ?? Date.now());
-        return;
-      }
+      if (!block || block.kind !== "tool") continue;
+      if (block.status !== "running" || block.tool !== tool) continue;
+      block.status = ok ? "ok" : "error";
+      block.output = output;
+      block.durationMs = Date.now() - (block.startedAt ?? Date.now());
+      return;
     }
   }
 
@@ -635,7 +646,7 @@ export class App {
       this.#state.historyIndex === -1
         ? history.length - 1
         : Math.max(0, this.#state.historyIndex - 1);
-    this.#state.input = history[this.#state.historyIndex];
+    this.#state.input = history[this.#state.historyIndex] ?? "";
     this.#state.cursor = this.#state.input.length;
   }
 
@@ -646,7 +657,7 @@ export class App {
       this.#state.historyIndex = -1;
       this.#state.input = "";
     } else {
-      this.#state.input = this.#state.history[this.#state.historyIndex];
+      this.#state.input = this.#state.history[this.#state.historyIndex] ?? "";
     }
     this.#state.cursor = this.#state.input.length;
   }
@@ -660,9 +671,49 @@ export class App {
     }
   }
 
+  // Bound so process.off() can detach them in #shutdown().
+  #onExit = (): void => {
+    this.#screen.stop();
+  };
+
+  #onFatal = (error: unknown): void => {
+    this.#crash(error);
+  };
+
+  /**
+   * Synchronously restore the terminal, print the error after the restore, and
+   * exit non-zero. Re-entrancy-safe so it can run from the uncaughtException /
+   * unhandledRejection backstop and from a throw in the stdin/key path.
+   */
+  #crash(error: unknown): never {
+    if (!this.#crashed) {
+      this.#crashed = true;
+      this.#restoreTerminal();
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      stderr.write(`\nnerve chat: fatal error\n${detail}\n`);
+    }
+    process.exit(1);
+  }
+
+  /** Best-effort terminal restore: stop the spinner, leave raw mode, and leave
+   *  the alt-screen + mouse + bracketed-paste modes with the cursor shown. */
+  #restoreTerminal(): void {
+    if (this.#spinnerTimer) clearInterval(this.#spinnerTimer);
+    try {
+      if (stdin.isTTY) stdin.setRawMode(false);
+      stdin.pause();
+    } catch {
+      // Restoring the screen/cursor below matters more than stdin state.
+    }
+    this.#screen.stop();
+  }
+
   async #shutdown(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    process.off("uncaughtException", this.#onFatal);
+    process.off("unhandledRejection", this.#onFatal);
+    process.off("exit", this.#onExit);
     if (this.#spinnerTimer) clearInterval(this.#spinnerTimer);
     if (this.#sessionId) {
       try {

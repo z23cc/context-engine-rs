@@ -17,7 +17,13 @@ try {
   const started = await client.startJob({ kind: "ping" }, { jobId: "smoke-ping" });
   const job = await waitForTerminalJob("smoke-ping");
   const listed = await client.listJobs({ includeTerminal: true, includeResults: false, limit: 10 });
-  const ok = job.status === "completed" && typeof job.result === "object" && !Array.isArray(job.result) && job.result?.status === "ok";
+  const result = job.result;
+  const ok =
+    job.status === "completed" &&
+    typeof result === "object" &&
+    result !== null &&
+    !Array.isArray(result) &&
+    (result as Record<string, unknown>).status === "ok";
   if (!ok) throw new Error(`smoke ping job did not complete successfully: ${job.status}`);
   console.log(JSON.stringify({ ok, runtime: info.serverInfo, started, job, listed, events }, null, 2));
 } finally {

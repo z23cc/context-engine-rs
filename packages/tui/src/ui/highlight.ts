@@ -107,6 +107,7 @@ function highlightLine(line: string, spec: LangSpec, inBlock: boolean): { text: 
       break;
     }
     const ch = line[i];
+    if (ch === undefined) break;
     if (ch === '"' || ch === "'" || ch === "`") {
       const end = findStringEnd(line, i, ch);
       out += paint.string(line.slice(i, end));

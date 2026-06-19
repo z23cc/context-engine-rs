@@ -91,7 +91,7 @@ function toolArgsDisplay(args: string): string {
 function toolHeader(block: Extract<Block, { kind: "tool" }>, spinner: number): string {
   const marker =
     block.status === "running"
-      ? style.yellow(SPINNER[spinner % SPINNER.length])
+      ? style.yellow(SPINNER[spinner % SPINNER.length] ?? "")
       : block.status === "ok"
         ? style.green("✓")
         : style.red("✗");
@@ -148,7 +148,7 @@ function renderTool(
   // dumping JSON. (Inline pixel rendering — kitty/sixel — is a separate item.)
   const image = block.output.match(IMAGE_RE);
   if (image) {
-    return frame(header, [style.dim(`\u{1f5bc}  ${linkPath(image[1])}`)], width, toolColor(block.status));
+    return frame(header, [style.dim(`\u{1f5bc}  ${linkPath(image[1] ?? "")}`)], width, toolColor(block.status));
   }
   const { text, diff } = extractToolText(block.output);
   if (!text.trim()) return [truncateToWidth(header, width)];

@@ -125,7 +125,7 @@ export class NerveClient implements WorkstationBackend {
   }
 
   async info(): Promise<RuntimeInfo> {
-    return (await this.#request(RUNTIME_INFO_METHOD)) as RuntimeInfo;
+    return (await this.#request(RUNTIME_INFO_METHOD)) as unknown as RuntimeInfo;
   }
 
   async listTools(): Promise<RuntimeToolSpec[]> {
@@ -134,11 +134,10 @@ export class NerveClient implements WorkstationBackend {
   }
 
   async startJob(command: RuntimeCommand, options: { jobId?: string } = {}): Promise<RuntimeJob> {
-    const response = (await this.#request(RUNTIME_JOB_START_METHOD, {
-      job_id: options.jobId,
-      command: command as unknown as JsonObject,
-    })) as JsonObject;
-    return response.job as unknown as RuntimeJob;
+    const params: JsonObject = { command: command as unknown as JsonObject };
+    if (options.jobId !== undefined) params.job_id = options.jobId;
+    const response = (await this.#request(RUNTIME_JOB_START_METHOD, params)) as JsonObject;
+    return asRuntimeJob(response.job, "jobs/start");
   }
 
   async getJob(jobId: string, options: { includeResult?: boolean } = {}): Promise<RuntimeJob> {
@@ -146,7 +145,7 @@ export class NerveClient implements WorkstationBackend {
       job_id: jobId,
       include_result: options.includeResult ?? true,
     })) as JsonObject;
-    return response.job as unknown as RuntimeJob;
+    return asRuntimeJob(response.job, "jobs/get");
   }
 
   async listJobs(
@@ -157,12 +156,15 @@ export class NerveClient implements WorkstationBackend {
       include_results: options.includeResults ?? false,
       limit: options.limit ?? 100,
     })) as JsonObject;
-    return (response.jobs as unknown as RuntimeJob[] | undefined) ?? [];
+    return asRuntimeJobArray(response.jobs, "jobs/list");
   }
 
   async cancelJob(jobId: string): Promise<RuntimeJobCancelResponse> {
     const response = (await this.#request(RUNTIME_JOB_CANCEL_METHOD, { job_id: jobId })) as JsonObject;
-    return response as unknown as RuntimeJobCancelResponse;
+    return {
+      cancellation_requested: Boolean(response.cancellation_requested),
+      job: asRuntimeJob(response.job, "jobs/cancel"),
+    };
   }
 
   async runJob(command: RuntimeCommand, options: { jobId?: string } = {}): Promise<JsonValue> {
@@ -172,7 +174,7 @@ export class NerveClient implements WorkstationBackend {
       await this.startJob(command, { jobId });
       await terminalEvent;
       const job = await this.getJob(jobId, { includeResult: true });
-      if (job.status === "completed") return job.result ?? null;
+      if (job.status === "completed") return (job.result ?? null) as JsonValue;
       throw new Error(job.error?.message ?? `runtime job ${job.status}: ${jobId}`);
     } catch (error) {
       this.#removeJobWaiter(jobId, terminalEvent);
@@ -218,7 +220,13 @@ export class NerveClient implements WorkstationBackend {
 
   #handleNotification(message: RpcNotification): void {
     if (message.method !== RUNTIME_EVENT_METHOD) return;
-    const event = message.params as RuntimeEvent;
+    const event = asRuntimeEvent(message.params);
+    if (!event) {
+      process.emitWarning(
+        `ignoring malformed ${RUNTIME_EVENT_METHOD} notification: ${previewValue(message.params)}`,
+      );
+      return;
+    }
     this.#handleJobEvent(event);
     for (const listener of this.#listeners) listener(event);
   }
@@ -284,6 +292,47 @@ function validateRuntimeInfo(info: RuntimeInfo): void {
   for (const method of RUNTIME_JOB_METHODS) {
     if (!info.capabilities.jobs.methods.includes(method)) throw new Error(`missing runtime job method: ${method}`);
   }
+}
+
+/** Narrow unknown JSON to a plain (non-array) object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Accept an inbound event only if it carries a string `type` discriminant. */
+function asRuntimeEvent(value: unknown): RuntimeEvent | undefined {
+  return isRecord(value) && typeof value.type === "string"
+    ? (value as unknown as RuntimeEvent)
+    : undefined;
+}
+
+/** Validate a job snapshot (needs at least `job_id` + `status`) or throw. */
+function asRuntimeJob(value: unknown, context: string): RuntimeJob {
+  if (isRecord(value) && typeof value.job_id === "string" && typeof value.status === "string") {
+    return value as unknown as RuntimeJob;
+  }
+  throw new Error(`malformed runtime job in ${context} response: ${previewValue(value)}`);
+}
+
+/** Validate a job-snapshot array (absent -> empty) or throw. */
+function asRuntimeJobArray(value: unknown, context: string): RuntimeJob[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`malformed runtime job list in ${context} response: ${previewValue(value)}`);
+  }
+  return value.map((job, index) => asRuntimeJob(job, `${context}[${index}]`));
+}
+
+/** Short, safe one-line preview of an unexpected value for diagnostics. */
+function previewValue(value: unknown): string {
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  if (text === undefined) text = String(value);
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text;
 }
 
 function defaultBinary(): string {

@@ -124,7 +124,7 @@ export const COMMANDS: CommandSpec[] = [
 export function matchCommands(input: string): CommandSpec[] {
   const match = input.match(/^\/(\w*)$/);
   if (!match) return [];
-  const query = match[1].toLowerCase();
+  const query = (match[1] ?? "").toLowerCase();
   return COMMANDS.filter((command) => command.name.startsWith(query));
 }
 

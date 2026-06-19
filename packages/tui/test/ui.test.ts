@@ -19,7 +19,7 @@ import { highlight } from "../src/ui/highlight.ts";
 import { fileUri, hyperlink } from "../src/ui/hyperlink.ts";
 import { modelInfo } from "../src/ui/models.ts";
 
-const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+const strip = (s: string | undefined): string => (s ?? "").replace(/\x1b\[[0-9;]*m/g, "");
 
 test("hyperlink wraps text in OSC 8; width/strip ignore it", () => {
   const link = hyperlink("Cargo.toml", "file:///x/Cargo.toml");
@@ -384,4 +384,27 @@ test("Screen.render only rewrites changed rows after the first paint", () => {
   assert.doesNotMatch(out, /row-a/);
   assert.doesNotMatch(out, /row-c/);
   screen.stop();
+});
+
+test("Screen.stop restores the terminal (leave alt-screen + mouse + paste, show cursor)", () => {
+  let out = "";
+  const fake = {
+    columns: 20,
+    rows: 3,
+    write: (s: string) => {
+      out += s;
+    },
+    on() {},
+    off() {},
+  };
+  const screen = new Screen(fake as unknown as never);
+  screen.start();
+  out = "";
+  // This is exactly what the App crash handler calls to recover a raw + alt-screen
+  // terminal when a throw escapes the stdin/key path.
+  screen.stop();
+  assert.ok(out.includes("\x1b[?1049l"), "leaves the alternate screen");
+  assert.ok(out.includes("\x1b[?25h"), "shows the cursor");
+  assert.ok(out.includes("\x1b[?1000l"), "disables mouse reporting");
+  assert.ok(out.includes("\x1b[?2004l"), "disables bracketed paste");
 });
