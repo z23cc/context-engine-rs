@@ -1,5 +1,5 @@
 use nerve_core::CancelToken;
-use nerve_runtime::{RuntimeEvent, SessionApprovalDecision};
+use nerve_runtime::{RiskTier, RuntimeEvent, SessionApprovalDecision};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,11 +52,16 @@ impl ApprovalHub {
             request_id: request_id.clone(),
         };
         crate::sync::lock_recover(&self.pending).insert(key, sender);
+        // P1 emits a safe default classification: the most-restricted tier and an
+        // empty preview. P2 computes the real tier (from the tool capability) and
+        // a human-readable preview before emitting.
         (self.emit)(RuntimeEvent::approval_requested(
             session_id.to_string(),
             request_id.clone(),
             tool.to_string(),
             arguments.clone(),
+            RiskTier::Exec,
+            String::new(),
         ));
         let deadline = Instant::now() + APPROVAL_TIMEOUT;
         let decision = loop {
@@ -73,7 +78,7 @@ impl ApprovalHub {
             session_id: session_id.to_string(),
             request_id,
         });
-        decision == SessionApprovalDecision::Allow
+        decision.allows()
     }
 
     pub(super) fn respond(

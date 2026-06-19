@@ -464,7 +464,8 @@ fn executor_for(command: &RuntimeCommand) -> Executor {
         | RuntimeCommand::SessionGet { .. }
         | RuntimeCommand::SessionList
         | RuntimeCommand::SessionClose { .. }
-        | RuntimeCommand::SessionSetModel { .. } => Executor::Session,
+        | RuntimeCommand::SessionSetModel { .. }
+        | RuntimeCommand::SessionSetMode { .. } => Executor::Session,
         RuntimeCommand::AuthStart { .. }
         | RuntimeCommand::AuthComplete { .. }
         | RuntimeCommand::AuthStatus { .. }
@@ -533,6 +534,7 @@ mod command_executor_partition {
                 json!({ "session_id": "s", "request_id": "r", "decision": "allow" })
             }
             "session.set_model" => json!({ "session_id": "s", "model": "m" }),
+            "session.set_mode" => json!({ "session_id": "s", "mode": "yolo" }),
             "auth.start" | "auth.status" | "auth.logout" => json!({ "provider": "p" }),
             "auth.complete" => json!({ "login_id": "l" }),
             other => panic!(

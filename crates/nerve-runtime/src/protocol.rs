@@ -1,7 +1,7 @@
 use crate::{
-    RUNTIME_COMMAND_NAMES, RuntimeCommand, RuntimeEvent, RuntimeJobCancelRequest, RuntimeJobError,
-    RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest,
-    RuntimeToolSpec,
+    ApprovalMode, RUNTIME_COMMAND_NAMES, RuntimeCommand, RuntimeEvent, RuntimeJobCancelRequest,
+    RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
+    RuntimeJobStartRequest, RuntimeToolSpec,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -173,6 +173,7 @@ pub struct RuntimeJobCancelResponse {
 pub struct RuntimeProtocolSchema {
     pub json_value: serde_json::Value,
     pub runtime_command: RuntimeCommand,
+    pub approval_mode: ApprovalMode,
     pub runtime_event: RuntimeEvent,
     pub runtime_event_notification: RuntimeEventNotification,
     pub runtime_info: RuntimeInfo,

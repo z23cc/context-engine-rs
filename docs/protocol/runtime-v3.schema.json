@@ -169,6 +169,32 @@
         }
       ]
     },
+    "ApprovalMode": {
+      "description": "Per-session approval posture controlling how high a [`RiskTier`] the gate may auto-approve without prompting. Pure protocol data; the host gate (P2) maps each tool's tier against [`Self::max_auto_tier`].",
+      "oneOf": [
+        {
+          "description": "Prompt for everything above read-only.",
+          "enum": [
+            "always_ask"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Auto-approve reads and edits; prompt for exec.",
+          "enum": [
+            "write"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Auto-approve everything, including exec.",
+          "enum": [
+            "yolo"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "AuthEventKind": {
       "description": "Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.",
       "enum": [
@@ -178,6 +204,32 @@
         "credential_refreshed"
       ],
       "type": "string"
+    },
+    "RiskTier": {
+      "description": "Coarse risk classification for a tool, ordered least-to-most privileged. Advisory protocol data consumed by a future permission engine (P4); it does not gate execution today.",
+      "oneOf": [
+        {
+          "description": "Pure reads: catalog/search/navigation that never mutate state.",
+          "enum": [
+            "read_only"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Mutates workspace files (writes, patches, moves, deletes).",
+          "enum": [
+            "edit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Runs arbitrary commands or otherwise escapes the file sandbox.",
+          "enum": [
+            "exec"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "RuntimeCapabilities": {
       "properties": {
@@ -542,6 +594,29 @@
           "required": [
             "kind",
             "model",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Switch the approval mode of a live session in place. Takes effect from the next gate decision. Pure protocol vocabulary; the host session manager stores it (P2 consults it in the gate).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "session.set_mode"
+              ],
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/definitions/ApprovalMode"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "mode",
             "session_id"
           ],
           "type": "object"
@@ -942,11 +1017,25 @@
           "description": "A session turn needs a client/human decision before continuing.",
           "properties": {
             "arguments": true,
+            "preview": {
+              "default": "",
+              "description": "Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.",
+              "type": "string"
+            },
             "request_id": {
               "type": "string"
             },
             "session_id": {
               "type": "string"
+            },
+            "tier": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RiskTier"
+                }
+              ],
+              "default": "exec",
+              "description": "Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`])."
             },
             "tool": {
               "type": "string"
@@ -1309,11 +1398,25 @@
           "description": "A session turn needs a client/human decision before continuing.",
           "properties": {
             "arguments": true,
+            "preview": {
+              "default": "",
+              "description": "Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.",
+              "type": "string"
+            },
             "request_id": {
               "type": "string"
             },
             "session_id": {
               "type": "string"
+            },
+            "tier": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RiskTier"
+                }
+              ],
+              "default": "exec",
+              "description": "Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`])."
             },
             "tool": {
               "type": "string"
@@ -1680,15 +1783,43 @@
       "type": "object"
     },
     "SessionApprovalDecision": {
-      "description": "Decision supplied by a human/client for a session approval request.",
-      "enum": [
-        "allow",
-        "deny"
-      ],
-      "type": "string"
+      "description": "Decision supplied by a human/client for a session approval request.\n\n`Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally signal the host to remember the decision for future calls (P2 wires the remembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).",
+      "oneOf": [
+        {
+          "description": "Allow this call only.",
+          "enum": [
+            "allow"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Deny this call only.",
+          "enum": [
+            "deny"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Allow this call and remember the allow for future matching calls.",
+          "enum": [
+            "allow_always"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Deny this call and remember the deny for future matching calls.",
+          "enum": [
+            "deny_always"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "properties": {
+    "approvalMode": {
+      "$ref": "#/definitions/ApprovalMode"
+    },
     "jsonValue": true,
     "runtimeCommand": {
       "$ref": "#/definitions/RuntimeCommand"
@@ -1737,6 +1868,7 @@
     }
   },
   "required": [
+    "approvalMode",
     "jsonValue",
     "runtimeCommand",
     "runtimeEvent",

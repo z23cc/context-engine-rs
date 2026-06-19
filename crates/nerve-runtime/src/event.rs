@@ -1,7 +1,14 @@
-use crate::{RuntimeCommand, RuntimeJobError};
+use crate::{RiskTier, RuntimeCommand, RuntimeJobError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Default risk tier for an [`RuntimeEvent::ApprovalRequested`] whose `tier` field
+/// is absent on the wire: the most-restricted tier, so an omitted classification
+/// is never treated as safer than it is.
+fn default_approval_tier() -> RiskTier {
+    RiskTier::Exec
+}
 
 /// Runtime event emitted by human-facing adapters while executing jobs.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
@@ -74,6 +81,15 @@ pub enum RuntimeEvent {
         request_id: String,
         tool: String,
         arguments: Value,
+        /// Risk classification of the tool whose call is awaiting a decision.
+        /// Additive; older emitters/clients that omit it default to the
+        /// most-restricted tier ([`RiskTier::Exec`]).
+        #[serde(default = "default_approval_tier")]
+        tier: RiskTier,
+        /// Human-readable preview of what the call would do (e.g. a diff or
+        /// command line). Additive; defaults to empty when not computed.
+        #[serde(default)]
+        preview: String,
     },
     /// A host-managed authentication lifecycle update.
     Auth {
@@ -204,12 +220,16 @@ impl RuntimeEvent {
         request_id: impl Into<String>,
         tool: impl Into<String>,
         arguments: Value,
+        tier: RiskTier,
+        preview: impl Into<String>,
     ) -> Self {
         Self::ApprovalRequested {
             session_id: session_id.into(),
             request_id: request_id.into(),
             tool: tool.into(),
             arguments,
+            tier,
+            preview: preview.into(),
         }
     }
 

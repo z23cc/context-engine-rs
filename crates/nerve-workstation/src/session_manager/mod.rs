@@ -15,7 +15,7 @@ use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
 use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::{AgentEvent, Message};
 use nerve_core::{CancelToken, WorkspaceResolver};
-use nerve_runtime::{RuntimeCommand, RuntimeError, RuntimeEvent};
+use nerve_runtime::{ApprovalMode, RuntimeCommand, RuntimeError, RuntimeEvent};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,10 @@ struct LiveSession {
     checkpoint: SessionCheckpoint,
     status: SessionStatus,
     current_cancel: Option<CancelToken>,
+    /// Approval posture for this session's gate. P1 stores and updates it via
+    /// `session.set_mode`; P2 consults it when deciding whether to auto-approve.
+    /// Defaults to [`ApprovalMode::Yolo`] (current daemon behavior: no prompts).
+    approval_mode: ApprovalMode,
 }
 
 #[derive(Clone)]
@@ -150,6 +154,7 @@ impl SessionManager {
                 provider,
                 model,
             } => self.set_model(&session_id, provider, model),
+            RuntimeCommand::SessionSetMode { session_id, mode } => self.set_mode(&session_id, mode),
             _ => Err(RuntimeError::adapter("expected session.* command")),
         }
     }
@@ -178,6 +183,8 @@ impl SessionManager {
             checkpoint,
             status: SessionStatus::Idle,
             current_cancel: None,
+            // Default to current daemon behavior (no prompts); set_mode changes it.
+            approval_mode: ApprovalMode::Yolo,
         };
         crate::sync::lock_recover(&self.sessions).insert(id.clone(), session);
         self.emit(RuntimeEvent::session_started(id.clone()));
@@ -415,6 +422,17 @@ impl SessionManager {
         Ok(json!({ "session": session.snapshot() }))
     }
 
+    /// Swap a live session's approval mode in place. P1 only stores it; the gate
+    /// (P2) consults `LiveSession::approval_mode` when it runs.
+    fn set_mode(&self, session_id: &str, mode: ApprovalMode) -> Result<Value, RuntimeError> {
+        let mut sessions = crate::sync::lock_recover(&self.sessions);
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| RuntimeError::adapter(format!("unknown session: {session_id}")))?;
+        session.set_approval_mode(mode);
+        Ok(json!({ "session": session.snapshot() }))
+    }
+
     fn emit(&self, event: RuntimeEvent) {
         (self.emit)(event);
     }
@@ -454,6 +472,11 @@ impl LiveSession {
         self.config.model = model;
     }
 
+    /// Set this session's approval posture for the next gate decision.
+    fn set_approval_mode(&mut self, mode: ApprovalMode) {
+        self.approval_mode = mode;
+    }
+
     fn snapshot(&self) -> Value {
         json!({
             "session_id": self.id,
@@ -463,6 +486,7 @@ impl LiveSession {
             "agent": self.config.agent,
             "history_len": self.history.len(),
             "pending_approval": false,
+            "approval_mode": self.approval_mode,
         })
     }
 }
@@ -742,6 +766,7 @@ mod tests {
             checkpoint: new_checkpoint(None),
             status: SessionStatus::Idle,
             current_cancel: None,
+            approval_mode: ApprovalMode::Yolo,
         };
         session.retarget(Some("xai".into()), "grok-4-fast".into());
         assert_eq!(session.config.provider, "xai");

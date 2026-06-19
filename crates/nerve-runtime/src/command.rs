@@ -1,3 +1,4 @@
+use crate::RiskTier;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +18,7 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "session.list",
     "session.close",
     "session.set_model",
+    "session.set_mode",
     "auth.start",
     "auth.complete",
     "auth.status",
@@ -113,6 +115,14 @@ pub enum RuntimeCommand {
         provider: Option<String>,
         model: String,
     },
+    /// Switch the approval mode of a live session in place. Takes effect from the
+    /// next gate decision. Pure protocol vocabulary; the host session manager
+    /// stores it (P2 consults it in the gate).
+    #[serde(rename = "session.set_mode")]
+    SessionSetMode {
+        session_id: String,
+        mode: ApprovalMode,
+    },
     /// Start a host-managed OAuth login and return an authorization URL.
     #[serde(rename = "auth.start")]
     AuthStart { provider: String },
@@ -134,11 +144,64 @@ pub enum RuntimeCommand {
 }
 
 /// Decision supplied by a human/client for a session approval request.
+///
+/// `Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally
+/// signal the host to remember the decision for future calls (P2 wires the
+/// remembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionApprovalDecision {
+    /// Allow this call only.
     Allow,
+    /// Deny this call only.
     Deny,
+    /// Allow this call and remember the allow for future matching calls.
+    AllowAlways,
+    /// Deny this call and remember the deny for future matching calls.
+    DenyAlways,
+}
+
+impl SessionApprovalDecision {
+    /// Whether the decision permits the call (either the one-shot or remembered
+    /// allow). Consumers should compare with this rather than `== Allow` so the
+    /// remembered variant is not silently treated as a deny.
+    #[must_use]
+    pub fn allows(&self) -> bool {
+        matches!(self, Self::Allow | Self::AllowAlways)
+    }
+
+    /// Whether the host should persist this decision for future matching calls.
+    #[must_use]
+    pub fn remember(&self) -> bool {
+        matches!(self, Self::AllowAlways | Self::DenyAlways)
+    }
+}
+
+/// Per-session approval posture controlling how high a [`RiskTier`] the gate may
+/// auto-approve without prompting. Pure protocol data; the host gate (P2) maps
+/// each tool's tier against [`Self::max_auto_tier`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Prompt for everything above read-only.
+    AlwaysAsk,
+    /// Auto-approve reads and edits; prompt for exec.
+    Write,
+    /// Auto-approve everything, including exec.
+    Yolo,
+}
+
+impl ApprovalMode {
+    /// Highest tier this mode auto-approves without prompting: anything at or
+    /// below it is allowed, anything above it requires an approval round-trip.
+    #[must_use]
+    pub fn max_auto_tier(self) -> RiskTier {
+        match self {
+            Self::AlwaysAsk => RiskTier::ReadOnly,
+            Self::Write => RiskTier::Edit,
+            Self::Yolo => RiskTier::Exec,
+        }
+    }
 }
 
 impl RuntimeCommand {
@@ -157,6 +220,7 @@ impl RuntimeCommand {
             Self::SessionList => "session.list",
             Self::SessionClose { .. } => "session.close",
             Self::SessionSetModel { .. } => "session.set_model",
+            Self::SessionSetMode { .. } => "session.set_mode",
             Self::AuthStart { .. } => "auth.start",
             Self::AuthComplete { .. } => "auth.complete",
             Self::AuthStatus { .. } => "auth.status",
@@ -179,6 +243,7 @@ impl RuntimeCommand {
             | Self::SessionList
             | Self::SessionClose { .. }
             | Self::SessionSetModel { .. }
+            | Self::SessionSetMode { .. }
             | Self::AuthStart { .. }
             | Self::AuthComplete { .. }
             | Self::AuthStatus { .. }
@@ -219,5 +284,54 @@ mod tests {
         }
         // session.set_model is listed in the canonical command-name set.
         assert!(RUNTIME_COMMAND_NAMES.contains(&"session.set_model"));
+    }
+
+    #[test]
+    fn session_set_mode_round_trips() {
+        let value = serde_json::json!({
+            "kind": "session.set_mode",
+            "session_id": "s1",
+            "mode": "write",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse set_mode");
+        assert_eq!(command.name(), "session.set_mode");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::SessionSetMode { session_id, mode } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(mode, ApprovalMode::Write);
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"session.set_mode"));
+    }
+
+    #[test]
+    fn approval_mode_serde_names_and_tiers() {
+        for (mode, name, tier) in [
+            (ApprovalMode::AlwaysAsk, "always_ask", RiskTier::ReadOnly),
+            (ApprovalMode::Write, "write", RiskTier::Edit),
+            (ApprovalMode::Yolo, "yolo", RiskTier::Exec),
+        ] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), serde_json::json!(name));
+            assert_eq!(mode.max_auto_tier(), tier);
+        }
+    }
+
+    #[test]
+    fn approval_decision_helpers_and_serde() {
+        use SessionApprovalDecision::*;
+        assert!(Allow.allows() && AllowAlways.allows());
+        assert!(!Deny.allows() && !DenyAlways.allows());
+        assert!(AllowAlways.remember() && DenyAlways.remember());
+        assert!(!Allow.remember() && !Deny.remember());
+        assert_eq!(
+            serde_json::to_value(AllowAlways).unwrap(),
+            serde_json::json!("allow_always")
+        );
+        assert_eq!(
+            serde_json::to_value(DenyAlways).unwrap(),
+            serde_json::json!("deny_always")
+        );
     }
 }

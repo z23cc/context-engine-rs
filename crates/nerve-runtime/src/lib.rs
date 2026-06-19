@@ -18,7 +18,7 @@ pub mod runtime;
 mod tool_spec;
 
 pub use adapter::{RiskTier, RuntimeToolAdapter, ToolCapability};
-pub use command::{RUNTIME_COMMAND_NAMES, RuntimeCommand, SessionApprovalDecision};
+pub use command::{ApprovalMode, RUNTIME_COMMAND_NAMES, RuntimeCommand, SessionApprovalDecision};
 pub use error::RuntimeError;
 pub use event::{AgentEventKind, AuthEventKind, RuntimeEvent};
 pub use job::{
@@ -324,6 +324,8 @@ mod tests {
             "request-1",
             "file_edit",
             json!({ "path": "README.md" }),
+            RiskTier::Edit,
+            "--- a/README.md\n+++ b/README.md",
         );
         let approval_value = serde_json::to_value(approval).expect("approval event json");
         assert_eq!(approval_value["type"], "approval_requested");
@@ -331,6 +333,11 @@ mod tests {
         assert_eq!(approval_value["request_id"], "request-1");
         assert_eq!(approval_value["tool"], "file_edit");
         assert_eq!(approval_value["arguments"]["path"], "README.md");
+        assert_eq!(approval_value["tier"], "edit");
+        assert_eq!(
+            approval_value["preview"],
+            "--- a/README.md\n+++ b/README.md"
+        );
     }
 
     #[test]

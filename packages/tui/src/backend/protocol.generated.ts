@@ -14,6 +14,10 @@ export const RUNTIME_PROTOCOL_VERSION = "3" as const;
 export const RUNTIME_TOOLS_LIST_METHOD = "runtime/tools/list" as const;
 
 /**
+ * Per-session approval posture controlling how high a [`RiskTier`] the gate may auto-approve without prompting. Pure protocol data; the host gate (P2) maps each tool's tier against [`Self::max_auto_tier`].
+ */
+export type ApprovalMode = "always_ask" | "write" | "yolo";
+/**
  * Transport-neutral command understood by human-facing runtime adapters.
  */
 export type RuntimeCommand =
@@ -87,6 +91,11 @@ export type RuntimeCommand =
       session_id: string;
     }
   | {
+      kind: "session.set_mode";
+      mode: ApprovalMode;
+      session_id: string;
+    }
+  | {
       kind: "auth.start";
       provider: string;
     }
@@ -106,8 +115,10 @@ export type RuntimeCommand =
     };
 /**
  * Decision supplied by a human/client for a session approval request.
+ *
+ * `Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally signal the host to remember the decision for future calls (P2 wires the remembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).
  */
-export type SessionApprovalDecision = "allow" | "deny";
+export type SessionApprovalDecision = "allow" | "deny" | "allow_always" | "deny_always";
 /**
  * Runtime event emitted by human-facing adapters while executing jobs.
  */
@@ -177,8 +188,16 @@ export type RuntimeEvent =
     }
   | {
       arguments: unknown;
+      /**
+       * Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.
+       */
+      preview?: string;
       request_id: string;
       session_id: string;
+      /**
+       * Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`]).
+       */
+      tier?: RiskTier & string;
       tool: string;
       type: "approval_requested";
     }
@@ -231,6 +250,10 @@ export type AgentEventKind =
       kind: "usage";
       output_tokens: number;
     };
+/**
+ * Coarse risk classification for a tool, ordered least-to-most privileged. Advisory protocol data consumed by a future permission engine (P4); it does not gate execution today.
+ */
+export type RiskTier = "read_only" | "edit" | "exec";
 /**
  * Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.
  */
@@ -310,8 +333,16 @@ export type RuntimeEventNotification1 =
     }
   | {
       arguments: unknown;
+      /**
+       * Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.
+       */
+      preview?: string;
       request_id: string;
       session_id: string;
+      /**
+       * Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`]).
+       */
+      tier?: RiskTier & string;
       tool: string;
       type: "approval_requested";
     }
@@ -326,6 +357,7 @@ export type RuntimeEventNotification1 =
 export type RuntimeJobStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled";
 
 export interface RuntimeProtocolSchema {
+  approvalMode: ApprovalMode;
   jsonValue: unknown;
   runtimeCommand: RuntimeCommand;
   runtimeEvent: RuntimeEvent;
