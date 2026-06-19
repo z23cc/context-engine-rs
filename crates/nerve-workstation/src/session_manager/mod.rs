@@ -476,6 +476,9 @@ fn session_run_config(
         api_key: None,
         distill_memory: false,
         verify_completion: false,
+        // Daemon session turns refuse exec by trust context, not just by flag.
+        allow_exec: false,
+        exec_launcher: crate::sandbox::refuse_launcher(),
     }
 }
 
@@ -493,6 +496,37 @@ mod tests {
     use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn session_runs_refuse_exec_by_trust_context() {
+        use crate::sandbox::{CommandSpec, SandboxPolicy};
+        // A daemon session turn must never execute, independent of any capability
+        // flag: the run config carries allow_exec=false AND a refusing launcher.
+        // Pins the safety invariant "daemon REFUSES exec" at the session path.
+        let config = SessionConfig {
+            workspace: None,
+            provider: "claude".into(),
+            model: "m".into(),
+            system_prompt: None,
+            agent: None,
+            max_turns: None,
+            temperature: None,
+            reasoning_effort: None,
+            tool_filter: None,
+        };
+        let run = session_run_config(&config, ResolvedAgent::default(), "do work");
+        assert!(!run.allow_exec, "session exec capability must be off");
+        let spec = CommandSpec {
+            command: "ls".into(),
+            args: Vec::new(),
+        };
+        assert!(
+            run.exec_launcher
+                .launch(&spec, &SandboxPolicy::for_root(None), &CancelToken::never())
+                .is_err(),
+            "session launcher must refuse execution"
+        );
+    }
 
     #[test]
     fn protocol_approver_allows_via_channel() {

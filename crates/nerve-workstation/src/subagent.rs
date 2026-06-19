@@ -19,7 +19,7 @@ use nerve_agent::{
 use nerve_core::{CancelToken, WorkspaceResolver};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const DEFAULT_MAX_DEPTH: usize = 2;
@@ -72,15 +72,7 @@ impl SubAgentSpawner {
             .resolve(&config.provider, config.api_key.as_deref())?;
         let def = agent_def(&config);
         let env_hook = crate::hooks::EnvironmentHook::new(crate::hooks::today_utc(), root.clone());
-        let runner: Arc<dyn SpawnRunner> = Arc::new(self.clone());
         let parent = ParentRun::from_config(&config, root.clone());
-        let raw = SubAgentToolBox::new(
-            RuntimeToolBox::new(Arc::clone(&self.runtime)),
-            runner,
-            depth,
-            parent,
-        );
-        let checkpoint_tb = CheckpointToolBox::new(raw, Arc::clone(&self.checkpoint));
 
         // Long-term project memory, file-backed at `<root>/.nerve/memory.md`. Only wired
         // when there is a project root — durable PROJECT facts need a project. Recall is the
@@ -91,16 +83,13 @@ impl SubAgentSpawner {
                 r.join(".nerve").join("memory.md"),
             )) as Arc<dyn crate::memory::MemoryStore>
         });
-        // P4 gate is the OUTERMOST decorator: every tool the model can call — read tools,
-        // spawn_agent, and the agent-state tools (update_checkpoint/remember) — flows through
-        // it (north-star invariant 9). Safe tools are classified Allow in the policy.
-        let toolbox: Box<dyn ToolBox> = match &memory_store {
-            Some(store) => Box::new(self.gate.clone().wrap(crate::memory::MemoryToolBox::new(
-                checkpoint_tb,
-                Arc::clone(store),
-            ))),
-            None => Box::new(self.gate.clone().wrap(checkpoint_tb)),
-        };
+        let toolbox = self.assemble_toolbox(
+            &config,
+            root.as_deref(),
+            depth,
+            parent,
+            memory_store.as_ref(),
+        );
         let checkpoint_hook = CheckpointHook::new(Arc::clone(&self.checkpoint));
         let memory_hook = memory_store
             .as_ref()
@@ -133,6 +122,55 @@ impl SubAgentSpawner {
             );
         }
         Ok(output)
+    }
+
+    /// Assemble the agent's toolbox for one run. The P4 gate stays the
+    /// **OUTERMOST** decorator (north-star invariant 9): every tool the model can
+    /// call — read tools, `spawn_agent`, the agent-state tools, and (when enabled)
+    /// `run_command` — passes through it. `run_command` is added by the
+    /// `ExecToolBox` immediately inside the gate, so each call is authorized (Ask)
+    /// and contained by the run's launcher: `PolicyToolBox(ExecToolBox(…))`.
+    fn assemble_toolbox(
+        &self,
+        config: &AgentRunConfig,
+        root: Option<&Path>,
+        depth: usize,
+        parent: ParentRun,
+        memory_store: Option<&Arc<dyn crate::memory::MemoryStore>>,
+    ) -> Box<dyn ToolBox> {
+        let runner: Arc<dyn SpawnRunner> = Arc::new(self.clone());
+        let raw = SubAgentToolBox::new(
+            RuntimeToolBox::new(Arc::clone(&self.runtime)),
+            runner,
+            depth,
+            parent,
+        );
+        let checkpoint_tb = CheckpointToolBox::new(raw, Arc::clone(&self.checkpoint));
+        let exec_policy = crate::sandbox::SandboxPolicy::for_root(root);
+        let launcher = Arc::clone(&config.exec_launcher);
+        // ExecToolBox sits just inside the gate; it advertises `run_command` only
+        // when `allow_exec` is set, and routes it through the trust-context launcher.
+        match memory_store {
+            Some(store) => {
+                let mem = crate::memory::MemoryToolBox::new(checkpoint_tb, Arc::clone(store));
+                let exec = crate::exec_tool::ExecToolBox::new(
+                    mem,
+                    launcher,
+                    exec_policy,
+                    config.allow_exec,
+                );
+                Box::new(self.gate.clone().wrap(exec))
+            }
+            None => {
+                let exec = crate::exec_tool::ExecToolBox::new(
+                    checkpoint_tb,
+                    launcher,
+                    exec_policy,
+                    config.allow_exec,
+                );
+                Box::new(self.gate.clone().wrap(exec))
+            }
+        }
     }
 }
 
@@ -239,6 +277,10 @@ fn sub_config(parent: &ParentRun, args: SpawnAgentArgs) -> Result<AgentRunConfig
         api_key,
         distill_memory: false,
         verify_completion: false,
+        // Subagents never execute commands in the MVP, independent of the
+        // parent's capability; refuse is the safe default for the launcher field.
+        allow_exec: false,
+        exec_launcher: crate::sandbox::refuse_launcher(),
     })
 }
 

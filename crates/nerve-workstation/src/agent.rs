@@ -124,8 +124,15 @@ struct AgentRunArgs {
     reasoning_effort: Option<String>,
     /// Approve every tool call without prompting. Bypasses the permission
     /// engine entirely — use only for trusted, non-interactive batch runs.
+    /// Combined with `--allow-exec`, commands run with NO per-call prompt.
     #[arg(long = "allow-all", visible_alias = "yes", short = 'y')]
     allow_all: bool,
+    /// Enable the `run_command` execution tool (default off). Even when
+    /// enabled, every call is permission-gated (Ask) and runs in a best-effort
+    /// sandbox: workspace cwd, scrubbed env, no network, wall-clock timeout,
+    /// capped output. The daemon never honors this — it refuses exec.
+    #[arg(long = "allow-exec")]
+    allow_exec: bool,
     /// Distil durable facts into long-term memory after a substantive run
     /// (opt-in; off by default — one extra LLM call per qualifying session).
     #[arg(long = "distill-memory")]
@@ -271,6 +278,11 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
     if args.allow_all {
         eprintln!("\u{26a0}  --allow-all: every tool call will run without a permission prompt");
     }
+    if args.allow_exec {
+        eprintln!(
+            "\u{26a0}  --allow-exec: the run_command tool is enabled (each call is still permission-gated)"
+        );
+    }
     let config = AgentRunConfig {
         workspace: None,
         provider: provider.clone(),
@@ -284,6 +296,9 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
         api_key: args.api_key,
         distill_memory: args.distill_memory,
         verify_completion: args.verify_completion,
+        allow_exec: args.allow_exec,
+        // Trusted local CLI run: best-effort process containment.
+        exec_launcher: crate::sandbox::process_launcher(),
     };
     // P5: persist this run's transcript under the project's `.nerve/sessions`
     // (falling back to the global config home). A resolution failure only
@@ -350,6 +365,14 @@ pub(crate) struct AgentRunConfig {
     pub(crate) distill_memory: bool,
     /// Opt-in: one completion self-check pass before the run finishes.
     pub(crate) verify_completion: bool,
+    /// Whether the `run_command` execution tool is exposed (the `--allow-exec`
+    /// capability). Off by default; subagent and daemon runs keep it off.
+    pub(crate) allow_exec: bool,
+    /// Containment backend for `run_command`, bound to the **trust context**:
+    /// the CLI injects the best-effort process launcher; the daemon / session /
+    /// remote paths inject a refusing launcher, so a served run cannot execute
+    /// even if the capability flag were set.
+    pub(crate) exec_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
 }
 
 /// Build the toolbox + provider and drive the orchestrator. The single execution

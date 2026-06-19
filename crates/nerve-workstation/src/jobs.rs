@@ -289,6 +289,9 @@ impl JobManager {
             api_key: None,
             distill_memory: false,
             verify_completion: false,
+            // Daemon-served runs refuse exec by trust context, not just by flag.
+            allow_exec: false,
+            exec_launcher: crate::sandbox::refuse_launcher(),
         };
         let emit = Arc::clone(&self.emit);
         let job_id = job_id.to_string();

@@ -477,6 +477,7 @@ mod tests {
             "move",
             "ast_edit",
             "spawn_agent",
+            "run_command",
             "mcp__fs__write",
             "brand_new_tool",
         ] {

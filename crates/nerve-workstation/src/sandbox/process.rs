@@ -1,0 +1,388 @@
+//! `ProcessLauncher` — the MVP "trusted local dev" containment backend.
+//!
+//! Best-effort isolation via `std::process::Command`: a forced working
+//! directory, an environment scrubbed down to an allowlist (with secrets removed
+//! unconditionally), a hard wall-clock timeout that kills the whole process
+//! group, and a cap on captured output. This is **not** strong isolation — a
+//! determined process can still escape on a dev box (e.g. by daemonizing out of
+//! its process group, or by reading absolute paths) — but it honestly bounds the
+//! blast radius for a developer who already runs these commands by hand. Strong,
+//! kernel-enforced backends (Landlock/seccomp on Linux) land later behind the
+//! same [`SandboxLauncher`](super::SandboxLauncher) port without changing callers.
+
+use super::{CommandSpec, EnvPolicy, Output, SandboxLauncher, SandboxPolicy};
+use anyhow::{Context, Result};
+use nerve_core::CancelToken;
+use std::collections::VecDeque;
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+
+/// How often to poll a running child while waiting for it to exit, time out, or
+/// be cancelled.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Best-effort confined-subprocess launcher (see module docs).
+pub(crate) struct ProcessLauncher;
+
+impl SandboxLauncher for ProcessLauncher {
+    fn launch(
+        &self,
+        spec: &CommandSpec,
+        policy: &SandboxPolicy,
+        cancel: &CancelToken,
+    ) -> Result<Output> {
+        let mut command = Command::new(&spec.command);
+        command
+            .args(&spec.args)
+            .current_dir(&policy.cwd)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        isolate_process_group(&mut command);
+        for (name, value) in child_env(std::env::vars(), &policy.env) {
+            command.env(name, value);
+        }
+
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("failed to spawn `{}`", spec.command))?;
+
+        // Drain both pipes on dedicated threads so a chatty child can never
+        // deadlock on a full pipe buffer while we poll for the timeout. On a
+        // timeout/cancel kill we SIGKILL the whole group, which closes every
+        // inherited write end, so these reads reach EOF and the joins return.
+        let stdout = child.stdout.take().context("child stdout missing")?;
+        let stderr = child.stderr.take().context("child stderr missing")?;
+        let cap = policy.max_output;
+        let stdout_reader = std::thread::spawn(move || read_capped(stdout, cap));
+        let stderr_reader = std::thread::spawn(move || read_capped(stderr, cap));
+
+        let (status, timed_out) = wait_with_timeout(&mut child, policy.timeout, cancel)?;
+
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        Ok(Output {
+            exit_code: status.code(),
+            stdout,
+            stderr,
+            timed_out,
+        })
+    }
+}
+
+/// Wait for `child`, killing its process group when `timeout` elapses or `cancel`
+/// fires. Returns the (possibly signal-killed) exit status and whether the kill
+/// was due to the timeout (cancellation is reported by the caller via the token).
+fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> Result<(ExitStatus, bool)> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().context("polling child status")? {
+            return Ok((status, false));
+        }
+        if cancel.is_cancelled() {
+            kill_process_tree(child);
+            let status = child.wait().context("reaping cancelled child")?;
+            return Ok((status, false));
+        }
+        if Instant::now() >= deadline {
+            // The child may have exited in the same tick the deadline passed;
+            // prefer the real status over a spurious timeout.
+            if let Some(status) = child.try_wait().context("final child status")? {
+                return Ok((status, false));
+            }
+            kill_process_tree(child);
+            let status = child.wait().context("reaping timed-out child")?;
+            return Ok((status, true));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Put the child in its own process group so a group-kill reaches the whole tree
+/// and the terminal's Ctrl-C does not hit it directly (nerve flips the cancel
+/// token and tears the group down deterministically instead).
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
+
+/// SIGKILL the child's whole process group, so forked grandchildren (e.g.
+/// `rustc`, build scripts, `node`) die too and release the stdout/stderr pipes.
+/// Killing only the direct child would leave them holding the pipes open, and
+/// the reader joins would block past the timeout — defeating the wall-clock bound.
+/// Called only while the group leader is still alive (before reaping), so the
+/// group id cannot have been recycled.
+#[cfg(unix)]
+fn kill_process_tree(child: &mut Child) {
+    let pgid = child.id() as libc::pid_t;
+    // SAFETY: `killpg` is async-signal-safe; we target the child's own process
+    // group, created via `process_group(0)`, and the leader has not been reaped.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(child: &mut Child) {
+    let _ = child.kill();
+}
+
+/// Build the child environment from the parent's, keeping only allowlisted names
+/// and dropping any secret-shaped name unconditionally (defence in depth: even an
+/// allowlisted prefix cannot leak a token/key/secret).
+pub(crate) fn child_env(
+    parent: impl Iterator<Item = (String, String)>,
+    policy: &EnvPolicy,
+) -> Vec<(String, String)> {
+    parent
+        .filter(|(name, _)| policy.allows(name) && !is_secret_name(name))
+        .collect()
+}
+
+/// Whether an environment variable name looks like a credential. Matched
+/// case-insensitively so the scrub catches `GITHUB_TOKEN`, `OPENAI_API_KEY`,
+/// `AWS_SECRET_ACCESS_KEY`, `NPM_CONFIG__AUTH`, `*_PASSWORD`, etc. Name-based
+/// only: credentials embedded in a variable's *value* (e.g. a URL with
+/// `user:pass`) are not detectable here and are not sanitized.
+pub(crate) fn is_secret_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.ends_with("_TOKEN")
+        || upper.ends_with("_KEY")
+        || upper.ends_with("_SECRET")
+        || upper.contains("SECRET")
+        || upper.contains("TOKEN")
+        || upper.contains("APIKEY")
+        || upper.contains("PASSWORD")
+        || upper.contains("PASSWD")
+        || upper.contains("PASSPHRASE")
+        || upper.contains("AUTH")
+        || upper.contains("CRED")
+}
+
+/// Read `reader` to EOF, retaining at most `cap` bytes split between the **head**
+/// and **tail** of the stream (and draining the rest so the writer never blocks).
+/// Head+tail matters for build tools whose failure summary lands at the end.
+/// Returns the captured text (UTF-8 lossy), with a marker inserted when more than
+/// `cap` bytes were produced.
+fn read_capped(mut reader: impl Read, cap: usize) -> String {
+    let head_cap = cap / 2;
+    let tail_cap = cap - head_cap;
+    let mut head: Vec<u8> = Vec::new();
+    let mut tail: VecDeque<u8> = VecDeque::new();
+    let mut total = 0usize;
+    let mut scratch = [0u8; 8192];
+    loop {
+        match reader.read(&mut scratch) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                append_capped(&mut head, &mut tail, head_cap, tail_cap, &scratch[..n]);
+            }
+            Err(_) => break,
+        }
+    }
+    finalize_output(&head, &tail, total, cap)
+}
+
+/// Append `chunk` to the head buffer until it is full, then to a bounded tail
+/// ring buffer — so the capture keeps both the start and the end of the stream.
+fn append_capped(
+    head: &mut Vec<u8>,
+    tail: &mut VecDeque<u8>,
+    head_cap: usize,
+    tail_cap: usize,
+    chunk: &[u8],
+) {
+    let mut chunk = chunk;
+    if head.len() < head_cap {
+        let take = (head_cap - head.len()).min(chunk.len());
+        head.extend_from_slice(&chunk[..take]);
+        chunk = &chunk[take..];
+    }
+    if tail_cap == 0 || chunk.is_empty() {
+        return;
+    }
+    if chunk.len() >= tail_cap {
+        tail.clear();
+        tail.extend(&chunk[chunk.len() - tail_cap..]);
+    } else {
+        while tail.len() + chunk.len() > tail_cap {
+            tail.pop_front();
+        }
+        tail.extend(chunk);
+    }
+}
+
+/// Render captured head/tail bytes to a lossy string, inserting a truncation
+/// marker between them when the stream exceeded the cap.
+fn finalize_output(head: &[u8], tail: &VecDeque<u8>, total: usize, cap: usize) -> String {
+    let mut text = String::from_utf8_lossy(head).into_owned();
+    if total > cap {
+        let omitted = total - cap;
+        text.push_str(&format!(
+            "\n…[output truncated: {omitted} of {total} bytes omitted]\n"
+        ));
+    }
+    let tail_bytes: Vec<u8> = tail.iter().copied().collect();
+    text.push_str(&String::from_utf8_lossy(&tail_bytes));
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entries(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn is_secret_name_flags_credentials_only() {
+        for secret in [
+            "GITHUB_TOKEN",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "CARGO_REGISTRY_TOKEN",
+            "DB_PASSWORD",
+            "NPM_CONFIG__AUTH",
+            "GH_CREDENTIALS",
+            "my_secret_thing",
+        ] {
+            assert!(is_secret_name(secret), "{secret} should be secret");
+        }
+        for safe in ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "LANG"] {
+            assert!(!is_secret_name(safe), "{safe} should not be secret");
+        }
+    }
+
+    #[test]
+    fn child_env_keeps_allowlisted_and_scrubs_secrets() {
+        let policy = EnvPolicy::dev_default();
+        let parent = entries(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/dev"),
+            ("CARGO_HOME", "/home/dev/.cargo"),
+            ("CARGO_REGISTRY_TOKEN", "deadbeef"), // allowlisted prefix BUT secret
+            ("OPENAI_API_KEY", "sk-xxx"),         // secret and not allowlisted
+            ("RANDOM_VAR", "nope"),               // not allowlisted
+        ]);
+
+        let mut child: Vec<(String, String)> = child_env(parent.into_iter(), &policy);
+        child.sort();
+
+        let names: Vec<&str> = child.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["CARGO_HOME", "HOME", "PATH"]);
+        // The secret-shaped name survived neither the allowlist nor the scrub.
+        assert!(!names.contains(&"CARGO_REGISTRY_TOKEN"));
+        assert!(!names.contains(&"OPENAI_API_KEY"));
+        assert!(!names.contains(&"RANDOM_VAR"));
+    }
+
+    #[test]
+    fn read_capped_keeps_head_and_tail_with_a_marker() {
+        // 'H' head, 'M' middle (dropped), 'T' tail.
+        let mut data = vec![b'H'; 20];
+        data.extend(std::iter::repeat_n(b'M', 60));
+        data.extend(std::iter::repeat_n(b'T', 20));
+        let out = read_capped(&data[..], 20);
+        assert!(out.starts_with("HHHHHHHHHH"), "head retained: {out}");
+        assert!(out.ends_with("TTTTTTTTTT"), "tail retained: {out}");
+        assert!(!out.contains('M'), "middle dropped: {out}");
+        assert!(out.contains("80 of 100 bytes omitted"), "marker: {out}");
+    }
+
+    #[test]
+    fn read_capped_passes_small_streams_through_unmarked() {
+        let out = read_capped(&b"hello"[..], 1024);
+        assert_eq!(out, "hello");
+    }
+
+    // The subprocess-backed checks below need a real POSIX toolchain (absolute
+    // program paths, signal kill). The pure helpers above cover the cap/scrub
+    // logic on every platform.
+    #[cfg(unix)]
+    mod posix {
+        use super::*;
+        use crate::sandbox::{DEFAULT_MAX_OUTPUT, NetPolicy};
+        use std::path::PathBuf;
+
+        fn policy(timeout: Duration) -> SandboxPolicy {
+            SandboxPolicy {
+                cwd: PathBuf::from("/"),
+                fs_read: Vec::new(),
+                fs_write: Vec::new(),
+                net: NetPolicy::Deny,
+                env: EnvPolicy::dev_default(),
+                timeout,
+                max_output: DEFAULT_MAX_OUTPUT,
+            }
+        }
+
+        #[test]
+        fn runs_argv_literally_without_shell_interpretation() {
+            // If a shell were involved, `&&` and `>` would be operators and the
+            // output would differ; argv execution echoes them verbatim.
+            let spec = CommandSpec {
+                command: "/bin/echo".into(),
+                args: vec!["a && b > c".into()],
+            };
+            let out = ProcessLauncher
+                .launch(
+                    &spec,
+                    &policy(Duration::from_secs(10)),
+                    &CancelToken::never(),
+                )
+                .expect("echo runs");
+            assert_eq!(out.exit_code, Some(0));
+            assert!(!out.timed_out);
+            assert_eq!(out.stdout, "a && b > c\n");
+        }
+
+        #[test]
+        fn timeout_kills_a_long_running_process() {
+            let spec = CommandSpec {
+                command: "/bin/sleep".into(),
+                args: vec!["30".into()],
+            };
+            let out = ProcessLauncher
+                .launch(
+                    &spec,
+                    &policy(Duration::from_millis(150)),
+                    &CancelToken::never(),
+                )
+                .expect("sleep spawns");
+            assert!(out.timed_out, "expected the wall-clock kill to fire");
+            // Killed by signal → no exit code.
+            assert_eq!(out.exit_code, None);
+        }
+
+        #[test]
+        fn cancelled_token_kills_the_process() {
+            let cancel = CancelToken::new();
+            cancel.cancel();
+            let spec = CommandSpec {
+                command: "/bin/sleep".into(),
+                args: vec!["30".into()],
+            };
+            let out = ProcessLauncher
+                .launch(&spec, &policy(Duration::from_secs(60)), &cancel)
+                .expect("sleep spawns");
+            // Cancellation kills the group without flagging a timeout.
+            assert!(!out.timed_out);
+            assert_eq!(out.exit_code, None);
+        }
+    }
+}

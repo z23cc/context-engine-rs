@@ -1,6 +1,12 @@
 # Agent command execution + containment (`run_command` behind a `SandboxLauncher`)
 
-Status: **proposed** (design — security-sensitive; build needs explicit sign-off).
+Status: **Phase 1 (MVP) implemented** — `run_command` (argv) behind `--allow-exec`
+(default off), P4 `Ask` per call, `SandboxPolicy` + `ProcessLauncher` (cwd / env
+scrub / wall-clock group-kill / output cap / net-deny intent) for the CLI, and a
+`RefuseLauncher` for the daemon / session / subagent paths. Deferred (future
+seams, intentionally NOT built): Linux Landlock/seccomp + cgroups, macOS
+App-Sandbox, microVM/WASM, shell-mode (pipes/redirects), and the daemon approval
+round-trip. See §5/§8 below.
 Date: 2026-06-19
 Related: `docs/designs/architecture-north-star.md` (P4 permission engine, seams),
 the prior sandbox analysis (cross-platform isolation asymmetry).
@@ -120,8 +126,13 @@ hard timeout · output cap · every run emits a `ToolStarted/Finished` event (au
   refuse exec. Encode the trust assumption in launcher selection, not in user discipline.
 
 ## 8. Phasing
-- **MVP** (this, on sign-off): `run_command` (argv) + `--allow-exec` default-off + P4 Ask +
+- **MVP** (✅ implemented, this): `run_command` (argv) + `--allow-exec` default-off + P4 Ask +
   `SandboxPolicy` + `ProcessLauncher` (cwd/env/timeout/output/net-deny) + tests. Trusted-local.
+  Containment notes: the wall-clock timeout kills the whole **process group** (so forked build
+  tools die and release the pipes); output capping keeps **head+tail**; the env scrub is
+  name-based (value-embedded `user:pass` in e.g. index URLs is **not** sanitized — credential-prone
+  prefixes like `NPM_CONFIG`/`PIP_` are simply not allowlisted). `ProcessLauncher` does not enforce
+  the `fs_read`/`fs_write`/`net` policy fields — those are the contract for the strong backend below.
 - **P-next**: `LandlockLauncher` (Linux strong) selected at composition by target/config.
 - **Later**: shell-mode opt-in; macOS App-Sandbox bundle; microVM/WASM as their own seams.
 
