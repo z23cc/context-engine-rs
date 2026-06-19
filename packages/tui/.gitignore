@@ -1,0 +1,4 @@
+# bun build --compile output (the standalone nerve-chat client)
+dist/
+# bun build --compile intermediate artifacts
+*.bun-build

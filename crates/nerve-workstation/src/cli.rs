@@ -34,6 +34,8 @@ enum CommandKind {
     Cache(CacheArgs),
     /// Register Nerve as an MCP server in Claude Code and/or Codex.
     Install(commands::install::InstallArgs),
+    /// Interactive terminal chat client (forwards to the bundled `nerve-chat`).
+    Chat(commands::chat::ChatArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +92,7 @@ pub(crate) fn run() -> Result<()> {
             CacheCommand::Purge(serve_args) => commands::cache::purge(serve_args),
         },
         CommandKind::Install(args) => commands::install::install(args),
+        CommandKind::Chat(args) => commands::chat::chat(args),
     }
 }
 
@@ -161,6 +164,41 @@ mod tests {
         ])
         .expect("agent run without allow-all");
         assert!(matches!(parsed.command, CommandKind::Agent(_)));
+    }
+
+    #[test]
+    fn cli_parses_chat_passthrough() {
+        // Everything after `chat` is captured verbatim for the bundled client,
+        // including leading-hyphen flags it doesn't itself declare.
+        let parsed = Cli::try_parse_from([
+            "nerve",
+            "chat",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-4",
+            "--root",
+            ".",
+        ])
+        .expect("chat parse");
+        match parsed.command {
+            CommandKind::Chat(args) => assert_eq!(
+                args.forwarded,
+                [
+                    "--provider",
+                    "anthropic",
+                    "--model",
+                    "claude-sonnet-4",
+                    "--root",
+                    "."
+                ]
+            ),
+            other => panic!("expected chat, got {other:?}"),
+        }
+        // No-arg `nerve chat` is valid at the CLI layer (the client reports the
+        // missing provider/model itself).
+        let bare = Cli::try_parse_from(["nerve", "chat"]).expect("bare chat parse");
+        assert!(matches!(bare.command, CommandKind::Chat(_)));
     }
 
     #[test]

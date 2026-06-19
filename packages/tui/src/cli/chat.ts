@@ -73,7 +73,7 @@ export function parseArgs(argv: string[]): ChatArgs {
     else if (value === "--agent") out.agent = argv[++i];
     else if (value === "--help" || value === "-h") {
       stdout.write(
-        "usage: bun src/cli/chat.ts --provider P --model M [--root PATH] [--binary PATH] [--agent NAME]\n",
+        "usage: nerve chat --provider P --model M [--root PATH] [--binary PATH] [--agent NAME]\n",
       );
       process.exit(0);
     }

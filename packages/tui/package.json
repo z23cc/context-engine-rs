@@ -7,6 +7,7 @@
   "scripts": {
     "smoke": "bun src/cli/smoke.ts",
     "chat": "bun src/cli/chat.ts",
+    "build": "bun build src/cli/chat.ts --compile --outfile dist/nerve-chat",
     "test": "bun test test/*.test.ts",
     "check": "bun test test/*.test.ts"
   },

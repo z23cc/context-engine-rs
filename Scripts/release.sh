@@ -96,6 +96,20 @@ end
 EOF
 }
 
+# ---- bundle the TUI client (nerve-chat) into a keg, when bun is available ----
+# The terminal UI is a runtime-protocol client shipped as a SEPARATE executable
+# next to the engine, so `brew` users get `nerve chat` out of the box while the
+# engine/client boundary stays intact. Engine-only (non-fatal) when bun is absent.
+bundle_tui_client() {
+  local srcdir="$1" keg="$2"
+  if ! command -v bun >/dev/null; then
+    echo ">> bun not found — engine-only bottle (no nerve-chat)"; return 0
+  fi
+  echo ">> bundling nerve-chat (TUI client)"
+  ( cd "$srcdir/packages/tui" && bun build src/cli/chat.ts --compile --outfile "$keg/bin/nerve-chat" >/dev/null )
+  "$keg/bin/nerve-chat" --help >/dev/null # smoke: prints usage and exits 0, else abort
+}
+
 # ---- bottle builder: build from $1 (a source dir) and package a bottle ----
 # Requires BTAG, NEW, TAG, SRC_URL, SRC_SHA. Sets BOTTLE, BOTTLE_SHA, BOTTLE_ROOT.
 build_bottle() {
@@ -106,6 +120,7 @@ build_bottle() {
   local keg="$TMP/bottle/$FORMULA/$NEW"
   rm -rf "$TMP/bottle"; mkdir -p "$keg/bin" "$keg/.brew"
   cp "$srcdir/target/release/$BIN" "$keg/bin/$BIN"
+  bundle_tui_client "$srcdir" "$keg"
   [[ -f "$srcdir/LICENSE" ]] && cp "$srcdir/LICENSE" "$keg/LICENSE"
   gen_formula 0 >"$keg/.brew/$FORMULA.rb"
   BOTTLE="$TMP/${FORMULA}-${NEW}.${BTAG}.bottle.tar.gz"
