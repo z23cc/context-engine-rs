@@ -46,7 +46,7 @@ pub use backend::{
     FastembedEmbeddingBackend, FastembedRerankerBackend, MockEmbeddingBackend, MockRerankerBackend,
 };
 pub use config::{
-    EmbeddingBackend, RerankerBackend, SemanticIndexConfig, SemanticIndexScope,
+    EmbeddingBackend, GenerationClock, RerankerBackend, SemanticIndexConfig, SemanticIndexScope,
     SemanticPersistenceConfig, SemanticRuntimeConfig,
 };
 pub use index::{SemanticIndex, SemanticWarmResponse};

@@ -143,12 +143,27 @@ impl FsCatalogProvider {
         options: ScanOptions,
         semantic_index: Option<Arc<SemanticIndex>>,
     ) -> Self {
+        Self::with_semantic_index_and_clock(policy, options, semantic_index, Instant::now)
+    }
+
+    /// Like [`Self::with_semantic_index`] but with an injectable monotonic clock,
+    /// matching [`Self::with_clock`]. Routes construction through `with_clock` so the
+    /// cache-TTL clock stays injectable on the semantic path instead of hard-coding
+    /// `Instant::now`.
+    #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn with_semantic_index_and_clock<F>(
+        policy: RootPolicy,
+        options: ScanOptions,
+        semantic_index: Option<Arc<SemanticIndex>>,
+        clock: F,
+    ) -> Self
+    where
+        F: Fn() -> Instant + Send + Sync + 'static,
+    {
         Self {
-            policy,
-            options,
-            cache: Arc::new(ProviderCache::default()),
-            clock: Arc::new(Instant::now),
             semantic_index,
+            ..Self::with_clock(policy, options, clock)
         }
     }
 

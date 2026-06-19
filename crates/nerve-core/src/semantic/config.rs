@@ -136,6 +136,49 @@ pub struct SemanticPersistenceConfig {
     pub roots: Vec<PathBuf>,
     pub embedding_model_id: String,
     pub embedding_dimension: usize,
+    /// Source of the unique suffix used in persisted generation ids and temp-file
+    /// names. Injectable so the kernel never hard-codes a wall-clock read; defaults
+    /// to process id + wall-clock nanoseconds.
+    pub generation_clock: GenerationClock,
+}
+
+/// Injectable source of the unique suffix used in persisted generation ids and
+/// temp-file names. The default reads the process id and wall-clock nanoseconds;
+/// hosts or tests can inject a deterministic source so nerve-core's persist path
+/// never hard-codes a wall-clock read. The produced string is opaque — only its
+/// uniqueness matters — so the on-disk persisted format stays compatible.
+#[derive(Clone)]
+pub struct GenerationClock(Arc<dyn Fn() -> String + Send + Sync>);
+
+impl GenerationClock {
+    /// Build a clock from a closure yielding a unique generation id on each call.
+    #[must_use]
+    pub fn new(source: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        Self(Arc::new(source))
+    }
+
+    /// Produce the next opaque, unique generation id.
+    pub(crate) fn generation_id(&self) -> String {
+        (self.0)()
+    }
+}
+
+impl Default for GenerationClock {
+    fn default() -> Self {
+        Self(Arc::new(|| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default();
+            format!("{}-{nanos}", std::process::id())
+        }))
+    }
+}
+
+impl std::fmt::Debug for GenerationClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("GenerationClock").finish()
+    }
 }
 
 #[derive(Clone, Debug)]

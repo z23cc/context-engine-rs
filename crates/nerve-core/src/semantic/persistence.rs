@@ -157,6 +157,7 @@ pub(super) fn semantic_persistence_config(
         roots: canonical_roots,
         embedding_model_id: embedding_model_id.to_string(),
         embedding_dimension,
+        generation_clock: GenerationClock::default(),
     }))
 }
 
@@ -279,7 +280,7 @@ pub(super) fn save_persisted_index(
     diagnostics: Vec<Diagnostic>,
     ann: &DenseAnn,
 ) -> Result<(), NerveError> {
-    let generation = generation_id();
+    let generation = config.generation_clock.generation_id();
     let dir = generation_dir(config, &generation);
     fs::create_dir_all(&dir).map_err(|err| NerveError::io(&dir, err))?;
     let embeddings_bytes = embeddings_to_bytes(records);
@@ -343,7 +344,11 @@ pub(super) fn save_persisted_index(
     sync_dir(&dir)?;
     let current_bytes = serde_json::to_vec_pretty(&PersistedCurrent { generation })
         .map_err(|err| NerveError::Semantic(format!("semantic current encode failed: {err}")))?;
-    write_atomic(&current_path(config), &current_bytes)
+    write_atomic(
+        &current_path(config),
+        &current_bytes,
+        &config.generation_clock,
+    )
 }
 
 pub(super) fn validate_manifest(
@@ -387,10 +392,16 @@ pub(super) fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), NerveError> 
     file.sync_all().map_err(|err| NerveError::io(path, err))
 }
 
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), NerveError> {
+pub(super) fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    generation_clock: &GenerationClock,
+) -> Result<(), NerveError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|err| NerveError::io(parent, err))?;
-    let tmp = parent.join(format!(".{}.tmp", generation_id()));
+    // Draw a fresh stamp for the temp file (independent of any committed
+    // generation id); the clock yields a unique value on each call.
+    let tmp = parent.join(format!(".{}.tmp", generation_clock.generation_id()));
     write_synced(&tmp, bytes)?;
     rename_replace(&tmp, path)?;
     sync_dir(parent)
@@ -486,14 +497,6 @@ pub(super) fn read_embeddings(
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-pub(super) fn generation_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{nanos}", std::process::id())
 }
 
 pub(super) fn system_time_to_unix_nanos(time: SystemTime) -> Option<i128> {

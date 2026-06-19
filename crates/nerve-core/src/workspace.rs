@@ -9,7 +9,10 @@ use crate::{FsCatalogProvider, RootPolicy, ScanOptions, models::RootRef};
 use std::cell::RefCell;
 use std::{collections::HashMap, ops::Deref, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
-use std::{path::PathBuf, sync::RwLock};
+use std::{
+    path::PathBuf,
+    sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 /// Stable workspace identifier supplied by hosts and tool-call arguments.
 pub type WorkspaceId = String;
@@ -169,9 +172,25 @@ fn new_workspace_store<P>() -> WorkspaceStore<P> {
     RefCell::new(HashMap::new())
 }
 
+/// Acquire a read guard on the workspace store, recovering the inner guard when a
+/// prior panic poisoned the lock. A single panicking thread must not take down
+/// workspace resolution server-wide, so a poisoned lock is treated as recoverable
+/// rather than propagated as a panic. Happy-path behaviour is unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_store<P>(store: &WorkspaceStore<P>) -> RwLockReadGuard<'_, HashMap<WorkspaceId, Arc<P>>> {
+    store.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Acquire a write guard on the workspace store, recovering from a poisoned lock
+/// (see [`read_store`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn write_store<P>(store: &WorkspaceStore<P>) -> RwLockWriteGuard<'_, HashMap<WorkspaceId, Arc<P>>> {
+    store.write().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn workspace_len<P>(store: &WorkspaceStore<P>) -> usize {
-    store.read().expect("workspace lock").len()
+    read_store(store).len()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -185,7 +204,7 @@ fn workspace_insert<P>(
     id: WorkspaceId,
     provider: Arc<P>,
 ) -> Option<Arc<P>> {
-    store.write().expect("workspace lock").insert(id, provider)
+    write_store(store).insert(id, provider)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -199,7 +218,7 @@ fn workspace_insert<P>(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn workspace_remove<P>(store: &WorkspaceStore<P>, id: &str) -> Option<Arc<P>> {
-    store.write().expect("workspace lock").remove(id)
+    write_store(store).remove(id)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -209,7 +228,7 @@ fn workspace_remove<P>(store: &WorkspaceStore<P>, id: &str) -> Option<Arc<P>> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn workspace_get<P>(store: &WorkspaceStore<P>, id: &str) -> Option<Arc<P>> {
-    store.read().expect("workspace lock").get(id).cloned()
+    read_store(store).get(id).cloned()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -219,12 +238,7 @@ fn workspace_get<P>(store: &WorkspaceStore<P>, id: &str) -> Option<Arc<P>> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn workspace_singleton<P>(store: &WorkspaceStore<P>) -> Option<Arc<P>> {
-    store
-        .read()
-        .expect("workspace lock")
-        .values()
-        .next()
-        .cloned()
+    read_store(store).values().next().cloned()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -305,10 +319,7 @@ impl WorkspaceRegistry<FsCatalogProvider> {
 
     #[must_use]
     pub fn list(&self) -> Vec<WorkspaceInfo> {
-        let mut workspaces: Vec<_> = self
-            .workspaces
-            .read()
-            .expect("workspace lock")
+        let mut workspaces: Vec<_> = read_store(&self.workspaces)
             .iter()
             .map(|(name, provider)| workspace_info(name, provider.roots()))
             .collect();
