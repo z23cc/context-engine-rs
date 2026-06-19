@@ -226,7 +226,11 @@ impl JobManager {
             None,
             None,
         ));
-        let outcome = if matches!(command, RuntimeCommand::AgentRun { .. }) {
+        // Executor branching — each command is claimed by exactly one executor:
+        // the agent.run job, the session manager, the auth manager, or the core
+        // Runtime hub (the `else`). The `command_executor_partition` tests assert
+        // this partition stays total and disjoint as commands are added (§10).
+        let outcome = if is_agent_run(&command) {
             self.run_agent_command(&job_id, command, &token)
         } else if is_session_command(&command) {
             self.sessions.handle_command(command, &token)
@@ -422,6 +426,10 @@ fn is_valid_job_id_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
 }
 
+fn is_agent_run(command: &RuntimeCommand) -> bool {
+    matches!(command, RuntimeCommand::AgentRun { .. })
+}
+
 fn is_session_command(command: &RuntimeCommand) -> bool {
     matches!(
         command,
@@ -456,4 +464,99 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod command_executor_partition {
+    //! Governance test (architecture north star §10): the command-executor
+    //! *totality* property. `run_job` routes every [`RuntimeCommand`] to exactly
+    //! one executor — the `agent.run` job, the session manager, the auth manager,
+    //! or the core [`Runtime`](tools::NerveRuntime) hub (its `else` arm). This
+    //! asserts that partition is **total and disjoint** over the authoritative
+    //! `RUNTIME_COMMAND_NAMES`, so a newly added command can neither silently fall
+    //! through to the hub (zero claimants) nor be double-claimed (two). The
+    //! predicates below are the exact branch conditions used by `run_job`.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Commands the core `Runtime` hub answers itself (nerve-core dispatch) —
+    /// `run_job`'s `else` arm, written out **independently** rather than as the
+    /// complement of the host predicates, so an unclassified new command is
+    /// claimed by zero executors (and fails) instead of defaulting to the hub.
+    fn core_hub_handles(command: &RuntimeCommand) -> bool {
+        matches!(
+            command,
+            RuntimeCommand::Ping | RuntimeCommand::ToolList | RuntimeCommand::ToolCall { .. }
+        )
+    }
+
+    /// Build a minimal representative value for a protocol command name by the
+    /// real `kind`-tagged deserialization path (so a `kind` rename that drifts
+    /// from `RUNTIME_COMMAND_NAMES` is caught too). Panics on an unknown name, so
+    /// adding a name without teaching this test fails loudly — which then forces
+    /// an executor decision in `every_runtime_command_has_exactly_one_executor`.
+    fn representative(name: &str) -> RuntimeCommand {
+        let fields: Value = match name {
+            "ping" | "tool.list" | "session.list" => json!({}),
+            "tool.call" => json!({ "name": "file_search" }),
+            "agent.run" => json!({ "provider": "p", "model": "m", "task": "t" }),
+            "session.start" => json!({ "provider": "p", "model": "m" }),
+            "session.message" => json!({ "session_id": "s", "text": "t" }),
+            "session.interrupt" | "session.get" | "session.close" => json!({ "session_id": "s" }),
+            "session.respond" => {
+                json!({ "session_id": "s", "request_id": "r", "decision": "allow" })
+            }
+            "session.set_model" => json!({ "session_id": "s", "model": "m" }),
+            "auth.start" | "auth.status" | "auth.logout" => json!({ "provider": "p" }),
+            "auth.complete" => json!({ "login_id": "l" }),
+            other => panic!(
+                "RUNTIME_COMMAND_NAMES gained `{other}` with no representative here; add one and \
+                 wire the variant to exactly one executor in `run_job`"
+            ),
+        };
+        let mut object = fields.as_object().cloned().unwrap_or_default();
+        object.insert("kind".to_string(), Value::String(name.to_string()));
+        serde_json::from_value(Value::Object(object))
+            .unwrap_or_else(|err| panic!("representative `{name}` failed to deserialize: {err}"))
+    }
+
+    #[test]
+    fn every_runtime_command_has_exactly_one_executor() {
+        for &name in nerve_runtime::RUNTIME_COMMAND_NAMES {
+            let command = representative(name);
+            assert_eq!(
+                command.name(),
+                name,
+                "representative for `{name}` built the wrong command kind"
+            );
+            let claimants = [
+                ("agent.run job", is_agent_run(&command)),
+                ("session manager", is_session_command(&command)),
+                ("auth manager", is_auth_command(&command)),
+                ("core Runtime hub", core_hub_handles(&command)),
+            ];
+            let claimed: Vec<&str> = claimants
+                .iter()
+                .filter(|(_, hit)| *hit)
+                .map(|(who, _)| *who)
+                .collect();
+            assert_eq!(
+                claimed.len(),
+                1,
+                "command `{name}` must be claimed by exactly one executor, got {claimed:?}; \
+                 wire a new variant into `run_job` (is_agent_run / is_session_command / \
+                 is_auth_command) or the core hub — never leave it to fall through the `else`"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_command_names_have_no_duplicates() {
+        let unique: BTreeSet<_> = nerve_runtime::RUNTIME_COMMAND_NAMES.iter().collect();
+        assert_eq!(
+            unique.len(),
+            nerve_runtime::RUNTIME_COMMAND_NAMES.len(),
+            "RUNTIME_COMMAND_NAMES contains duplicate entries"
+        );
+    }
 }
