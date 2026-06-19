@@ -3,9 +3,10 @@
 //! Each [`Credential`] is keyed by [`ProviderId::as_str`] in an `auth.json`
 //! under the platform config dir. Writes are atomic (temp file + rename) and
 //! private (`0o600` on Unix), serialized by an `fs4` advisory lock. The bearer
-//! and refresh tokens are stored in the OS keyring when available; the JSON
-//! file then holds only non-secret metadata. When the keyring is unavailable
-//! the tokens fall back into the (private) JSON file so login still persists.
+//! and refresh tokens are stored inline in that private file — the same
+//! approach as `gh`/`aws`/`gcloud`. (An earlier version used the OS keyring,
+//! but unsigned binaries can't hold a stable macOS Keychain ACL, so it
+//! re-prompted on every read; the file is the single store now.)
 //!
 //! This mirrors the storage design in `crates/nerve-workstation/src/auth/`.
 
@@ -16,16 +17,12 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use directories::BaseDirs;
 use fs4::TryLockError;
 use serde::{Deserialize, Serialize};
 
 use super::{AuthMode, Credential, ProviderId};
 use crate::error::{AgentError, AgentResult};
-
-const KEYRING_SERVICE: &str = "nerve-agent";
 
 /// On-disk root: a map of provider id -> stored credential record.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -34,8 +31,8 @@ struct AuthStore {
     providers: BTreeMap<String, StoredCredential>,
 }
 
-/// The persisted form of a [`Credential`]. Secret fields are skipped when
-/// empty so that a keyring-backed record carries only metadata in the file.
+/// The persisted form of a [`Credential`]. Tokens are written inline in the
+/// private (`0o600`) JSON file; empty optional fields are skipped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredCredential {
     provider: ProviderId,
@@ -49,15 +46,6 @@ struct StoredCredential {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account_id: Option<String>,
     base_url: String,
-}
-
-/// Just the secret material, stored in the OS keyring out of the JSON file.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct SecretBundle {
-    #[serde(default)]
-    access_token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    refresh_token: Option<String>,
 }
 
 impl StoredCredential {
@@ -84,20 +72,6 @@ impl StoredCredential {
             base_url: self.base_url,
         }
     }
-
-    fn secrets(&self) -> SecretBundle {
-        SecretBundle {
-            access_token: self.access_token.clone(),
-            refresh_token: self.refresh_token.clone(),
-        }
-    }
-
-    fn absorb_secrets(&mut self, secrets: SecretBundle) {
-        self.access_token = secrets.access_token;
-        if secrets.refresh_token.is_some() {
-            self.refresh_token = secrets.refresh_token;
-        }
-    }
 }
 
 /// Persist `cred`, replacing any existing record for its provider.
@@ -110,7 +84,7 @@ pub fn load_credential(provider: ProviderId) -> AgentResult<Option<Credential>> 
     load_credential_at(&auth_file_path()?, provider)
 }
 
-/// Remove the stored credential (file entry + keyring secret) for `provider`.
+/// Remove the stored credential for `provider`.
 pub fn delete_credential(provider: ProviderId) -> AgentResult<()> {
     delete_credential_at(&auth_file_path()?, provider)
 }
@@ -142,7 +116,6 @@ fn delete_credential_at(path: &Path, provider: ProviderId) -> AgentResult<()> {
     let _lock = acquire_auth_lock(path)?;
     let mut store = load_store(path)?;
     if store.providers.remove(provider.as_str()).is_some() {
-        delete_keyring_secret(path, provider);
         save_store(path, &store)?;
     }
     Ok(())
@@ -157,9 +130,8 @@ fn load_store(path: &Path) -> AgentResult<AuthStore> {
     if text.trim().is_empty() {
         return Ok(AuthStore::default());
     }
-    let mut store: AuthStore = serde_json::from_str(&text)
+    let store: AuthStore = serde_json::from_str(&text)
         .map_err(|err| AgentError::Auth(format!("failed to parse {}: {err}", path.display())))?;
-    hydrate_keyring_secrets(path, &mut store);
     Ok(store)
 }
 
@@ -169,80 +141,11 @@ fn save_store(path: &Path, store: &AuthStore) -> AgentResult<()> {
             AgentError::Auth(format!("failed to create {}: {err}", parent.display()))
         })?;
     }
-    let store = prepare_store_for_save(path, store);
-    let bytes = serde_json::to_vec_pretty(&store)
+    let bytes = serde_json::to_vec_pretty(store)
         .map_err(|err| AgentError::Auth(format!("failed to encode auth store: {err}")))?;
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     write_private_file(&tmp, &bytes)?;
     replace_file(&tmp, path)
-}
-
-/// Move each provider's secrets into the keyring when possible, clearing them
-/// from the on-disk record; otherwise leave them inline in the private file.
-fn prepare_store_for_save(path: &Path, store: &AuthStore) -> AuthStore {
-    let mut store = store.clone();
-    for record in store.providers.values_mut() {
-        if save_keyring_secret(path, record.provider, &record.secrets()) {
-            record.access_token = String::new();
-            record.refresh_token = None;
-        }
-    }
-    store
-}
-
-fn hydrate_keyring_secrets(path: &Path, store: &mut AuthStore) {
-    for record in store.providers.values_mut() {
-        if !record.access_token.is_empty() {
-            continue;
-        }
-        if let Some(secrets) = load_keyring_secret(path, record.provider) {
-            record.absorb_secrets(secrets);
-        }
-    }
-}
-
-fn save_keyring_secret(path: &Path, provider: ProviderId, secrets: &SecretBundle) -> bool {
-    if keyring_disabled() {
-        return false;
-    }
-    let Ok(payload) = serde_json::to_string(secrets) else {
-        return false;
-    };
-    keyring_entry(path, provider)
-        .and_then(|entry| entry.set_password(&payload))
-        .is_ok()
-}
-
-fn load_keyring_secret(path: &Path, provider: ProviderId) -> Option<SecretBundle> {
-    if keyring_disabled() {
-        return None;
-    }
-    let payload = keyring_entry(path, provider).ok()?.get_password().ok()?;
-    serde_json::from_str(&payload).ok()
-}
-
-fn delete_keyring_secret(path: &Path, provider: ProviderId) {
-    if keyring_disabled() {
-        return;
-    }
-    if let Ok(entry) = keyring_entry(path, provider) {
-        let _ = entry.delete_credential();
-    }
-}
-
-fn keyring_entry(path: &Path, provider: ProviderId) -> keyring::Result<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, &keyring_account_for(path, provider))
-}
-
-/// Keyring account name, scoped by both the auth-file path and provider id so
-/// distinct config homes (and providers) never collide.
-fn keyring_account_for(path: &Path, provider: ProviderId) -> String {
-    let id = URL_SAFE_NO_PAD.encode(path.to_string_lossy().as_bytes());
-    format!("{}:{id}", provider.as_str())
-}
-
-fn keyring_disabled() -> bool {
-    cfg!(test) || std::env::var_os("NERVE_AUTH_DISABLE_KEYRING").is_some()
 }
 
 /// Resolve the path to the agent credential store, honoring overrides.
@@ -456,8 +359,7 @@ mod tests {
 
     #[test]
     fn save_then_load_roundtrips() {
-        // Note: keyring is disabled under cfg(test), so secrets persist in the
-        // (private) JSON file — exercising the fallback path.
+        // Secrets persist inline in the private JSON file.
         let dir = TempDir::new("roundtrip");
         let path = dir.store_path();
         let cred = sample(ProviderId::Anthropic);
@@ -514,15 +416,5 @@ mod tests {
             .expect("load")
             .expect("present");
         assert_eq!(loaded.access_token, "rotated");
-    }
-
-    #[test]
-    fn keyring_accounts_scoped_by_path_and_provider() {
-        let a = keyring_account_for(Path::new("/tmp/a/agent-auth.json"), ProviderId::Anthropic);
-        let b = keyring_account_for(Path::new("/tmp/b/agent-auth.json"), ProviderId::Anthropic);
-        let c = keyring_account_for(Path::new("/tmp/a/agent-auth.json"), ProviderId::OpenAi);
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert!(a.starts_with("anthropic:"));
     }
 }

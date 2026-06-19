@@ -107,7 +107,10 @@ pub enum AgentEvent {
     /// The run was interrupted (cancellation or guardrail) with a reason.
     Interrupted(String),
     /// Token usage from the latest provider response (per-response delta).
-    Usage { input_tokens: u32, output_tokens: u32 },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     /// The run completed with a terminal reason.
     Done { reason: String },
 }

@@ -19,7 +19,6 @@ rand = { workspace = true }
 url = { workspace = true }
 oauth2 = { workspace = true }
 tiny_http = { workspace = true }
-keyring = { workspace = true }
 directories = { workspace = true }
 fs4 = { workspace = true }
 regex = { workspace = true }

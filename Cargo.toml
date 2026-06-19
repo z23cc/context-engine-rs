@@ -44,7 +44,6 @@ thiserror = "2"
 tiny_http = "0.12"
 ureq = { version = "3", features = ["json", "multipart"] }
 url = "2"
-keyring = "4"
 libc = "0.2"
 tempfile = "3"
 insta = { version = "1", features = ["json", "redactions"] }
