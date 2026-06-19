@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/nerve-core", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent"]
+members = ["crates/nerve-core", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui"]
 exclude = ["fuzz", "apps"]
 resolver = "3"
 
@@ -52,3 +52,9 @@ fastembed = "5.17.2"
 hnsw_rs = "0.3.4"
 proptest = "1"
 tiktoken-rs = { version = "0.12.0", default-features = false }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+unicode-width = "0.2"
+unicode-segmentation = "1"
