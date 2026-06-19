@@ -5,22 +5,22 @@
 //! `nerve-agent`, policy, provider registry, persistence, and runtime event
 //! emission.
 
+mod approval;
+
 use crate::capabilities::{Capabilities, ResolvedAgent};
 use crate::checkpoint::Checkpoint;
-use crate::policy::{Approver, Policy, ToolGate};
+use crate::policy::{Policy, ToolGate};
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
 use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::{AgentEvent, Message};
 use nerve_core::{CancelToken, WorkspaceResolver};
-use nerve_runtime::{RuntimeCommand, RuntimeError, RuntimeEvent, SessionApprovalDecision};
+use nerve_runtime::{RuntimeCommand, RuntimeError, RuntimeEvent};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-const APPROVAL_POLL: Duration = Duration::from_millis(100);
+use approval::{ApprovalHub, ProtocolApprover};
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 type SessionCheckpoint = Arc<Mutex<Checkpoint>>;
@@ -461,110 +461,6 @@ impl LiveSession {
     }
 }
 
-struct ApprovalHub {
-    pending: Mutex<HashMap<ApprovalKey, mpsc::Sender<SessionApprovalDecision>>>,
-    next_id: AtomicU64,
-    emit: Arc<EventEmitter>,
-}
-
-#[derive(Hash, PartialEq, Eq)]
-struct ApprovalKey {
-    session_id: String,
-    request_id: String,
-}
-
-impl ApprovalHub {
-    fn new(emit: Arc<EventEmitter>) -> Self {
-        Self {
-            pending: Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-            emit,
-        }
-    }
-
-    fn request(
-        &self,
-        session_id: &str,
-        tool: &str,
-        arguments: &Value,
-        cancel: &CancelToken,
-    ) -> bool {
-        let request_id = format!("approval-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        let (sender, receiver) = mpsc::channel();
-        let key = ApprovalKey {
-            session_id: session_id.to_string(),
-            request_id: request_id.clone(),
-        };
-        self.pending
-            .lock()
-            .expect("approval lock")
-            .insert(key, sender);
-        (self.emit)(RuntimeEvent::approval_requested(
-            session_id.to_string(),
-            request_id.clone(),
-            tool.to_string(),
-            arguments.clone(),
-        ));
-        let decision = loop {
-            if cancel.is_cancelled() {
-                break SessionApprovalDecision::Deny;
-            }
-            match receiver.recv_timeout(APPROVAL_POLL) {
-                Ok(decision) => break decision,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break SessionApprovalDecision::Deny,
-            }
-        };
-        self.pending
-            .lock()
-            .expect("approval lock")
-            .remove(&ApprovalKey {
-                session_id: session_id.to_string(),
-                request_id,
-            });
-        decision == SessionApprovalDecision::Allow
-    }
-
-    fn respond(
-        &self,
-        session_id: &str,
-        request_id: &str,
-        decision: SessionApprovalDecision,
-    ) -> bool {
-        let key = ApprovalKey {
-            session_id: session_id.to_string(),
-            request_id: request_id.to_string(),
-        };
-        self.pending
-            .lock()
-            .expect("approval lock")
-            .remove(&key)
-            .is_some_and(|sender| sender.send(decision).is_ok())
-    }
-}
-
-struct ProtocolApprover {
-    session_id: String,
-    hub: Arc<ApprovalHub>,
-    cancel: CancelToken,
-}
-
-impl ProtocolApprover {
-    fn new(session_id: String, hub: Arc<ApprovalHub>, cancel: CancelToken) -> Self {
-        Self {
-            session_id,
-            hub,
-            cancel,
-        }
-    }
-}
-
-impl Approver for ProtocolApprover {
-    fn approve(&self, tool: &str, args: &Value) -> bool {
-        self.hub.request(&self.session_id, tool, args, &self.cancel)
-    }
-}
-
 fn session_run_config(
     config: &SessionConfig,
     resolved: ResolvedAgent,
@@ -596,9 +492,13 @@ fn map_session_agent_event(session_id: &str, event: AgentEvent) -> Option<Runtim
 
 #[cfg(test)]
 mod tests {
+    use super::approval::{ApprovalHub, ProtocolApprover};
     use super::*;
+    use crate::policy::Approver;
+    use nerve_runtime::SessionApprovalDecision;
     use std::sync::Mutex;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn protocol_approver_allows_via_channel() {
