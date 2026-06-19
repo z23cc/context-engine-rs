@@ -103,7 +103,11 @@ function transcriptViewport(state: State, width: number, rows: number): string[]
   const end = all.length - scroll;
   const start = Math.max(0, end - rows);
   const view = all.slice(start, end);
-  while (view.length < rows) view.unshift(""); // pin content to the bottom
+  // Top-anchor: pad below the content so a short transcript fills from the top
+  // instead of leaving a large blank band above it. Once the transcript is
+  // taller than the viewport, the under-full branch no longer runs and normal
+  // bottom-pinned scrolling takes over.
+  while (view.length < rows) view.push("");
   return view;
 }
 
@@ -408,6 +412,13 @@ export class App {
       this.#state.hint = "session not ready yet";
       return;
     }
+    if (this.#state.running) {
+      // A turn is already in flight; the backend would reject a second
+      // session.message with "already running". Hint instead of sending.
+      // (#onKey renders after this returns, like the sibling guards above.)
+      this.#state.hint = "still working — Ctrl-C to interrupt";
+      return;
+    }
     this.#state.blocks.push({ kind: "user", text });
     this.#state.running = true;
     this.#state.scroll = 0;
@@ -533,10 +544,18 @@ export class App {
           sessionId: event.session_id,
         };
         break;
-      case "job_failed":
+      case "job_failed": {
+        const message = event.error?.message ?? "job failed";
+        if (/is already running/.test(message)) {
+          // A second message raced an in-flight turn. The genuine turn is still
+          // live, so don't clear `running` or dump a red transcript line — hint.
+          this.#state.hint = "still working — Ctrl-C to interrupt";
+          break;
+        }
         this.#state.running = false;
-        this.#state.blocks.push({ kind: "notice", tone: "error", text: event.error?.message ?? "job failed" });
+        this.#state.blocks.push({ kind: "notice", tone: "error", text: message });
         break;
+      }
       default:
         return;
     }
@@ -546,10 +565,12 @@ export class App {
   #onAgentEvent(event: AgentEventKind): void {
     switch (event.kind) {
       case "message":
-        this.#appendText("assistant", event.text);
+        // Skip empty deltas: providers often emit a trailing empty chunk, which
+        // would otherwise push an empty block (a blank line / stray "·" gutter).
+        if (event.text) this.#appendText("assistant", event.text);
         break;
       case "reasoning":
-        this.#appendText("reasoning", event.text);
+        if (event.text) this.#appendText("reasoning", event.text);
         break;
       case "tool_started":
         this.#resetStreaming();

@@ -575,6 +575,42 @@ mod tests {
         assert!(!handle.join().expect("approval thread"));
     }
 
+    #[test]
+    fn protocol_approver_auto_denies_repeat_without_reprompting() {
+        // Once the operator denies a tool, a re-request of the SAME tool is
+        // auto-denied instantly — no second approval_requested and no blocking —
+        // so a model that keeps re-asking cannot wedge the turn in `Running`.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
+            captured.lock().expect("events lock").push(event);
+        })));
+        let approver = Arc::new(ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+        ));
+
+        let first = Arc::clone(&approver);
+        let handle = thread::spawn(move || first.approve("edit", &json!({"path": "x"})));
+        let request_id = wait_for_request(&events);
+        assert!(hub.respond("s1", &request_id, SessionApprovalDecision::Deny));
+        assert!(!handle.join().expect("approval thread"), "first is denied");
+        assert_eq!(events.lock().expect("events lock").len(), 1, "one prompt");
+
+        // The re-request returns immediately (no responder thread needed) and
+        // emits no new approval prompt.
+        assert!(
+            !approver.approve("edit", &json!({"path": "y"})),
+            "repeat of a denied tool is auto-denied"
+        );
+        assert_eq!(
+            events.lock().expect("events lock").len(),
+            1,
+            "a re-denied tool must not emit a second approval_requested"
+        );
+    }
+
     fn wait_for_request(events: &Mutex<Vec<RuntimeEvent>>) -> String {
         for _ in 0..50 {
             if let Some(RuntimeEvent::ApprovalRequested { request_id, .. }) =
