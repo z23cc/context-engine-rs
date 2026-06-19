@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-agent"
-version = "0.0.47"
+version = "0.0.48"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-core"
-version = "0.0.47"
+version = "0.0.48"
 dependencies = [
  "aho-corasick",
  "criterion",
@@ -2125,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-runtime"
-version = "0.0.47"
+version = "0.0.48"
 dependencies = [
  "anyhow",
  "nerve-core",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-workstation"
-version = "0.0.47"
+version = "0.0.48"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
