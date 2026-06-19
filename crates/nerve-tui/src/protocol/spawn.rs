@@ -15,10 +15,6 @@ pub struct DaemonSpec {
     pub binary: PathBuf,
     /// Absolute project root the daemon operates on (becomes `--root`).
     pub root: PathBuf,
-    /// Optional `--provider` passed through to the daemon.
-    pub provider: Option<String>,
-    /// Optional `--model` passed through to the daemon.
-    pub model: Option<String>,
     /// Extra args appended after the standard ones.
     pub extra_args: Vec<String>,
 }
@@ -30,8 +26,6 @@ impl DaemonSpec {
         Self {
             binary: default_binary(),
             root,
-            provider: None,
-            model: None,
             extra_args: Vec::new(),
         }
     }
@@ -42,24 +36,16 @@ impl DaemonSpec {
         self
     }
 
-    #[must_use]
-    pub fn with_provider_model(mut self, provider: Option<String>, model: Option<String>) -> Self {
-        self.provider = provider;
-        self.model = model;
-        self
-    }
-
     /// Build the `tokio` command: `nerve daemon --stdio --root <abs> [...]`.
+    ///
+    /// Provider/model are deliberately NOT passed here — `nerve daemon` does not
+    /// accept them; they are session-level and travel in the `session.start`
+    /// command. Passing them as daemon flags makes the daemon exit on an unknown
+    /// argument before answering the `runtime/info` handshake.
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
         command.arg("daemon").arg("--stdio");
         command.arg("--root").arg(&self.root);
-        if let Some(provider) = &self.provider {
-            command.arg("--provider").arg(provider);
-        }
-        if let Some(model) = &self.model {
-            command.arg("--model").arg(model);
-        }
         for arg in &self.extra_args {
             command.arg(arg);
         }
@@ -112,22 +98,18 @@ mod tests {
     }
 
     #[test]
-    fn command_passes_provider_and_model() {
-        let spec = DaemonSpec::new(PathBuf::from("/tmp/project"))
-            .with_binary(PathBuf::from("nerve"))
-            .with_provider_model(Some("claude".to_string()), Some("opus".to_string()));
+    fn command_omits_provider_and_model() {
+        // Provider/model are session-level; `nerve daemon` rejects them as
+        // unknown flags, so the daemon command must not carry them.
+        let spec =
+            DaemonSpec::new(PathBuf::from("/tmp/project")).with_binary(PathBuf::from("nerve"));
         let command = spec.command();
         let args: Vec<_> = command
             .as_std()
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        let provider_pos = args
-            .iter()
-            .position(|a| a == "--provider")
-            .expect("provider");
-        assert_eq!(args[provider_pos + 1], "claude");
-        let model_pos = args.iter().position(|a| a == "--model").expect("model");
-        assert_eq!(args[model_pos + 1], "opus");
+        assert!(!args.iter().any(|a| a == "--provider"));
+        assert!(!args.iter().any(|a| a == "--model"));
     }
 }

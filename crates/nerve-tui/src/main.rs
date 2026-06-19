@@ -54,8 +54,9 @@ async fn run(raw: Vec<String>) -> Result<()> {
         Command::Shell => {
             let provider = args.provider.unwrap_or_else(|| "claude".to_string());
             let model = args.model.unwrap_or_else(|| "claude-opus-4-8".to_string());
-            let spec = DaemonSpec::new(root)
-                .with_provider_model(Some(provider.clone()), Some(model.clone()));
+            // Provider/model are session-level (carried in session.start by
+            // app::run), NOT daemon flags — see DaemonSpec::command.
+            let spec = DaemonSpec::new(root);
             let spec = match args.binary {
                 Some(binary) => spec.with_binary(binary),
                 None => spec,
