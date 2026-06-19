@@ -5,8 +5,15 @@
 
 import { stderr, stdin, stdout } from "node:process";
 import { NerveClient } from "../backend/nerveClient.ts";
-import type { AgentEventKind, RuntimeCommand, RuntimeEvent } from "../backend/types.ts";
-import { padTo, SPINNER, stringWidth, style, truncateToWidth } from "./ansi.ts";
+import type {
+  AgentEventKind,
+  ApprovalMode,
+  RiskTier,
+  RuntimeCommand,
+  RuntimeEvent,
+  SessionApprovalDecision,
+} from "../backend/types.ts";
+import { padTo, SPINNER, stringWidth, style, truncateToWidth, wrapText } from "./ansi.ts";
 import { type Block, blocksToLines, formatDuration, previewLine } from "./transcript.ts";
 import { decodeKeys, type Key } from "./keys.ts";
 import { type CursorPos, Screen } from "./screen.ts";
@@ -14,11 +21,13 @@ import { layout } from "./editor.ts";
 import { THEMES, themeIndexByName } from "./theme.ts";
 import { modelInfo } from "./models.ts";
 import {
+  approvalModeLabel,
   type ChatArgs,
   type CommandSpec,
   formatModels,
   HELP_TEXT,
   matchCommands,
+  parseApprovalMode,
   parseCommand,
   providerModelsTool,
 } from "../cli/commands.ts";
@@ -37,7 +46,15 @@ export interface State {
   input: string;
   cursor: number; // index into `input`
   mode: "input" | "approval";
-  approval?: { tool: string; args: string; requestId: string; sessionId: string };
+  approval?: {
+    tool: string;
+    args: string;
+    requestId: string;
+    sessionId: string;
+    tier: RiskTier;
+    preview: string;
+  };
+  approvalMode: ApprovalMode;
   hint: string;
   expandTools: boolean;
   paletteIndex: number;
@@ -58,7 +75,8 @@ export interface Frame {
 }
 
 function headerLine(state: State, width: number): string {
-  const text = ` ⬡ Nerve  ${style.dim(`${state.provider}/${state.model}`)}  ${style.dim(`· ${state.tools} tools`)}`;
+  const mode = approvalModeLabel(state.approvalMode);
+  const text = ` ⬡ Nerve  ${style.dim(`${state.provider}/${state.model}`)}  ${style.dim(`· ${state.tools} tools`)}  ${style.dim(`· mode: ${mode}`)}`;
   return style.invert(padTo(truncateToWidth(text, width), width));
 }
 
@@ -111,14 +129,51 @@ function transcriptViewport(state: State, width: number, rows: number): string[]
   return view;
 }
 
+/** Color + label a risk tier (exec=red, edit=yellow, read-only=dim). Pure. */
+function tierBadge(tier: RiskTier): string {
+  const label = tier === "read_only" ? "read-only" : tier;
+  const color = tier === "exec" ? style.red : tier === "edit" ? style.yellow : style.dim;
+  return color(`[${label}]`);
+}
+
+const APPROVAL_PREVIEW_ROWS = 8;
+
+/**
+ * Render the multi-option approval prompt as a left-bordered block:
+ *   ⚠ allow  <tool>  [<tier>]
+ *   | <preview line 1>
+ *   | …
+ *   [a]llow once · [A]lways · [d]eny · [D]eny always · Esc cancel
+ * Falls back to a compact args view when the event carried no preview.
+ */
+export function approvalLines(
+  approval: NonNullable<State["approval"]>,
+  width: number,
+): string[] {
+  const header = `${style.yellow("⚠ allow")}  ${style.bold(approval.tool)}  ${tierBadge(approval.tier)}`;
+  const inner = Math.max(1, width - 2);
+  const bodySource = approval.preview.trim() || previewLine(approval.args);
+  const allRows = wrapText(bodySource, inner);
+  const wrapped = allRows.slice(0, APPROVAL_PREVIEW_ROWS);
+  const hidden = allRows.length - wrapped.length;
+  const body = wrapped.map((line) => style.dim("│ ") + style.dim(line));
+  if (hidden > 0) body.push(style.dim(`│ … +${hidden} more line${hidden > 1 ? "s" : ""}`));
+  const options =
+    `${style.bold("[a]")}llow once · ${style.bold("[A]")}lways · ` +
+    `${style.bold("[d]")}eny · ${style.bold("[D]")}eny always · ${style.dim("Esc cancel")}`;
+  return [
+    truncateToWidth(header, width),
+    ...body.map((line) => truncateToWidth(line, width)),
+    truncateToWidth(options, width),
+  ];
+}
+
 function inputBlock(
   state: State,
   width: number,
 ): { lines: string[]; cursorRow: number; cursorCol: number } {
   if (state.mode === "approval" && state.approval) {
-    const a = state.approval;
-    const prompt = `${style.yellow("allow")} ${style.bold(a.tool)} ${style.dim(previewLine(a.args))}${style.yellow(" ? [y/N]")} `;
-    return { lines: [truncateToWidth(prompt, width)], cursorRow: -1, cursorCol: 0 };
+    return { lines: approvalLines(state.approval, width), cursorRow: -1, cursorCol: 0 };
   }
   const { rows, cursorRow, cursorCol } = layout(state.input, state.cursor);
   const avail = Math.max(1, width - 2);
@@ -197,6 +252,7 @@ export class App {
       input: "",
       cursor: 0,
       mode: "input",
+      approvalMode: "yolo",
       hint: "",
       expandTools: false,
       paletteIndex: 0,
@@ -349,16 +405,20 @@ export class App {
   #onApprovalKey(key: Key): void {
     const approval = this.#state.approval;
     if (!approval) return;
-    const allow = key.type === "char" && /^y$/i.test(key.value);
+    const decision = approvalDecisionForKey(key);
+    if (!decision) {
+      // Ignore keys that don't map to a decision (e.g. arrows) — keep the prompt.
+      return;
+    }
     void this.#send({
       kind: "session.respond",
       session_id: approval.sessionId,
       request_id: approval.requestId,
-      decision: allow ? "allow" : "deny",
+      decision,
     });
     this.#state.mode = "input";
     this.#state.approval = undefined;
-    this.#note(allow ? `allowed ${approval.tool}` : `denied ${approval.tool}`);
+    this.#note(`${decisionVerb(decision)} ${approval.tool}`);
     this.#render();
   }
 
@@ -451,6 +511,18 @@ export class App {
       case "models":
         await this.#listModels();
         break;
+      case "mode":
+        this.#onModeCommand(rest);
+        break;
+      case "yolo":
+        this.#setMode("yolo");
+        break;
+      case "write":
+        this.#setMode("write");
+        break;
+      case "ask":
+        this.#setMode("always_ask");
+        break;
       case "new":
       case "reset":
         await this.#newSession();
@@ -480,6 +552,30 @@ export class App {
     this.#state.model = model;
     void this.#send({ kind: "session.set_model", session_id: this.#sessionId, provider, model });
     this.#note(`switched to ${provider}/${model}`);
+  }
+
+  /** `/mode` — bare shows the current mode; an argument sets it. */
+  #onModeCommand(rest: string): void {
+    if (!rest) {
+      this.#state.hint = `mode: ${approvalModeLabel(this.#state.approvalMode)} — usage: /mode always-ask|write|yolo`;
+      return;
+    }
+    const mode = parseApprovalMode(rest);
+    if (!mode) {
+      this.#state.hint = `unknown mode: ${rest} — try always-ask|write|yolo`;
+      return;
+    }
+    this.#setMode(mode);
+  }
+
+  /** Set the approval mode locally and push it to the session (mirrors set_model). */
+  #setMode(mode: ApprovalMode): void {
+    this.#state.approvalMode = mode;
+    const label = approvalModeLabel(mode);
+    if (this.#sessionId) {
+      void this.#send({ kind: "session.set_mode", session_id: this.#sessionId, mode });
+    }
+    this.#state.hint = `approval mode: ${label}`;
   }
 
   async #newSession(): Promise<void> {
@@ -542,6 +638,10 @@ export class App {
           args: safeJson(event.arguments),
           requestId: event.request_id,
           sessionId: event.session_id,
+          // Older emitters omit `tier`; the protocol defaults that to the most
+          // restricted tier (exec). `preview` defaults to empty (compact args).
+          tier: event.tier ?? "exec",
+          preview: event.preview ?? "",
         };
         break;
       case "job_failed": {
@@ -758,6 +858,45 @@ function safeJson(value: unknown): string {
     return typeof value === "string" ? value : JSON.stringify(value);
   } catch {
     return String(value);
+  }
+}
+
+/**
+ * Map an approval keypress to a `SessionApprovalDecision`, or undefined if the
+ * key isn't a decision (so the prompt stays up). Case matters: lowercase = once,
+ * uppercase = "always". `Esc` cancels (deny once). Pure.
+ *   a/y → allow · A → allow_always · d/n → deny · D → deny_always · Esc → deny
+ */
+export function approvalDecisionForKey(key: Key): SessionApprovalDecision | undefined {
+  if (key.type === "esc") return "deny";
+  if (key.type !== "char") return undefined;
+  switch (key.value) {
+    case "a":
+    case "y":
+      return "allow";
+    case "A":
+      return "allow_always";
+    case "d":
+    case "n":
+      return "deny";
+    case "D":
+      return "deny_always";
+    default:
+      return undefined;
+  }
+}
+
+/** Past-tense verb for a decision notice ("allowed"/"denied"). Pure. */
+function decisionVerb(decision: SessionApprovalDecision): string {
+  switch (decision) {
+    case "allow":
+      return "allowed";
+    case "allow_always":
+      return "always-allowed";
+    case "deny":
+      return "denied";
+    case "deny_always":
+      return "always-denied";
   }
 }
 

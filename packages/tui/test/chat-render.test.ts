@@ -1,8 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import {
+  approvalModeLabel,
   formatModels,
   HELP_TEXT,
+  parseApprovalMode,
   parseArgs,
   parseCommand,
   providerModelsTool,
@@ -49,7 +51,23 @@ test("formatModels renders ids from array, {models}, or {structuredContent:{mode
 });
 
 test("HELP_TEXT lists the core commands", () => {
-  for (const command of ["/model", "/provider", "/models", "/new", "/login", "/quit"]) {
+  for (const command of ["/model", "/provider", "/models", "/mode", "/new", "/login", "/quit"]) {
     assert.ok(HELP_TEXT.includes(command), command);
   }
+});
+
+test("parseApprovalMode accepts friendly spellings and rejects junk", () => {
+  assert.equal(parseApprovalMode("always-ask"), "always_ask");
+  assert.equal(parseApprovalMode("always_ask"), "always_ask");
+  assert.equal(parseApprovalMode("ask"), "always_ask");
+  assert.equal(parseApprovalMode("WRITE"), "write");
+  assert.equal(parseApprovalMode(" yolo "), "yolo");
+  assert.equal(parseApprovalMode("nope"), undefined);
+  assert.equal(parseApprovalMode(""), undefined);
+});
+
+test("approvalModeLabel renders the friendly spelling", () => {
+  assert.equal(approvalModeLabel("always_ask"), "always-ask");
+  assert.equal(approvalModeLabel("write"), "write");
+  assert.equal(approvalModeLabel("yolo"), "yolo");
 });

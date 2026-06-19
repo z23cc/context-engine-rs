@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { padTo, stringWidth, stripAnsi, truncateToWidth, wrapText } from "../src/ui/ansi.ts";
 import { decodeKeys } from "../src/ui/keys.ts";
 import { Screen } from "../src/ui/screen.ts";
-import { renderFrame, type State } from "../src/ui/app.ts";
+import { approvalDecisionForKey, approvalLines, renderFrame, type State } from "../src/ui/app.ts";
 import { parseInline, renderMarkdown } from "../src/ui/markdown.ts";
 import { matchCommands } from "../src/cli/commands.ts";
 import { layout } from "../src/ui/editor.ts";
@@ -130,6 +130,7 @@ function sampleState(over: Partial<State> = {}): State {
     input: "type here",
     cursor: 9,
     mode: "input",
+    approvalMode: "yolo",
     hint: "",
     expandTools: false,
     paletteIndex: 0,
@@ -323,8 +324,10 @@ test("tool cell collapses output and expands with opts", () => {
 test("matchCommands filters by a bare slash prefix", () => {
   assert.deepEqual(
     matchCommands("/m").map((c) => c.name),
-    ["model", "models"],
+    ["model", "models", "mode"],
   );
+  // "mode" is a prefix of "model"/"models", so /mode still lists all three.
+  assert.ok(matchCommands("/mode").some((c) => c.name === "mode"));
   assert.equal(matchCommands("/model x").length, 0);
   assert.equal(matchCommands("hi").length, 0);
   assert.ok(matchCommands("/").length >= 5);
@@ -348,17 +351,58 @@ test("renderFrame lays out header/transcript/status/input and fills the screen",
   assert.ok(cursor && cursor.row === 11);
 });
 
-test("renderFrame shows the approval prompt with no input cursor", () => {
+test("renderFrame shows the multi-option approval prompt with no input cursor", () => {
   const { lines, cursor } = renderFrame(
     sampleState({
       mode: "approval",
-      approval: { tool: "edit", args: '{"p":1}', requestId: "r", sessionId: "s" },
+      approval: {
+        tool: "edit",
+        args: '{"p":1}',
+        requestId: "r",
+        sessionId: "s",
+        tier: "edit",
+        preview: "edit a.rs: +foo -bar",
+      },
     }),
-    50,
-    10,
+    80,
+    12,
   );
-  assert.match(strip(lines[9]), /allow edit .* \[y\/N\]/);
+  const joined = strip(lines.join("\n"));
+  // Header line with tier badge, the preview body, and the 4-option footer.
+  assert.match(joined, /⚠ allow {2}edit {2}\[edit\]/);
+  assert.match(joined, /edit a\.rs: \+foo -bar/);
+  assert.match(joined, /\[a\]llow once · \[A\]lways · \[d\]eny · \[D\]eny always · Esc cancel/);
   assert.equal(cursor, undefined);
+});
+
+test("approvalLines falls back to a compact args view when preview is empty", () => {
+  const lines = approvalLines(
+    { tool: "run", args: '{"cmd":"ls -la"}', requestId: "r", sessionId: "s", tier: "exec", preview: "" },
+    60,
+  );
+  const joined = strip(lines.join("\n"));
+  assert.match(joined, /⚠ allow {2}run {2}\[exec\]/);
+  assert.match(joined, /\{"cmd":"ls -la"\}/);
+});
+
+test("approvalDecisionForKey maps keys to the four decisions (case-sensitive)", () => {
+  assert.equal(approvalDecisionForKey({ type: "char", value: "a" }), "allow");
+  assert.equal(approvalDecisionForKey({ type: "char", value: "y" }), "allow");
+  assert.equal(approvalDecisionForKey({ type: "char", value: "A" }), "allow_always");
+  assert.equal(approvalDecisionForKey({ type: "char", value: "d" }), "deny");
+  assert.equal(approvalDecisionForKey({ type: "char", value: "n" }), "deny");
+  assert.equal(approvalDecisionForKey({ type: "char", value: "D" }), "deny_always");
+  assert.equal(approvalDecisionForKey({ type: "esc" }), "deny");
+  // Non-decision keys leave the prompt up.
+  assert.equal(approvalDecisionForKey({ type: "up" }), undefined);
+  assert.equal(approvalDecisionForKey({ type: "char", value: "x" }), undefined);
+});
+
+test("header shows the approval mode and reflects /mode changes", () => {
+  const yolo = strip(renderFrame(sampleState({ approvalMode: "yolo" }), 80, 12).lines[0]);
+  assert.match(yolo, /mode: yolo/);
+  const ask = strip(renderFrame(sampleState({ approvalMode: "always_ask" }), 80, 12).lines[0]);
+  assert.match(ask, /mode: always-ask/);
 });
 
 test("Screen.render only rewrites changed rows after the first paint", () => {

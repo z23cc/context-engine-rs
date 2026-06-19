@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use approval::{ApprovalHub, ProtocolApprover};
+use approval::{ApprovalHub, DecisionMemory, ProtocolApprover};
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 type SessionCheckpoint = Arc<Mutex<Checkpoint>>;
@@ -48,6 +48,9 @@ struct LiveSession {
     /// `session.set_mode`; P2 consults it when deciding whether to auto-approve.
     /// Defaults to [`ApprovalMode::Yolo`] (current daemon behavior: no prompts).
     approval_mode: ApprovalMode,
+    /// Remembered allow-always / deny-always decisions for this session, shared
+    /// into each turn's `ProtocolApprover` so they persist across turns.
+    decisions: DecisionMemory,
 }
 
 #[derive(Clone)]
@@ -185,6 +188,7 @@ impl SessionManager {
             current_cancel: None,
             // Default to current daemon behavior (no prompts); set_mode changes it.
             approval_mode: ApprovalMode::Yolo,
+            decisions: Arc::new(Mutex::new(HashMap::new())),
         };
         crate::sync::lock_recover(&self.sessions).insert(id.clone(), session);
         self.emit(RuntimeEvent::session_started(id.clone()));
@@ -210,9 +214,9 @@ impl SessionManager {
         text: &str,
         token: &CancelToken,
     ) -> Result<Value, RuntimeError> {
-        let (config, history, checkpoint) = self.begin_turn(session_id, text, token)?;
+        let turn = self.begin_turn(session_id, text, token)?;
         self.emit(RuntimeEvent::turn_started(session_id.to_string()));
-        let result = self.run_turn(session_id, &config, history, checkpoint, text, token);
+        let result = self.run_turn(session_id, turn, text, token);
         self.finish_turn(session_id, result, token)
     }
 
@@ -221,7 +225,7 @@ impl SessionManager {
         session_id: &str,
         text: &str,
         token: &CancelToken,
-    ) -> Result<(SessionConfig, Vec<Message>, SessionCheckpoint), RuntimeError> {
+    ) -> Result<TurnContext, RuntimeError> {
         let mut sessions = crate::sync::lock_recover(&self.sessions);
         let session = sessions
             .get_mut(session_id)
@@ -236,31 +240,40 @@ impl SessionManager {
         }
         session.status = SessionStatus::Running;
         session.current_cancel = Some(token.clone());
-        Ok((
-            session.config.clone(),
-            session.history.clone(),
-            Arc::clone(&session.checkpoint),
-        ))
+        Ok(TurnContext {
+            config: session.config.clone(),
+            history: session.history.clone(),
+            checkpoint: Arc::clone(&session.checkpoint),
+            mode: session.approval_mode,
+            decisions: Arc::clone(&session.decisions),
+        })
     }
 
     fn run_turn(
         &self,
         session_id: &str,
-        config: &SessionConfig,
-        history: Vec<Message>,
-        checkpoint: SessionCheckpoint,
+        turn: TurnContext,
         text: &str,
         token: &CancelToken,
     ) -> Result<TurnResult, RuntimeError> {
+        let TurnContext {
+            config,
+            history,
+            checkpoint,
+            mode,
+            decisions,
+        } = turn;
         let root = self.root_for(config.workspace.as_deref());
-        let resolved = self.resolve_agent(config, root.as_deref())?;
-        let run_config = session_run_config(config, resolved, text);
+        let resolved = self.resolve_agent(&config, root.as_deref())?;
+        let run_config = session_run_config(&config, resolved, text);
         let gate = ToolGate::with_approver(
             self.policy.clone(),
+            mode,
             Arc::new(ProtocolApprover::new(
                 session_id.to_string(),
                 Arc::clone(&self.approvals),
                 token.clone(),
+                decisions,
             )),
         );
         let spawner = SubAgentSpawner::new(
@@ -438,6 +451,17 @@ impl SessionManager {
     }
 }
 
+/// State snapshotted from the live session when a turn begins, carried into
+/// `run_turn` so the gate runs with the session's current approval posture and
+/// shared decision memory without re-locking the session map.
+struct TurnContext {
+    config: SessionConfig,
+    history: Vec<Message>,
+    checkpoint: SessionCheckpoint,
+    mode: ApprovalMode,
+    decisions: DecisionMemory,
+}
+
 struct TurnResult {
     history: Vec<Message>,
     events: Vec<AgentEvent>,
@@ -576,7 +600,12 @@ mod tests {
         let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
             captured.lock().expect("events lock").push(event);
         })));
-        let approver = ProtocolApprover::new("s1".into(), Arc::clone(&hub), CancelToken::never());
+        let approver = ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+            decision_memory(),
+        );
         let handle = thread::spawn(move || approver.approve("edit", &json!({"path":"x"})));
 
         let request_id = wait_for_request(&events);
@@ -591,7 +620,12 @@ mod tests {
         let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
             captured.lock().expect("events lock").push(event);
         })));
-        let approver = ProtocolApprover::new("s1".into(), Arc::clone(&hub), CancelToken::never());
+        let approver = ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+            decision_memory(),
+        );
         let handle = thread::spawn(move || approver.approve("edit", &json!({"path":"x"})));
 
         let request_id = wait_for_request(&events);
@@ -600,10 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn protocol_approver_auto_denies_repeat_without_reprompting() {
-        // Once the operator denies a tool, a re-request of the SAME tool is
-        // auto-denied instantly — no second approval_requested and no blocking —
-        // so a model that keeps re-asking cannot wedge the turn in `Running`.
+    fn protocol_approver_one_shot_deny_reprompts_on_repeat() {
+        // A one-shot `Deny` applies to this call only: a re-request of the same
+        // tool prompts the operator again (it is NOT remembered).
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&events);
         let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
@@ -613,12 +646,45 @@ mod tests {
             "s1".into(),
             Arc::clone(&hub),
             CancelToken::never(),
+            decision_memory(),
+        ));
+
+        let first = Arc::clone(&approver);
+        let h1 = thread::spawn(move || first.approve("edit", &json!({"path": "x"})));
+        let req1 = wait_for_request(&events);
+        assert!(hub.respond("s1", &req1, SessionApprovalDecision::Deny));
+        assert!(!h1.join().expect("approval thread"), "first is denied");
+
+        // The repeat prompts again (a fresh approval_requested is emitted).
+        let second = Arc::clone(&approver);
+        let h2 = thread::spawn(move || second.approve("edit", &json!({"path": "y"})));
+        let req2 = wait_for_nth_request(&events, 2);
+        assert_ne!(req1, req2, "a second prompt must be emitted");
+        assert!(hub.respond("s1", &req2, SessionApprovalDecision::Allow));
+        assert!(h2.join().expect("approval thread"), "second is allowed");
+    }
+
+    #[test]
+    fn protocol_approver_deny_always_subsumes_repeat_autodeny() {
+        // A `DenyAlways` is remembered: a re-request of the same tool is auto-denied
+        // instantly — no second approval_requested, no blocking — so a model that
+        // keeps re-asking cannot wedge the turn in `Running`.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
+            captured.lock().expect("events lock").push(event);
+        })));
+        let approver = Arc::new(ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+            decision_memory(),
         ));
 
         let first = Arc::clone(&approver);
         let handle = thread::spawn(move || first.approve("edit", &json!({"path": "x"})));
         let request_id = wait_for_request(&events);
-        assert!(hub.respond("s1", &request_id, SessionApprovalDecision::Deny));
+        assert!(hub.respond("s1", &request_id, SessionApprovalDecision::DenyAlways));
         assert!(!handle.join().expect("approval thread"), "first is denied");
         assert_eq!(events.lock().expect("events lock").len(), 1, "one prompt");
 
@@ -626,13 +692,83 @@ mod tests {
         // emits no new approval prompt.
         assert!(
             !approver.approve("edit", &json!({"path": "y"})),
-            "repeat of a denied tool is auto-denied"
+            "repeat of a deny-always tool is auto-denied"
         );
         assert_eq!(
             events.lock().expect("events lock").len(),
             1,
-            "a re-denied tool must not emit a second approval_requested"
+            "a deny-always tool must not emit a second approval_requested"
         );
+    }
+
+    #[test]
+    fn protocol_approver_allow_always_skips_future_prompts() {
+        // An `AllowAlways` is remembered: future calls of the same tool run without
+        // any further prompt.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
+            captured.lock().expect("events lock").push(event);
+        })));
+        let approver = Arc::new(ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+            decision_memory(),
+        ));
+
+        let first = Arc::clone(&approver);
+        let handle = thread::spawn(move || first.approve("edit", &json!({"path": "x"})));
+        let request_id = wait_for_request(&events);
+        assert!(hub.respond("s1", &request_id, SessionApprovalDecision::AllowAlways));
+        assert!(handle.join().expect("approval thread"), "first is allowed");
+        assert_eq!(events.lock().expect("events lock").len(), 1, "one prompt");
+
+        // The re-request returns immediately, allowed, with no new prompt.
+        assert!(
+            approver.approve("edit", &json!({"path": "y"})),
+            "repeat of an allow-always tool is auto-allowed"
+        );
+        assert_eq!(
+            events.lock().expect("events lock").len(),
+            1,
+            "an allow-always tool must not emit a second approval_requested"
+        );
+    }
+
+    #[test]
+    fn protocol_approver_emits_real_tier_and_preview() {
+        // The emitted approval carries the tool's real risk tier and a readable
+        // preview (not the P1 Exec/"" placeholders).
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let hub = Arc::new(ApprovalHub::new(Arc::new(move |event| {
+            captured.lock().expect("events lock").push(event);
+        })));
+        let approver = ProtocolApprover::new(
+            "s1".into(),
+            Arc::clone(&hub),
+            CancelToken::never(),
+            decision_memory(),
+        );
+        let handle =
+            thread::spawn(move || approver.approve("edit", &json!({"path": "src/main.rs"})));
+        let request_id = wait_for_request(&events);
+        let event = events.lock().expect("events lock").first().cloned();
+        match event {
+            Some(RuntimeEvent::ApprovalRequested { tier, preview, .. }) => {
+                assert_eq!(tier, nerve_runtime::RiskTier::Edit);
+                assert_eq!(preview, "src/main.rs");
+            }
+            other => panic!("expected ApprovalRequested, got {other:?}"),
+        }
+        assert!(hub.respond("s1", &request_id, SessionApprovalDecision::Deny));
+        assert!(!handle.join().expect("approval thread"));
+    }
+
+    /// A fresh, empty per-session decision memory for the approver tests.
+    fn decision_memory() -> DecisionMemory {
+        Arc::new(Mutex::new(HashMap::new()))
     }
 
     fn wait_for_request(events: &Mutex<Vec<RuntimeEvent>>) -> String {
@@ -645,6 +781,27 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("approval request not emitted")
+    }
+
+    /// Wait until at least `n` approval requests have been emitted, returning the
+    /// `request_id` of the `n`-th (1-based).
+    fn wait_for_nth_request(events: &Mutex<Vec<RuntimeEvent>>, n: usize) -> String {
+        for _ in 0..50 {
+            let requests: Vec<String> = events
+                .lock()
+                .expect("events lock")
+                .iter()
+                .filter_map(|event| match event {
+                    RuntimeEvent::ApprovalRequested { request_id, .. } => Some(request_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            if requests.len() >= n {
+                return requests[n - 1].clone();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("approval request #{n} not emitted")
     }
 
     fn test_manager(store: SessionStore) -> SessionManager {
@@ -767,6 +924,7 @@ mod tests {
             status: SessionStatus::Idle,
             current_cancel: None,
             approval_mode: ApprovalMode::Yolo,
+            decisions: Arc::new(Mutex::new(HashMap::new())),
         };
         session.retarget(Some("xai".into()), "grok-4-fast".into());
         assert_eq!(session.config.provider, "xai");

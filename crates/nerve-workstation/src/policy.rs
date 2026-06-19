@@ -10,18 +10,27 @@
 //! orchestrator only ever sees `&dyn ToolBox`, so the gate is transparent and
 //! the seam discipline holds (policy is a host concern, not an agent concern).
 //!
-//! Decision model — a tool name is matched against an ordered rule list (first
-//! match wins; each rule is an exact name or a `*` glob), falling back to a
-//! default action:
+//! Decision model — each tool call resolves to one action, evaluated in order
+//! (see [`Policy::decide_with_mode`]):
+//! 1. an explicit `policy.json` rule (first match of an exact name or `*` glob);
+//! 2. else `--allow-all` → `Allow`;
+//! 3. else the tool's static [`tool_tier`] vs. the session's [`ApprovalMode`] —
+//!    a tool at or below the mode's `max_auto_tier` is auto-allowed;
+//! 4. else an operator `default` (global config), else `Ask`.
+//!
+//! The resolved action is then enforced:
 //! - [`PolicyAction::Allow`] → delegate to the inner toolbox.
 //! - [`PolicyAction::Deny`]  → return a readable tool-error; the tool never runs.
-//! - [`PolicyAction::Ask`]   → consult an [`Approver`] (interactive CLI prompt;
-//!   the daemon denies, since no human is on the socket).
+//! - [`PolicyAction::Ask`]   → consult an [`Approver`] (interactive CLI prompt, the
+//!   protocol approval round-trip for sessions, or deny on the bare daemon socket).
 //!
-//! Defaults (security before openness): read-only / navigational tools are
-//! allowed unprompted; everything else — mutating tools
-//! (`edit`/`write`/`delete`/`move`/`ast_edit`) and third-party `mcp__*` tools —
-//! falls through to `Ask`. `--allow-all` forces `Allow` for trusted batch runs.
+//! Tier × mode (security before openness): tools are statically classified into
+//! [`RiskTier`]s — `ReadOnly` (reads / navigation), `Edit` (file mutation:
+//! `edit`/`write`/`delete`/`move`/`ast_edit`/`manage_selection`/`manage_workspaces`),
+//! and `Exec` (`run_command`/`spawn_agent`/network + generation tools, and every
+//! `mcp__*` or unknown tool, fail-safe). `AlwaysAsk` auto-allows only `ReadOnly`;
+//! `Write` also auto-allows `Edit`; `Yolo` auto-allows everything. `--allow-all`
+//! runs the CLI in `Yolo`; the bare daemon job runs `AlwaysAsk` + deny.
 //!
 //! Config (JSON, in the spirit of `--mcp-config` / `--provider-config` and the
 //! P3 capabilities loader): a `policy.json` is read from the global config home
@@ -41,15 +50,16 @@ use crate::workspace::ServeArgs;
 use anyhow::{Context, Result};
 use nerve_agent::{AgentError, AgentResult, ToolBox, ToolSpec};
 use nerve_core::CancelToken;
+use nerve_runtime::{ApprovalMode, RiskTier};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Tools that only read or navigate the immutable snapshot — safe to run without
-/// prompting. Anything not listed (the mutating tools and any `mcp__*` plugin
-/// tool) falls through to the policy's default action (`Ask`), so a newly added
-/// tool of unknown nature is gated by default rather than silently allowed.
+/// Tools that only read or navigate the immutable snapshot — classified
+/// [`RiskTier::ReadOnly`], so they are auto-approved under every [`ApprovalMode`]
+/// (`ReadOnly` ≤ each mode's `max_auto_tier`). The mutating and exec tools are
+/// classified one tier up (see [`EDIT_TOOLS`] / [`EXEC_TOOLS`] and [`tool_tier`]).
 const READONLY_TOOLS: &[&str] = &[
     "file_search",
     "read_file",
@@ -61,7 +71,6 @@ const READONLY_TOOLS: &[&str] = &[
     "ast_search",
     "semantic_search",
     "build_context",
-    "manage_selection",
     "workspace_context",
     "git",
 ];
@@ -71,6 +80,142 @@ const READONLY_TOOLS: &[&str] = &[
 /// like the read-only tools. Auto-allowed so the outermost gate (invariant 9) does not
 /// prompt for them.
 const SAFE_AGENT_TOOLS: &[&str] = &["update_checkpoint", "remember"];
+
+/// Tools that mutate workspace files (or the working selection) but never escape
+/// the file sandbox — classified [`RiskTier::Edit`]. Auto-approved under the
+/// `Write` and `Yolo` modes; prompt under `AlwaysAsk`.
+const EDIT_TOOLS: &[&str] = &[
+    "edit",
+    "write",
+    "delete",
+    "move",
+    "ast_edit",
+    // Writes a persistent selection / workspace registration — a mutation of host
+    // state, not a pure read, so it sits a tier above the read-only navigators.
+    "manage_selection",
+    "manage_workspaces",
+];
+
+/// Tools that run arbitrary commands, spawn agents, or reach the network /
+/// generation backends — classified [`RiskTier::Exec`], the highest tier. Only
+/// auto-approved under `Yolo`. Any `mcp__*` plugin tool and any unknown tool also
+/// falls here (fail-safe), so a newly added capability is gated by default.
+const EXEC_TOOLS: &[&str] = &[
+    "run_command",
+    "spawn_agent",
+    "web_search",
+    "x_search",
+    "xai_x_search",
+    "xai_responses",
+    "xai_web_search",
+    "xai_image_generate",
+    "xai_video_generate",
+    "xai_tts",
+    "xai_transcribe",
+    "openai_image_generate",
+];
+
+/// Static risk classification for a tool, mirroring oh-my-pi's per-tool tier
+/// declarations. Fail-safe: any tool not explicitly listed as read-only or edit —
+/// including every `mcp__*` plugin tool and any tool added later — is treated as
+/// [`RiskTier::Exec`], the most-restricted tier, so an unclassified capability is
+/// gated by default rather than silently auto-approved.
+pub(crate) fn tool_tier(name: &str) -> RiskTier {
+    if READONLY_TOOLS.contains(&name) || SAFE_AGENT_TOOLS.contains(&name) {
+        RiskTier::ReadOnly
+    } else if EDIT_TOOLS.contains(&name) {
+        RiskTier::Edit
+    } else if EXEC_TOOLS.contains(&name) {
+        RiskTier::Exec
+    } else {
+        // Fail-safe residual: every `mcp__*` plugin tool and any tool not declared
+        // above classify as Exec (the most restricted tier), so a newly added
+        // capability is never silently auto-approved.
+        RiskTier::Exec
+    }
+}
+
+/// Rank a [`RiskTier`] least-to-most privileged so a mode's `max_auto_tier` can be
+/// compared against a tool's tier with `<=` semantics (the enum is `Copy` but not
+/// `Ord`, and keeping the ordering local avoids leaking it into the protocol type).
+fn tier_rank(tier: RiskTier) -> u8 {
+    match tier {
+        RiskTier::ReadOnly => 0,
+        RiskTier::Edit => 1,
+        RiskTier::Exec => 2,
+    }
+}
+
+/// Human-readable, truncated preview of a tool call for the approval prompt,
+/// mirroring oh-my-pi's `formatApprovalDetails`: surface the one argument that
+/// matters for a yes/no decision (the command, the path, the query, the prompt),
+/// falling back to a compact JSON dump of the arguments.
+pub(crate) fn format_preview(tool: &str, args: &Value) -> String {
+    const MAX: usize = 500;
+    let detail = match tool {
+        "run_command" => command_preview(args),
+        "edit" | "write" => string_field(args, "path"),
+        "delete" => string_field(args, "path"),
+        "move" => move_preview(args),
+        "file_search" | "semantic_search" | "ast_search" | "build_context" | "web_search"
+        | "x_search" | "xai_x_search" | "xai_web_search" => string_field(args, "query"),
+        "xai_image_generate" | "xai_video_generate" | "openai_image_generate" => {
+            string_field(args, "prompt")
+        }
+        _ => None,
+    };
+    let rendered = detail.unwrap_or_else(|| compact_json(args));
+    truncate_chars(&rendered, MAX)
+}
+
+/// `run_command` preview: the `command` string, else a space-joined `argv`.
+fn command_preview(args: &Value) -> Option<String> {
+    if let Some(command) = args.get("command").and_then(Value::as_str) {
+        return Some(command.to_string());
+    }
+    args.get("argv").and_then(Value::as_array).map(|argv| {
+        argv.iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
+/// `move` preview: `<from> -> <to>` when both are present, else whichever exists.
+fn move_preview(args: &Value) -> Option<String> {
+    let from = args.get("path").and_then(Value::as_str);
+    let to = args.get("to").and_then(Value::as_str);
+    match (from, to) {
+        (Some(from), Some(to)) => Some(format!("{from} -> {to}")),
+        (Some(from), None) => Some(from.to_string()),
+        (None, Some(to)) => Some(to.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// Read a string-valued `field` from `args`, if present and a string.
+fn string_field(args: &Value, field: &str) -> Option<String> {
+    args.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+/// Compact JSON of the arguments (the catch-all preview); `""` for null.
+fn compact_json(args: &Value) -> String {
+    if args.is_null() {
+        String::new()
+    } else {
+        args.to_string()
+    }
+}
+
+/// Truncate to at most `max` characters, appending an ellipsis when cut.
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(max).collect();
+        format!("{head}\u{2026}")
+    }
+}
 
 /// What to do with a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -118,7 +263,10 @@ struct PolicyFile {
 #[derive(Debug, Clone)]
 pub(crate) struct Policy {
     rules: Vec<PolicyRule>,
-    default: PolicyAction,
+    /// An *explicit* operator fallback from the global `policy.json` (`None` when
+    /// unset). Applied only after the tier+mode auto-allow check, so a global
+    /// `default: deny` still can't lock out the read-only tools the mode permits.
+    default: Option<PolicyAction>,
     allow_all: bool,
 }
 
@@ -129,11 +277,12 @@ impl Default for Policy {
 }
 
 impl Policy {
-    /// The built-in baseline: read-only tools `Allow`, everything else `Ask`.
+    /// The built-in baseline: no explicit rules or fallback. Authorization is
+    /// driven entirely by the tier×mode matrix at decision time.
     fn builtin() -> Self {
         Self {
-            rules: builtin_allow_rules(),
-            default: PolicyAction::Ask,
+            rules: Vec::new(),
+            default: None,
             allow_all: false,
         }
     }
@@ -149,16 +298,15 @@ impl Policy {
         Ok(Self::from_layers(global, project, allow_all))
     }
 
-    /// Compose the built-in defaults with a trusted `global` layer and an
-    /// untrusted `project` layer (first match wins). Precedence:
+    /// Compose a trusted `global` layer and an untrusted `project` layer into an
+    /// ordered rule list (first match wins). Precedence:
     /// 1. project `deny` rules — the only thing honored from the workspace, and a
     ///    deny only ever tightens, so it is safe to trust;
-    /// 2. global rules — operator-controlled, may allow / deny / ask anything;
-    /// 3. the built-in read-only allowlist.
+    /// 2. global rules — operator-controlled, may allow / deny / ask anything.
     ///
-    /// The fallback `default` comes from the global file (else `Ask`); the project
-    /// file's `default` is deliberately ignored so an untrusted workspace cannot
-    /// relax the gate.
+    /// The fallback `default` comes from the global file (`None` ⇒ rely on the
+    /// tier×mode matrix); the project file's `default` is deliberately ignored so
+    /// an untrusted workspace cannot relax the gate.
     fn from_layers(
         global: Option<PolicyFile>,
         project: Option<PolicyFile>,
@@ -173,14 +321,13 @@ impl Policy {
                     .filter(|rule| rule.action == PolicyAction::Deny),
             );
         }
-        let mut default = PolicyAction::Ask;
+        let mut default = None;
         if let Some(global) = global {
             rules.extend(global.rules);
             if let Some(action) = global.default {
-                default = action;
+                default = Some(action);
             }
         }
-        rules.extend(builtin_allow_rules());
         Self {
             rules,
             default,
@@ -195,31 +342,26 @@ impl Policy {
         Self::from_layers(file, None, allow_all)
     }
 
-    /// Decide the action for `tool`: `allow_all` wins, else the first matching
-    /// rule, else the default.
-    pub(crate) fn decide(&self, tool: &str) -> PolicyAction {
+    /// Decide the action for `tool` under approval `mode`. Resolution order:
+    /// 1. an explicit `policy.json` rule match wins (project-deny / global rule);
+    /// 2. else `allow_all` (CLI `--allow-all`) → `Allow`;
+    /// 3. else the tool's static [`tool_tier`] ≤ the mode's `max_auto_tier` →
+    ///    `Allow` (this subsumes the former hardcoded read-only allowlist: a
+    ///    `ReadOnly` tool is ≤ every mode's max, so it is always auto-allowed);
+    /// 4. else an explicit operator `default` from the global config, if any;
+    /// 5. else `Ask`.
+    pub(crate) fn decide_with_mode(&self, tool: &str, mode: ApprovalMode) -> PolicyAction {
+        if let Some(rule) = self.rules.iter().find(|rule| rule.matches(tool)) {
+            return rule.action;
+        }
         if self.allow_all {
             return PolicyAction::Allow;
         }
-        self.rules
-            .iter()
-            .find(|rule| rule.matches(tool))
-            .map_or(self.default, |rule| rule.action)
+        if tier_rank(tool_tier(tool)) <= tier_rank(mode.max_auto_tier()) {
+            return PolicyAction::Allow;
+        }
+        self.default.unwrap_or(PolicyAction::Ask)
     }
-}
-
-/// Built-in allow rules: the read-only tools plus the agent-internal state tools
-/// (`SAFE_AGENT_TOOLS`). Auto-allowed so making the permission gate the outermost
-/// decorator (north-star invariant 9) does not start prompting for them.
-fn builtin_allow_rules() -> Vec<PolicyRule> {
-    READONLY_TOOLS
-        .iter()
-        .chain(SAFE_AGENT_TOOLS.iter())
-        .map(|&tool| PolicyRule {
-            tool: tool.to_string(),
-            action: PolicyAction::Allow,
-        })
-        .collect()
 }
 
 /// Resolves an `Ask` decision to allow (`true`) or deny (`false`).
@@ -284,14 +426,16 @@ fn preview_args(args: &Value) -> String {
 pub(crate) struct PolicyToolBox<T: ToolBox> {
     inner: T,
     policy: Policy,
+    mode: ApprovalMode,
     approver: Arc<dyn Approver>,
 }
 
 impl<T: ToolBox> PolicyToolBox<T> {
-    fn new(inner: T, policy: Policy, approver: Arc<dyn Approver>) -> Self {
+    fn new(inner: T, policy: Policy, mode: ApprovalMode, approver: Arc<dyn Approver>) -> Self {
         Self {
             inner,
             policy,
+            mode,
             approver,
         }
     }
@@ -303,7 +447,7 @@ impl<T: ToolBox> ToolBox for PolicyToolBox<T> {
     }
 
     fn call(&self, name: &str, args: &Value, cancel: &CancelToken) -> AgentResult<Value> {
-        match self.policy.decide(name) {
+        match self.policy.decide_with_mode(name, self.mode) {
             PolicyAction::Allow => self.inner.call(name, args, cancel),
             PolicyAction::Deny => Err(denied(name, "policy")),
             PolicyAction::Ask if self.approver.approve(name, args) => {
@@ -328,37 +472,59 @@ fn denied(tool: &str, by: &str) -> AgentError {
 #[derive(Clone)]
 pub(crate) struct ToolGate {
     policy: Policy,
+    /// Approval posture the tier×mode matrix is evaluated against. Set per gate at
+    /// construction (CLI / daemon / session) and threaded into the `PolicyToolBox`.
+    mode: ApprovalMode,
     approver: Arc<dyn Approver>,
 }
 
 impl ToolGate {
     /// Interactive CLI gate: policy resolved from config plus `--allow-all`,
-    /// approvals prompted on the terminal.
+    /// approvals prompted on the terminal. `--allow-all` runs in `Yolo` (every
+    /// tier auto-approved); otherwise `AlwaysAsk` preserves the prior CLI posture
+    /// of prompting for anything above read-only.
     pub(crate) fn cli(project_dir: Option<&Path>, allow_all: bool) -> Result<Self> {
+        let mode = if allow_all {
+            ApprovalMode::Yolo
+        } else {
+            ApprovalMode::AlwaysAsk
+        };
         Ok(Self {
             policy: Policy::resolve(project_dir, allow_all)?,
+            mode,
             approver: Arc::new(CliApprover),
         })
     }
 
     /// Non-interactive daemon gate over an already-resolved policy: every `Ask`
-    /// is denied (safe default; no human on the daemon socket).
+    /// is denied (safe default; no human on the daemon socket). Runs in
+    /// `AlwaysAsk` so anything above read-only resolves to `Ask` → denied.
     pub(crate) fn deny(policy: Policy) -> Self {
         Self {
             policy,
+            mode: ApprovalMode::AlwaysAsk,
             approver: Arc::new(DenyApprover),
         }
     }
 
     /// Session gate over an already-resolved policy: `Ask` is delegated to the
-    /// runtime-protocol approval round-trip.
-    pub(crate) fn with_approver(policy: Policy, approver: Arc<dyn Approver>) -> Self {
-        Self { policy, approver }
+    /// runtime-protocol approval round-trip, evaluated against the session's
+    /// current [`ApprovalMode`].
+    pub(crate) fn with_approver(
+        policy: Policy,
+        mode: ApprovalMode,
+        approver: Arc<dyn Approver>,
+    ) -> Self {
+        Self {
+            policy,
+            mode,
+            approver,
+        }
     }
 
-    /// Wrap `inner` with this gate's policy and approver.
+    /// Wrap `inner` with this gate's policy, mode, and approver.
     pub(crate) fn wrap<T: ToolBox>(self, inner: T) -> PolicyToolBox<T> {
-        PolicyToolBox::new(inner, self.policy, self.approver)
+        PolicyToolBox::new(inner, self.policy, self.mode, self.approver)
     }
 }
 
@@ -454,21 +620,22 @@ mod tests {
         assert!(!glob_match("a*c", "abbb"));
     }
 
-    // ---- policy decisions ----
+    // ---- tool-tier classifier ----
 
     #[test]
-    fn default_allows_readonly_asks_mutating_and_mcp() {
-        let policy = Policy::default();
+    fn tool_tier_classifies_by_capability() {
         for tool in [
             "read_file",
             "file_search",
             "git",
             "semantic_search",
+            "build_context",
+            "workspace_context",
             "get_repo_map",
             "update_checkpoint",
             "remember",
         ] {
-            assert_eq!(policy.decide(tool), PolicyAction::Allow, "{tool}");
+            assert_eq!(tool_tier(tool), RiskTier::ReadOnly, "{tool}");
         }
         for tool in [
             "edit",
@@ -476,26 +643,87 @@ mod tests {
             "delete",
             "move",
             "ast_edit",
-            "spawn_agent",
+            "manage_selection",
+            "manage_workspaces",
+        ] {
+            assert_eq!(tool_tier(tool), RiskTier::Edit, "{tool}");
+        }
+        for tool in [
             "run_command",
+            "spawn_agent",
+            "web_search",
+            "x_search",
+            "xai_x_search",
+            "xai_responses",
+            "xai_web_search",
+            "xai_image_generate",
+            "xai_video_generate",
+            "openai_image_generate",
+            // mcp + unknown fail safe to the top tier.
             "mcp__fs__write",
             "brand_new_tool",
         ] {
-            assert_eq!(policy.decide(tool), PolicyAction::Ask, "{tool}");
+            assert_eq!(tool_tier(tool), RiskTier::Exec, "{tool}");
+        }
+    }
+
+    // ---- tier × mode matrix (no config rules) ----
+
+    /// Convenience: the built-in (no-config) policy resolved under `mode`.
+    fn decide(tool: &str, mode: ApprovalMode) -> PolicyAction {
+        Policy::default().decide_with_mode(tool, mode)
+    }
+
+    #[test]
+    fn always_ask_allows_read_asks_edit_and_exec() {
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(decide("read_file", mode), PolicyAction::Allow);
+        assert_eq!(decide("remember", mode), PolicyAction::Allow);
+        assert_eq!(decide("edit", mode), PolicyAction::Ask);
+        assert_eq!(decide("manage_selection", mode), PolicyAction::Ask);
+        assert_eq!(decide("run_command", mode), PolicyAction::Ask);
+        assert_eq!(decide("mcp__fs__write", mode), PolicyAction::Ask);
+    }
+
+    #[test]
+    fn write_allows_read_and_edit_asks_exec() {
+        let mode = ApprovalMode::Write;
+        assert_eq!(decide("read_file", mode), PolicyAction::Allow);
+        assert_eq!(decide("edit", mode), PolicyAction::Allow);
+        assert_eq!(decide("manage_workspaces", mode), PolicyAction::Allow);
+        assert_eq!(decide("run_command", mode), PolicyAction::Ask);
+        assert_eq!(decide("spawn_agent", mode), PolicyAction::Ask);
+        assert_eq!(decide("mcp__x__y", mode), PolicyAction::Ask);
+    }
+
+    #[test]
+    fn yolo_allows_everything() {
+        let mode = ApprovalMode::Yolo;
+        for tool in ["read_file", "edit", "run_command", "spawn_agent", "mcp__x"] {
+            assert_eq!(decide(tool, mode), PolicyAction::Allow, "{tool}");
         }
     }
 
     #[test]
     fn allow_all_overrides_everything() {
+        // allow_all short-circuits every tier under any mode (use the strictest).
         let policy = Policy::from_file(None, true);
-        assert_eq!(policy.decide("edit"), PolicyAction::Allow);
-        assert_eq!(policy.decide("mcp__x__y"), PolicyAction::Allow);
-        assert_eq!(policy.decide("read_file"), PolicyAction::Allow);
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(policy.decide_with_mode("edit", mode), PolicyAction::Allow);
+        assert_eq!(
+            policy.decide_with_mode("mcp__x__y", mode),
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            policy.decide_with_mode("read_file", mode),
+            PolicyAction::Allow
+        );
     }
 
     #[test]
-    fn config_rules_override_builtin_allowlist() {
-        // A project denies a normally-allowed read tool and allows mcp tools.
+    fn config_rules_win_over_tier_and_mode() {
+        // A project denies a normally-allowed read tool and allows mcp tools; the
+        // explicit rule wins over the tier×mode decision in either direction.
         let policy = Policy::from_file(
             Some(file(
                 r#"{ "rules": [
@@ -505,28 +733,54 @@ mod tests {
             )),
             false,
         );
-        assert_eq!(policy.decide("git"), PolicyAction::Deny); // user rule wins over built-in allow
-        assert_eq!(policy.decide("mcp__fs__read"), PolicyAction::Allow); // loosened via glob
-        assert_eq!(policy.decide("read_file"), PolicyAction::Allow); // built-in still applies
-        assert_eq!(policy.decide("edit"), PolicyAction::Ask); // default unchanged
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(policy.decide_with_mode("git", mode), PolicyAction::Deny); // rule wins over read-tier allow
+        assert_eq!(
+            policy.decide_with_mode("mcp__fs__read", mode),
+            PolicyAction::Allow
+        ); // rule loosens exec-tier
+        assert_eq!(
+            policy.decide_with_mode("read_file", mode),
+            PolicyAction::Allow
+        ); // tier allow intact
+        assert_eq!(policy.decide_with_mode("edit", mode), PolicyAction::Ask); // unmatched edit-tier asks
     }
 
     #[test]
-    fn config_default_action_overrides_fallback() {
+    fn global_default_applies_only_after_tier_allow() {
+        // A global `default: deny` is the fallback for tools the mode does NOT
+        // auto-allow; read-tier tools the mode permits are still allowed.
         let deny_default = Policy::from_file(Some(file(r#"{ "default": "deny" }"#)), false);
-        assert_eq!(deny_default.decide("edit"), PolicyAction::Deny); // fallback is now deny
-        assert_eq!(deny_default.decide("read_file"), PolicyAction::Allow); // built-in allow wins
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(
+            deny_default.decide_with_mode("edit", mode),
+            PolicyAction::Deny
+        ); // exceeds mode → fallback deny
+        assert_eq!(
+            deny_default.decide_with_mode("read_file", mode),
+            PolicyAction::Allow
+        ); // read-tier allowed
 
         let allow_default = Policy::from_file(Some(file(r#"{ "default": "allow" }"#)), false);
-        assert_eq!(allow_default.decide("edit"), PolicyAction::Allow);
-        assert_eq!(allow_default.decide("mcp__x"), PolicyAction::Allow);
+        assert_eq!(
+            allow_default.decide_with_mode("edit", mode),
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            allow_default.decide_with_mode("mcp__x", mode),
+            PolicyAction::Allow
+        );
     }
 
     #[test]
     fn empty_config_equals_builtin() {
         let policy = Policy::from_file(Some(PolicyFile::default()), false);
-        assert_eq!(policy.decide("read_file"), PolicyAction::Allow);
-        assert_eq!(policy.decide("edit"), PolicyAction::Ask);
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(
+            policy.decide_with_mode("read_file", mode),
+            PolicyAction::Allow
+        );
+        assert_eq!(policy.decide_with_mode("edit", mode), PolicyAction::Ask);
     }
 
     #[test]
@@ -538,6 +792,59 @@ mod tests {
         let parsed = file(r#"{"rules":[{"tool":"x","action":"deny"}]}"#);
         assert_eq!(parsed.rules[0].action, PolicyAction::Deny);
         assert_eq!(parsed.rules[0].tool, "x");
+    }
+
+    // ---- approval preview ----
+
+    #[test]
+    fn format_preview_surfaces_the_salient_argument() {
+        assert_eq!(
+            format_preview("run_command", &serde_json::json!({ "command": "ls -la" })),
+            "ls -la"
+        );
+        assert_eq!(
+            format_preview(
+                "run_command",
+                &serde_json::json!({ "argv": ["git", "log"] })
+            ),
+            "git log"
+        );
+        assert_eq!(
+            format_preview("edit", &serde_json::json!({ "path": "src/main.rs" })),
+            "src/main.rs"
+        );
+        assert_eq!(
+            format_preview("move", &serde_json::json!({ "path": "a.rs", "to": "b.rs" })),
+            "a.rs -> b.rs"
+        );
+        assert_eq!(
+            format_preview(
+                "semantic_search",
+                &serde_json::json!({ "query": "auth flow" })
+            ),
+            "auth flow"
+        );
+        assert_eq!(
+            format_preview(
+                "xai_image_generate",
+                &serde_json::json!({ "prompt": "a cat" })
+            ),
+            "a cat"
+        );
+    }
+
+    #[test]
+    fn format_preview_falls_back_to_compact_json_and_truncates() {
+        // Unknown tool with no salient field -> compact JSON dump.
+        let preview = format_preview("mystery", &serde_json::json!({ "a": 1, "b": "x" }));
+        assert!(preview.contains("\"a\":1"), "{preview}");
+        // Null args render empty.
+        assert_eq!(format_preview("mystery", &serde_json::Value::Null), "");
+        // Overlong previews are truncated with an ellipsis.
+        let long = "x".repeat(600);
+        let preview = format_preview("run_command", &serde_json::json!({ "command": long }));
+        assert_eq!(preview.chars().count(), 501); // 500 + ellipsis
+        assert!(preview.ends_with('\u{2026}'));
     }
 
     // ---- config loading (disk) ----
@@ -554,10 +861,14 @@ mod tests {
                  ] }"#,
         ));
         let policy = Policy::from_layers(None, project, false);
-        assert_eq!(policy.decide("read_file"), PolicyAction::Deny); // deny honored (tighten)
-        assert_eq!(policy.decide("edit"), PolicyAction::Ask); // allow rule dropped
-        assert_eq!(policy.decide("mcp__x"), PolicyAction::Ask); // project default ignored
-        assert_eq!(policy.decide("git"), PolicyAction::Allow); // built-in intact
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(
+            policy.decide_with_mode("read_file", mode),
+            PolicyAction::Deny
+        ); // deny honored (tighten)
+        assert_eq!(policy.decide_with_mode("edit", mode), PolicyAction::Ask); // allow rule dropped
+        assert_eq!(policy.decide_with_mode("mcp__x", mode), PolicyAction::Ask); // project default ignored
+        assert_eq!(policy.decide_with_mode("git", mode), PolicyAction::Allow); // read-tier intact
     }
 
     #[test]
@@ -571,9 +882,16 @@ mod tests {
                  ] }"#,
         ));
         let policy = Policy::from_layers(global, project, false);
-        assert_eq!(policy.decide("edit"), PolicyAction::Deny); // global default wins
-        assert_eq!(policy.decide("mcp__foo"), PolicyAction::Deny); // project allow dropped
-        assert_eq!(policy.decide("read_file"), PolicyAction::Allow); // built-in read-only intact
+        let mode = ApprovalMode::AlwaysAsk;
+        assert_eq!(policy.decide_with_mode("edit", mode), PolicyAction::Deny); // global default wins
+        assert_eq!(
+            policy.decide_with_mode("mcp__foo", mode),
+            PolicyAction::Deny
+        ); // project allow dropped
+        assert_eq!(
+            policy.decide_with_mode("read_file", mode),
+            PolicyAction::Allow
+        ); // read-tier intact
     }
 
     #[test]
@@ -589,7 +907,10 @@ mod tests {
         // global allow / the built-in allowlist, so the result is independent of
         // the operator's (machine-specific) global config.
         let policy = Policy::resolve(Some(dir.path()), false).expect("resolve");
-        assert_eq!(policy.decide("read_file"), PolicyAction::Deny);
+        assert_eq!(
+            policy.decide_with_mode("read_file", ApprovalMode::AlwaysAsk),
+            PolicyAction::Deny
+        );
     }
 
     #[test]
@@ -643,10 +964,13 @@ mod tests {
         }
     }
 
+    /// Gate the counting toolbox under the strictest mode (`AlwaysAsk`), so the
+    /// tier×mode matrix exercises the `Ask` path for anything above read-only.
     fn gated(policy: Policy, approve: bool) -> PolicyToolBox<CountingToolBox> {
         PolicyToolBox::new(
             CountingToolBox::new(),
             policy,
+            ApprovalMode::AlwaysAsk,
             Arc::new(FixedApprover(approve)),
         )
     }

@@ -9,8 +9,10 @@ import { parseArgs } from "./commands.ts";
 import { runApp } from "../ui/app.ts";
 
 export {
+  approvalModeLabel,
   formatModels,
   HELP_TEXT,
+  parseApprovalMode,
   parseArgs,
   parseCommand,
   providerModelsTool,

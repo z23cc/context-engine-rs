@@ -1,13 +1,19 @@
 use nerve_core::CancelToken;
 use nerve_runtime::{RiskTier, RuntimeEvent, SessionApprovalDecision};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use super::EventEmitter;
-use crate::policy::Approver;
+use crate::policy::{self, Approver};
+
+/// Per-session memory of remembered approval decisions: tool name → `true`
+/// (allow-always) / `false` (deny-always). Owned by the `LiveSession` and shared
+/// into each turn's [`ProtocolApprover`], so an `AllowAlways` / `DenyAlways`
+/// decision persists across turns for the life of the session.
+pub(super) type DecisionMemory = Arc<Mutex<HashMap<String, bool>>>;
 
 const APPROVAL_POLL: Duration = Duration::from_millis(100);
 
@@ -38,13 +44,20 @@ impl ApprovalHub {
         }
     }
 
+    /// Emit an `approval_requested` event with the tool's real risk `tier` and a
+    /// human-readable `preview`, then block (up to [`APPROVAL_TIMEOUT`]) for the
+    /// operator's decision. Returns the full [`SessionApprovalDecision`] so the
+    /// caller can act on `.remember()`; cancellation / timeout / a dropped
+    /// responder all resolve to [`SessionApprovalDecision::Deny`].
     pub(super) fn request(
         &self,
         session_id: &str,
         tool: &str,
         arguments: &Value,
+        tier: RiskTier,
+        preview: String,
         cancel: &CancelToken,
-    ) -> bool {
+    ) -> SessionApprovalDecision {
         let request_id = format!("approval-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::channel();
         let key = ApprovalKey {
@@ -52,16 +65,13 @@ impl ApprovalHub {
             request_id: request_id.clone(),
         };
         crate::sync::lock_recover(&self.pending).insert(key, sender);
-        // P1 emits a safe default classification: the most-restricted tier and an
-        // empty preview. P2 computes the real tier (from the tool capability) and
-        // a human-readable preview before emitting.
         (self.emit)(RuntimeEvent::approval_requested(
             session_id.to_string(),
             request_id.clone(),
             tool.to_string(),
             arguments.clone(),
-            RiskTier::Exec,
-            String::new(),
+            tier,
+            preview,
         ));
         let deadline = Instant::now() + APPROVAL_TIMEOUT;
         let decision = loop {
@@ -78,7 +88,7 @@ impl ApprovalHub {
             session_id: session_id.to_string(),
             request_id,
         });
-        decision.allows()
+        decision
     }
 
     pub(super) fn respond(
@@ -101,36 +111,52 @@ pub(super) struct ProtocolApprover {
     session_id: String,
     hub: Arc<ApprovalHub>,
     cancel: CancelToken,
-    /// Tools the operator already denied this turn. A re-request is auto-denied
-    /// without prompting again — see [`Self::approve`].
-    denied: Mutex<HashSet<String>>,
+    /// Per-session remembered decisions (tool → allow-always / deny-always),
+    /// shared with the owning [`LiveSession`](super::LiveSession) so an
+    /// `AllowAlways` / `DenyAlways` persists across turns. A remembered `false`
+    /// also subsumes the previous per-turn auto-deny-of-repeats: once a tool is
+    /// deny-always it never re-prompts, so a model that keeps re-requesting it
+    /// cannot wedge the turn in `Running`.
+    decisions: DecisionMemory,
 }
 
 impl ProtocolApprover {
-    pub(super) fn new(session_id: String, hub: Arc<ApprovalHub>, cancel: CancelToken) -> Self {
+    pub(super) fn new(
+        session_id: String,
+        hub: Arc<ApprovalHub>,
+        cancel: CancelToken,
+        decisions: DecisionMemory,
+    ) -> Self {
         Self {
             session_id,
             hub,
             cancel,
-            denied: Mutex::new(HashSet::new()),
+            decisions,
         }
     }
 }
 
 impl Approver for ProtocolApprover {
     fn approve(&self, tool: &str, args: &Value) -> bool {
-        // A tool the operator already denied this turn is auto-denied without a
-        // fresh prompt. Otherwise a model that keeps re-requesting it would block
-        // the turn on a new approval the operator already answered (or the
-        // frontend already dismissed), which never resolves — wedging the session
-        // in `Running` so no further message can be sent.
-        if crate::sync::lock_recover(&self.denied).contains(tool) {
-            return false;
+        // A remembered decision short-circuits without a fresh prompt: allow-always
+        // runs, deny-always blocks. The deny-always path also prevents a model that
+        // keeps re-requesting a refused tool from blocking the turn on an approval
+        // the operator already answered (which would never resolve).
+        if let Some(&allow) = crate::sync::lock_recover(&self.decisions).get(tool) {
+            return allow;
         }
-        let allowed = self.hub.request(&self.session_id, tool, args, &self.cancel);
-        if !allowed && !self.cancel.is_cancelled() {
-            crate::sync::lock_recover(&self.denied).insert(tool.to_string());
+        let tier = policy::tool_tier(tool);
+        let preview = policy::format_preview(tool, args);
+        let decision = self
+            .hub
+            .request(&self.session_id, tool, args, tier, preview, &self.cancel);
+        // Record a remembered allow/deny so future calls of this tool skip the
+        // prompt. A one-shot Allow/Deny is not recorded (it applies to this call
+        // only). The cancel guard avoids persisting a deny that is really just an
+        // interrupt of the turn.
+        if decision.remember() && !self.cancel.is_cancelled() {
+            crate::sync::lock_recover(&self.decisions).insert(tool.to_string(), decision.allows());
         }
-        allowed
+        decision.allows()
     }
 }

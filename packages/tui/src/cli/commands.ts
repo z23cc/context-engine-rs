@@ -2,6 +2,7 @@
 // full-screen app (ui/app.ts). No IO beyond parseArgs' usage/error output.
 
 import { stdout } from "node:process";
+import type { ApprovalMode } from "../backend/types.ts";
 
 export interface ChatArgs {
   root: string;
@@ -60,6 +61,30 @@ export function parseCommand(line: string): SlashCommand | null {
   };
 }
 
+/**
+ * Parse a friendly approval-mode spelling into the protocol `ApprovalMode`.
+ * Accepts "always-ask"/"always_ask"/"ask" → "always_ask", "write", "yolo".
+ * Returns undefined for anything unrecognized. Pure.
+ */
+export function parseApprovalMode(value: string): ApprovalMode | undefined {
+  switch (value.trim().toLowerCase().replace(/-/g, "_")) {
+    case "always_ask":
+    case "ask":
+      return "always_ask";
+    case "write":
+      return "write";
+    case "yolo":
+      return "yolo";
+    default:
+      return undefined;
+  }
+}
+
+/** Human-readable label for an approval mode (matches the friendly spelling). Pure. */
+export function approvalModeLabel(mode: ApprovalMode): string {
+  return mode === "always_ask" ? "always-ask" : mode;
+}
+
 /** The model-list tool for a provider, if one exists. Pure. */
 export function providerModelsTool(provider: string): string | undefined {
   const name = provider.toLowerCase();
@@ -113,6 +138,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "model", hint: "switch model (keeps history)" },
   { name: "provider", hint: "switch provider" },
   { name: "models", hint: "list provider models" },
+  { name: "mode", hint: "approval mode: always-ask|write|yolo" },
   { name: "new", hint: "fresh session (clears history)" },
   { name: "login", hint: "how to authenticate" },
   { name: "theme", hint: "cycle accent color" },
@@ -133,6 +159,7 @@ export const HELP_TEXT = [
   "  /model <id>                switch model (keeps history)",
   "  /provider <name> [model]   switch provider (claude|chatgpt|xai)",
   "  /models                    list the current provider's models",
+  "  /mode [always-ask|write|yolo]  set the approval mode (bare = show current)",
   "  /new                       start a fresh session (clears history)",
   "  /login [provider]          how to authenticate a provider",
   "  /theme                     cycle the accent color",
