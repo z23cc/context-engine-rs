@@ -185,6 +185,48 @@ fn token_overrun_exhausts_and_cancels() {
     assert!(!outcome.ok, "an exhausted parallel flow ends not-ok");
 }
 
+/// A zero-usage scripted result: ok, but NO cost and NO tokens — modeling a worker
+/// (gemini / remote / mcp) that reports nothing. Under a token-only budget this MUST
+/// still be charged the worst case (finding G).
+fn silent(text: &str) -> TurnResult {
+    TurnResult {
+        ok: true,
+        text: text.into(),
+        usage: nerve_agent::Usage::default(),
+        cost_usd: None,
+        timed_out: false,
+    }
+}
+
+#[test]
+fn zero_usage_worker_under_a_token_budget_is_charged_worst_case_and_self_cancels() {
+    // Finding G: a worker reporting NO usage under a TOKEN-only budget previously ran
+    // FREE, defeating the brake. Now each zero-usage node is charged the full token
+    // ceiling (worst case), so the SECOND stage exhausts and the flow self-cancels.
+    let pipeline = Strategy::Pipeline {
+        stages: vec![cli_step("g0"), cli_step("g1"), cli_step("g2")],
+    };
+    let def = budgeted_def(pipeline, spec(None, Some(1000), None), 2);
+    let scripts = BTreeMap::from([
+        ("g0".to_string(), script(silent("R0"))),
+        ("g1".to_string(), script(silent("R1"))),
+        ("g2".to_string(), script(silent("R2"))),
+    ]);
+    let (outcome, snapshot, observer) = run_budgeted(&def, scripts);
+    assert!(
+        observer.exhausted(),
+        "a zero-usage worker under a token budget must still exhaust the brake"
+    );
+    assert!(
+        snapshot.spent_tokens > 1000,
+        "worst-cased to the token ceiling"
+    );
+    assert!(
+        !outcome.ok,
+        "the flow self-cancels rather than running free"
+    );
+}
+
 #[test]
 fn within_budget_never_warns_or_cancels() {
     // A generous budget: a 2-stage pipeline costing $1.00 total under a $100 cap

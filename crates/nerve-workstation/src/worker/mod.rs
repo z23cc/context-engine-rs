@@ -29,8 +29,10 @@
 //!
 //! ## What is stubbed for C1 (honest partials)
 //!
-//! - [`BudgetGrant`] is a minimal placeholder: its fields are recorded but **not
-//!   enforced** here. C3 wires the `FleetBudget` debit/cancel loop.
+//! - [`BudgetGrant`] is carved per node from the [`FleetBudget`] envelope (design §6,
+//!   monotone de-escalation) and ENFORCED two ways: the whole-flow `BudgetLedger`
+//!   debit/cancel fold runs between turns, and a provider node's `max_cost_usd` arms an
+//!   in-turn `CostTelemetryHook` ceiling on its own run (`provider::grant_cost_ceiling`).
 //! - [`WorkerLedger`] is a minimal append-only seq-numbered tape (events +
 //!   results). C1 extends it to the full replay-tape / blackboard / persistence
 //!   record (design §5).

@@ -10,10 +10,17 @@
 //!    `Hierarchical` strategy (the child could never spawn — a structural mistake,
 //!    surfaced at start rather than silently absent-at-floor).
 //!
-//! 2. **Ancestor-instruction-hash ([`InstructionTrail`])** — the dynamic fork-loop
-//!    guard for `Hierarchical`: a child flow whose planner instruction repeats an
-//!    ancestor's would loop forever. The trail records each ancestor planner's rendered
-//!    instruction hash; a repeat is refused (absence-at-floor) rather than spawned.
+//! 2. **Ancestor-instruction-hash ([`InstructionTrail`])** — the fork-loop guard for
+//!    `Hierarchical`: a child flow whose planner instruction repeats an ancestor's
+//!    would loop forever. This is a STATIC check run ONCE at `flow.start` over the
+//!    declared strategy tree — it hashes each ancestor planner's TEMPLATE instruction
+//!    (`planner.task.prompt`, the unrendered template), not a per-spawn rendered string
+//!    (the engine's hierarchical recursion is a pure phase machine and does not thread
+//!    the trail at runtime). A nested planner whose template repeats an ancestor's is
+//!    rejected at start, before any worker spawns. Since the planner template is what a
+//!    `Hierarchical` def declares (named-output substitution is the driver's
+//!    `build_task`, applied to a node's task — the planner prompt carries no nested
+//!    per-spawn render here), the template hash is the fork-loop key the design needs.
 //!
 //! 3. **Reference-cycle check ([`validate_workflow_refs`], Wave C6)** — now that named
 //!    workers + named workflows are *loaded* (`WorkerRegistry` / `WorkflowRegistry`)
@@ -163,9 +170,10 @@ fn detect_reference_cycle(
     Ok(())
 }
 
-/// Walk a strategy tree, rejecting a `Hierarchical` planner that repeats an ancestor's
-/// instruction (the fork-loop guard). `trail` carries the ancestor planner instruction
-/// hashes; `depth` the nesting level. (Named-worker resolution is handled separately by
+/// Walk the declared strategy tree at `flow.start`, rejecting a `Hierarchical` planner
+/// whose TEMPLATE instruction repeats an ancestor planner's (the static fork-loop
+/// guard). `trail` carries the ancestor planner template-instruction hashes; `depth` the
+/// nesting level. (Named-worker resolution is handled separately by
 /// [`validate_workflow_refs`], so this no longer rejects `Named` refs.)
 fn validate_strategy(
     strategy: &Strategy,
@@ -173,7 +181,9 @@ fn validate_strategy(
     depth: u32,
 ) -> Result<(), WorkflowError> {
     // Recurse into a Hierarchical child (the only nested strategy), threading the
-    // planner-instruction trail so a repeat anywhere down the chain is a fork-loop.
+    // planner-template-instruction trail so a repeat anywhere down the chain is a
+    // fork-loop. The instruction is the planner's declared TEMPLATE prompt (this runs
+    // statically at flow.start, before any render).
     if let Strategy::Hierarchical { planner, child } = strategy {
         let instruction = &planner.task.prompt;
         if trail.repeats(instruction) {
@@ -201,9 +211,13 @@ fn strategy_steps(strategy: &Strategy) -> Vec<&nerve_runtime::Step> {
     }
 }
 
-/// The ancestor-instruction trail for the dynamic `Hierarchical` fork-loop guard
-/// (design §8): a stack of each ancestor planner's rendered-instruction hash. Spawning
-/// a child whose planner instruction REPEATS an ancestor's would loop, so it is refused.
+/// The ancestor-instruction trail for the STATIC `Hierarchical` fork-loop guard
+/// (design §8): a stack of each ancestor planner's TEMPLATE-instruction hash, built by a
+/// pure walk over the declared strategy tree at `flow.start`. A nested planner whose
+/// declared template REPEATS an ancestor's would loop, so the def is rejected before any
+/// worker spawns. (The check is template-level, not per-spawn rendered: the engine's
+/// hierarchical recursion is a pure phase machine that does not thread this trail at
+/// runtime — see [`validate_strategy`].)
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InstructionTrail {
     hashes: Vec<u64>,
@@ -223,8 +237,9 @@ impl InstructionTrail {
         self.hashes.contains(&hash_instruction(instruction))
     }
 
-    /// A child trail extending this one with `instruction` (the planner's rendered
-    /// instruction). Pushed when a child flow spawns, so its descendants see it.
+    /// A child trail extending this one with `instruction` (the planner's declared
+    /// TEMPLATE instruction). Pushed as the static walk descends into a child strategy,
+    /// so a nested planner is checked against every ancestor's template.
     #[must_use]
     pub(crate) fn extend(&self, instruction: &str) -> Self {
         let mut hashes = self.hashes.clone();
@@ -233,9 +248,9 @@ impl InstructionTrail {
     }
 }
 
-/// A stable content hash of a rendered instruction (the fork-loop key). `DefaultHasher`
-/// is deterministic for a given byte sequence within a build, which is all the trail
-/// needs (it never persists across builds).
+/// A stable content hash of a planner's TEMPLATE instruction (the fork-loop key).
+/// `DefaultHasher` is deterministic for a given byte sequence within a build, which is
+/// all the trail needs (it runs at `flow.start` and never persists across builds).
 fn hash_instruction(instruction: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     instruction.hash(&mut hasher);

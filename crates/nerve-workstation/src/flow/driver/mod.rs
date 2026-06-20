@@ -326,6 +326,12 @@ impl<'a> Driver<'a> {
         if admitted.is_empty() {
             return;
         }
+        // Pin ONE snapshot generation for the whole wave HERE, on the engine thread,
+        // before any branch spawns (design §5, finding M): every branch in the wave is
+        // handed the SAME generation, so a concurrent external/steer mutation can't make
+        // the recorded per-node generations depend on which thread read the live snapshot
+        // first. Keyed by the wave's first admitted node in declared order (deterministic).
+        let wave_generation = self.pin_wave_generation(def, &admitted[0].0);
         // A single-node wave on a steerable strategy (`Single`/`Pipeline`) is the
         // flow's current frontier: its live session is kept registered so a
         // concurrent `flow.steer` can run a follow-up turn (C3a). A `Parallel` wave
@@ -336,7 +342,7 @@ impl<'a> Driver<'a> {
             self.concurrency,
             cancel,
             |(node, step_index, slot)| {
-                let run = self.run_node(def, &node, step_index, slot, cancel);
+                let run = self.run_node(def, &node, step_index, slot, wave_generation, cancel);
                 NodeResult { node, run }
             },
             |(node, _, _)| NodeResult {

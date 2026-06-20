@@ -90,10 +90,13 @@ impl ProviderWorker {
             delegate_launcher: crate::sandbox::refuse_launcher(),
             delegate_event_sink: None,
             resume_truncations: 0,
-            // The task's `BudgetGrant` is recorded but NOT enforced in C0 (see
-            // BudgetGrant); C3 maps it onto `cost_budget_usd` + the FleetBudget
-            // cancel loop. Until then no ceiling is wired onto the run.
-            cost_budget_usd: budget_placeholder(&task.budget),
+            // The task's per-node `BudgetGrant` (carved from the fleet envelope in
+            // `node_grant`, intersected so it can only narrow) is installed as this
+            // turn's in-turn cost ceiling: `run_at_depth` arms a `CostTelemetryHook`
+            // with it, so the node cooperatively cancels the moment its OWN running
+            // estimate crosses the grant — not only at the whole-flow `BudgetLedger`
+            // fold between turns (finding I).
+            cost_budget_usd: grant_cost_ceiling(&task.budget),
         }
     }
 
@@ -247,12 +250,15 @@ fn steer_task(message: &str) -> WorkerTask {
     }
 }
 
-/// C0 budget placeholder: a [`BudgetGrant`](super::BudgetGrant) is recorded on the
-/// task but NOT enforced yet, so no `cost_budget_usd` ceiling is wired onto the run.
-/// C3 maps the grant onto the `CostTelemetryHook` ceiling; the signature takes the
-/// grant so that wiring is a one-line change.
-fn budget_placeholder(_grant: &super::BudgetGrant) -> Option<f64> {
-    None
+/// The in-turn USD cost ceiling a per-node [`BudgetGrant`](super::BudgetGrant) installs
+/// on a provider run (finding I): the grant's `max_cost_usd`. `run_at_depth` arms a
+/// [`CostTelemetryHook`](crate::cost::CostTelemetryHook) with it, so the node
+/// cooperatively cancels its OWN turn once its running estimate crosses the carved
+/// ceiling — the per-node brake, complementing the whole-flow `BudgetLedger` fold that
+/// runs between turns. `None` (an unbudgeted flow's default grant) wires no ceiling, so
+/// existing flows keep running unbounded as before.
+fn grant_cost_ceiling(grant: &super::BudgetGrant) -> Option<f64> {
+    grant.max_cost_usd
 }
 
 #[cfg(test)]
@@ -285,6 +291,59 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.text, "done");
         assert_eq!(result.usage.input_tokens, 9);
+    }
+
+    #[test]
+    fn per_node_grant_arms_the_in_turn_cost_ceiling() {
+        // Finding I: a provider node's carved per-node `BudgetGrant.max_cost_usd` must
+        // flow onto the run as `cost_budget_usd`, so `run_at_depth` installs the
+        // CostTelemetryHook that cancels the turn when its OWN estimate crosses the
+        // grant. A capped grant yields the ceiling; a default (uncapped) grant yields
+        // None (no in-turn brake), keeping existing flows unbounded.
+        let grant = super::super::BudgetGrant {
+            max_cost_usd: Some(0.25),
+            max_tokens: Some(1000),
+        };
+        assert_eq!(
+            grant_cost_ceiling(&grant),
+            Some(0.25),
+            "the carved per-node USD grant is the in-turn cost ceiling"
+        );
+        assert_eq!(
+            grant_cost_ceiling(&super::super::BudgetGrant::default()),
+            None,
+            "a default (uncapped) grant wires no in-turn ceiling"
+        );
+    }
+
+    #[test]
+    fn run_config_threads_the_grant_onto_cost_budget_usd() {
+        // The wiring is end-to-end: a WorkerTask carrying a per-node grant produces an
+        // AgentRunConfig whose `cost_budget_usd` IS the grant ceiling (so the hook arms).
+        let runtime = Arc::new(crate::tools::runtime(
+            nerve_core::WorkspaceRegistry::default(),
+        ));
+        let worker = ProviderWorker::new(
+            runtime,
+            ProviderRegistry::default(),
+            ToolGate::deny(crate::policy::Policy::default()),
+            2,
+            "xai",
+            "grok",
+        );
+        let task = WorkerTask {
+            node_id: "node-0".into(),
+            prompt: "do it".into(),
+            autonomy: nerve_runtime::DelegateAutonomy::ReadOnly,
+            model: None,
+            tool_filter: None,
+            budget: super::super::BudgetGrant {
+                max_cost_usd: Some(0.5),
+                max_tokens: None,
+            },
+        };
+        let config = worker.run_config(&task);
+        assert_eq!(config.cost_budget_usd, Some(0.5));
     }
 
     #[test]

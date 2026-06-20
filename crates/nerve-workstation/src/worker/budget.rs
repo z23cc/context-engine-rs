@@ -101,7 +101,7 @@ impl BudgetLedger {
     /// USD limit is set but no cost is reported, is charged the worst-case per-node
     /// ceiling rather than `0` — so a silent worker can never run unbounded.
     pub(crate) fn debit(&self, result: &TurnResult) -> BudgetDecision {
-        let tokens = node_tokens(result);
+        let tokens = self.node_tokens(result);
         let usd = self.node_cost(result);
         let mut state = crate::sync::lock_recover(&self.state);
         // Once exhausted, every later debit stays exhausted (idempotent brake).
@@ -202,6 +202,22 @@ impl BudgetLedger {
             None => self.spec.max_total_cost_usd.unwrap_or(0.0),
         }
     }
+
+    /// The tokens a node debits: its reported input + output + cache usage, or —
+    /// fail-closed, MIRRORING [`Self::node_cost`] — the whole token ceiling when a
+    /// token budget is set but the worker reported NO tokens (`gemini` and the
+    /// remote/MCP recipes can report zero usage). Without this worst-case a
+    /// zero-usage worker ran FREE under a token-only `BudgetSpec`, defeating the
+    /// brake; now a single silent worker can consume at most the budget and the flow
+    /// self-cancels rather than running unbounded. An uncapped token budget worst-
+    /// cases to `0`, so an unbudgeted flow keeps the current free-to-run behaviour.
+    fn node_tokens(&self, result: &TurnResult) -> u64 {
+        let reported = reported_tokens(result);
+        if reported > 0 {
+            return reported;
+        }
+        self.spec.max_total_tokens.unwrap_or(0)
+    }
 }
 
 /// The spawn-control envelope threaded through [`WorkerContext`](super::WorkerContext)
@@ -209,9 +225,24 @@ impl BudgetLedger {
 /// a shared [`WorkerSemaphore`]). The four-mechanism safety model lives here:
 /// depth ceiling + worker ceiling (absence-at-floor), with the budget brake folded
 /// in via `remaining_*` (carved from the [`BudgetLedger`]).
+///
+/// **Depth ceiling — authority (finding K).** At runtime the driver carries a SINGLE
+/// root `FleetBudget` per flow and never advances [`Self::child`], so this envelope's
+/// `depth` stays `0` and its depth check is NOT the live hierarchical-depth guard. The
+/// AUTHORITATIVE depth guard is the engine's pure `step_hierarchical`
+/// (`flow::engine::strategy::hierarchical`): it refuses to even emit a `StartWorker` for
+/// an over-ceiling child (`child_depth >= max_depth`), recording a `DepthCeiling`
+/// decision instead — so the driver never receives an over-depth node to refuse, and a
+/// `child()`-derived `FleetBudget` depth check would be UNREACHABLE. `Self::child` +
+/// the `depth` field are therefore defense-in-depth / the seam for a future runtime
+/// per-node carve; the worker-semaphore and budget-headroom mechanisms ARE live at the
+/// root (they are tree-wide, so they need no per-node carve to bind). See the
+/// `validate_workflow` static check (`flow::safety`) for the start-time complement.
 #[derive(Clone)]
 pub(crate) struct FleetBudget {
-    /// This node's depth in the flow tree (0 at the root).
+    /// This node's depth in the flow tree (0 at the root). Advisory at runtime: the
+    /// driver keeps one root budget per flow, so the authoritative hierarchical-depth
+    /// guard is the engine's `step_hierarchical`, not this field (finding K).
     depth: u32,
     /// The hierarchy depth ceiling (design §8; from `WorkflowDef.max_depth`).
     max_depth: u32,
@@ -260,6 +291,12 @@ impl FleetBudget {
     /// worker count, then remaining budget — all deterministic given the recorded
     /// budget fold. Does NOT itself acquire a slot; the caller acquires via
     /// [`Self::acquire`] only after a positive check.
+    ///
+    /// The depth branch is reachable only when the ROOT is constructed at the ceiling
+    /// (`max_depth == 0`, as the `depth_ceiling_refuses_spawn_at_floor` test drives it);
+    /// for genuine hierarchical nesting the engine's `step_hierarchical` gates depth
+    /// BEFORE dispatch (finding K — see the [`FleetBudget`] type docs), so the driver
+    /// never asks `may_spawn` about an over-ceiling nested node.
     pub(crate) fn may_spawn(&self) -> Result<(), SpawnRefusal> {
         if self.depth >= self.max_depth {
             return Err(SpawnRefusal::Depth {
@@ -291,6 +328,12 @@ impl FleetBudget {
     /// the child's remaining headroom INTERSECTED with the parent's via
     /// `latest_*` (the live budget-ledger headroom). Monotone: a child is never
     /// more capable than its parent.
+    ///
+    /// Not on the runtime path today (finding K): the driver keeps a single root budget
+    /// per flow, and the engine's `step_hierarchical` is the authoritative hierarchical-
+    /// depth guard, so this is the seam for a future per-node runtime carve + the
+    /// defense-in-depth depth model (the semaphore/budget it would carry are already
+    /// tree-wide at the root). Exercised by the unit contract tests below.
     #[must_use]
     pub(crate) fn child(&self, latest_usd: Option<f64>, latest_tokens: Option<u64>) -> Self {
         Self {
@@ -477,9 +520,11 @@ fn intersect_min_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
-/// The number of tokens a node's result debits: input + output + cache reads +
-/// cache writes (all the tokens the worker consumed).
-fn node_tokens(result: &TurnResult) -> u64 {
+/// The raw number of tokens a node's result REPORTS: input, output, cache reads, and
+/// cache writes summed (all the tokens the worker consumed). `0` when the worker
+/// reports no usage — the fail-closed worst-case is applied by
+/// [`BudgetLedger::node_tokens`].
+fn reported_tokens(result: &TurnResult) -> u64 {
     let u = &result.usage;
     u64::from(u.input_tokens)
         + u64::from(u.output_tokens)
@@ -591,6 +636,48 @@ mod tests {
             "a no-cost node under a budget is charged the worst case, crossing the warn line"
         );
         assert!(ledger.snapshot().spent_usd > 0.0);
+    }
+
+    #[test]
+    fn no_tokens_reported_is_charged_worst_case_under_a_token_budget() {
+        // Finding G: a worker that reports NO tokens (e.g. the gemini recipe or a
+        // remote/MCP worker) under a TOKEN-only budget must be charged the worst case
+        // (the whole token ceiling), so it can never run free and the flow self-cancels.
+        let ledger = BudgetLedger::new(spec(None, Some(1000), None));
+        // A zero-usage worker (no cost, no tokens) is charged the full 1000-token
+        // ceiling, so 1000 is not yet OVER 1000 (within) but the budget is now dry.
+        assert_eq!(ledger.debit(&result(None, 0, 0)), BudgetDecision::Within);
+        assert_eq!(ledger.snapshot().spent_tokens, 1000);
+        // A second zero-usage worker pushes 2000 > 1000 → exhausted (the brake bites).
+        assert_eq!(ledger.debit(&result(None, 0, 0)), BudgetDecision::Exhausted);
+        assert!(
+            ledger.snapshot().exhausted,
+            "a silent worker can self-cancel"
+        );
+    }
+
+    #[test]
+    fn zero_usage_worker_runs_free_only_when_uncapped() {
+        // The zero-regression guarantee: under NO token cap, a zero-usage worker is
+        // worst-cased to 0 (free), so an unbudgeted flow keeps its current behaviour.
+        let ledger = BudgetLedger::new(spec(None, None, None));
+        for _ in 0..100 {
+            assert_eq!(ledger.debit(&result(None, 0, 0)), BudgetDecision::Within);
+        }
+        assert_eq!(ledger.snapshot().spent_tokens, 0);
+        assert!(!ledger.snapshot().exhausted);
+    }
+
+    #[test]
+    fn reported_tokens_are_not_worst_cased() {
+        // A worker that DOES report tokens debits its reported sum, never the ceiling.
+        let ledger = BudgetLedger::new(spec(None, Some(1_000_000), None));
+        assert_eq!(ledger.debit(&result(None, 5, 3)), BudgetDecision::Within);
+        assert_eq!(
+            ledger.snapshot().spent_tokens,
+            8,
+            "reported sum, not the cap"
+        );
     }
 
     #[test]

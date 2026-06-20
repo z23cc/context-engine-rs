@@ -436,6 +436,45 @@ fn hierarchical_child_parallel_records_prefixed_branch_ids() {
     assert_replay_byte_identical(&workflow, &outcome, &ledger);
 }
 
+#[test]
+fn hierarchical_child_mapreduce_resolves_nested_split() {
+    // Finding L: a Hierarchical whose child is a MapReduce. Each nested map node
+    // (`child/map-i`) must resolve its own `{{split}}` shard — previously the map-split
+    // resolver ignored the `child/` prefix and rendered `{{split}}` to nothing, so the
+    // shard prompts never matched their scripts. Now the nested map node finds shard i.
+    // The reduce uses a fixed prompt (cross-node `{{map-i}}` interpolation under the
+    // nested namespace is a separate concern); this test isolates the `{{split}}` fix —
+    // each nested map node must resolve its OWN shard, which previously rendered empty.
+    let mut workflow = def(
+        "hier-mr",
+        Strategy::Hierarchical {
+            planner: provider_step("plan the shards"),
+            child: Box::new(Strategy::MapReduce {
+                map: cli_step("summarize {{split}}"),
+                over: ContextSplit::Shards { n: 2 },
+                reduce: provider_step("merge the shards"),
+            }),
+        },
+    );
+    workflow.max_depth = 3; // child MapReduce runs at depth 1, below the ceiling
+    let scripts = BTreeMap::from([
+        ("plan the shards".to_string(), script(ok("PLAN"))),
+        // The nested map nodes interpolate their OWN shard via {{split}} — before the
+        // fix these rendered to `summarize ` (empty split), missing these scripts.
+        ("summarize shard 0/2".to_string(), script(ok("S0"))),
+        ("summarize shard 1/2".to_string(), script(ok("S1"))),
+        ("merge the shards".to_string(), script(ok("MERGED"))),
+    ]);
+    let (outcome, ledger, _decisions) = record_with_decisions(&workflow, scripts);
+    assert!(outcome.ok, "the nested map/reduce ran: {outcome:?}");
+    // The nested map nodes resolved their shards (recorded under the child namespace) —
+    // proof the `child/map-i` split now resolves (finding L).
+    assert_eq!(ledger.output("child/map-0"), Some("S0".to_string()));
+    assert_eq!(ledger.output("child/map-1"), Some("S1".to_string()));
+    assert_eq!(ledger.output("child/reduce"), Some("MERGED".to_string()));
+    assert_replay_byte_identical(&workflow, &outcome, &ledger);
+}
+
 // ---- Mixed-substrate: CLI candidates + an in-process provider judge ------------
 
 #[test]
@@ -510,6 +549,192 @@ fn nested_hierarchical_depth_gate_composes() {
     );
     // Byte-identical replay over the nested tape (the nested namespace round-trips).
     assert_replay_byte_identical(&workflow, &outcome, &ledger);
+}
+
+// ---- Finding H: child autonomy is clamped to the parent planner's --------------
+
+/// A worker that records the EFFECTIVE autonomy it was handed (keyed by node id), so a
+/// test can prove a Hierarchical child's autonomy was intersected with its parent's.
+struct AutonomyProbe {
+    seen: Arc<Mutex<std::collections::BTreeMap<String, nerve_runtime::DelegateAutonomy>>>,
+}
+
+impl crate::worker::AgentWorker for AutonomyProbe {
+    fn kind(&self) -> crate::worker::WorkerKind {
+        crate::worker::WorkerKind::Cli("probe")
+    }
+    fn capability(&self) -> nerve_runtime::RiskTier {
+        nerve_runtime::RiskTier::Edit
+    }
+    fn start(
+        &self,
+        task: &crate::worker::WorkerTask,
+        _ctx: &crate::worker::WorkerContext,
+        _cancel: &CancelToken,
+        on_event: &mut dyn FnMut(crate::worker::WorkerEvent),
+    ) -> Result<Box<dyn crate::worker::WorkerSession>, crate::worker::WorkerError> {
+        crate::sync::lock_recover(&self.seen).insert(task.node_id.clone(), task.autonomy);
+        let result = ok(&format!("did {}", task.prompt));
+        crate::worker::synthesize_turn_steps(1, &result, on_event);
+        Ok(Box::new(AutonomyProbeSession { last: result }))
+    }
+}
+
+struct AutonomyProbeSession {
+    last: TurnResult,
+}
+impl crate::worker::WorkerSession for AutonomyProbeSession {
+    fn steer(
+        &mut self,
+        _m: &str,
+        _c: &CancelToken,
+        _e: &mut dyn FnMut(crate::worker::WorkerEvent),
+    ) -> Result<TurnResult, crate::worker::WorkerError> {
+        Err(crate::worker::WorkerError::NotSteerable)
+    }
+    fn interrupt(&self) {}
+    fn close(&mut self) {}
+    fn result(&self) -> TurnResult {
+        self.last.clone()
+    }
+}
+
+struct AutonomyResolver {
+    seen: Arc<Mutex<std::collections::BTreeMap<String, nerve_runtime::DelegateAutonomy>>>,
+}
+impl crate::flow::WorkerResolver for AutonomyResolver {
+    fn resolve(
+        &self,
+        _w: &nerve_runtime::WorkerRef,
+    ) -> Result<Box<dyn crate::worker::AgentWorker>, crate::worker::WorkerError> {
+        Ok(Box::new(AutonomyProbe {
+            seen: Arc::clone(&self.seen),
+        }))
+    }
+}
+
+/// A `Hierarchical` step with an explicit autonomy (so a test can give the planner a
+/// NARROW autonomy and the child a WIDER one, proving the child is clamped down).
+fn step_with_autonomy(prompt: &str, autonomy: nerve_runtime::DelegateAutonomy) -> Step {
+    Step {
+        worker: nerve_runtime::WorkerRef::Cli {
+            name: "claude".into(),
+        },
+        task: nerve_runtime::TaskTemplate::new(prompt),
+        autonomy,
+        on_fail: nerve_runtime::FailPolicy::Continue,
+    }
+}
+
+#[test]
+fn hierarchical_child_autonomy_is_clamped_to_the_parent_planner() {
+    use nerve_runtime::DelegateAutonomy::{Edit, Full, ReadOnly};
+    // Finding H: a child node declared with WIDER autonomy than its parent planner is
+    // clamped to the parent (monotone de-escalation). The planner here is Edit; the
+    // child Single declares Full, but must run with min(Full, Edit) = Edit.
+    let mut workflow = def(
+        "hier-autonomy",
+        Strategy::Hierarchical {
+            planner: step_with_autonomy("plan", Edit),
+            child: Box::new(Strategy::Single {
+                step: step_with_autonomy("do work", Full), // WIDER than the parent
+            }),
+        },
+    );
+    workflow.max_depth = 3;
+
+    let seen = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let resolver = AutonomyResolver {
+        seen: Arc::clone(&seen),
+    };
+    let ledger = Arc::new(WorkerLedger::new());
+    let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
+    Driver::new(&resolver, ledger, approver, None)
+        .with_concurrency(4)
+        .run(&workflow, &CancelToken::never());
+
+    let seen = crate::sync::lock_recover(&seen).clone();
+    assert_eq!(
+        seen.get("planner"),
+        Some(&Edit),
+        "the planner runs with its own declared autonomy"
+    );
+    assert_eq!(
+        seen.get("child/node-0"),
+        Some(&Edit),
+        "the child declared Full but is clamped to the parent planner's Edit"
+    );
+
+    // And a child that declares NARROWER autonomy keeps its tighter posture (the clamp
+    // never WIDENS): a ReadOnly child under an Edit planner stays ReadOnly.
+    let mut narrow = def(
+        "hier-autonomy-narrow",
+        Strategy::Hierarchical {
+            planner: step_with_autonomy("plan", Edit),
+            child: Box::new(Strategy::Single {
+                step: step_with_autonomy("do work", ReadOnly),
+            }),
+        },
+    );
+    narrow.max_depth = 3;
+    let seen2 = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let resolver2 = AutonomyResolver {
+        seen: Arc::clone(&seen2),
+    };
+    Driver::new(
+        &resolver2,
+        Arc::new(WorkerLedger::new()),
+        Arc::new(NeverApprover),
+        None,
+    )
+    .with_concurrency(4)
+    .run(&narrow, &CancelToken::never());
+    assert_eq!(
+        crate::sync::lock_recover(&seen2).get("child/node-0"),
+        Some(&ReadOnly),
+        "a narrower child keeps its tighter autonomy (the clamp never widens)"
+    );
+}
+
+#[test]
+fn nested_hierarchical_child_clamps_against_every_ancestor_planner() {
+    use nerve_runtime::DelegateAutonomy::{Full, ReadOnly};
+    // A nested Hierarchical: root planner Full, child planner ReadOnly, grandchild work
+    // declares Full. The grandchild's effective autonomy is min(Full, Full, ReadOnly) =
+    // ReadOnly — it clamps against EVERY ancestor planner on its path, not just one.
+    let mut workflow = def(
+        "nested-autonomy",
+        Strategy::Hierarchical {
+            planner: step_with_autonomy("root plan", Full),
+            child: Box::new(Strategy::Hierarchical {
+                planner: step_with_autonomy("child plan", ReadOnly),
+                child: Box::new(Strategy::Single {
+                    step: step_with_autonomy("grandchild work", Full),
+                }),
+            }),
+        },
+    );
+    workflow.max_depth = 4;
+    let seen = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+    let resolver = AutonomyResolver {
+        seen: Arc::clone(&seen),
+    };
+    Driver::new(
+        &resolver,
+        Arc::new(WorkerLedger::new()),
+        Arc::new(NeverApprover),
+        None,
+    )
+    .with_concurrency(4)
+    .run(&workflow, &CancelToken::never());
+    let seen = crate::sync::lock_recover(&seen).clone();
+    assert_eq!(seen.get("planner"), Some(&Full));
+    assert_eq!(seen.get("child/planner"), Some(&ReadOnly));
+    assert_eq!(
+        seen.get("child/child/node-0"),
+        Some(&ReadOnly),
+        "the grandchild clamps against EVERY ancestor planner (min of all)"
+    );
 }
 
 // ---- Static safety (design §8): fork-loop + zero-depth rejected at flow.start ---

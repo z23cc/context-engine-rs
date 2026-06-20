@@ -7,9 +7,9 @@
 
 use crate::worker::{
     AgentWorker, LedgerEntry, ReplayWorker, SpawnRefusal, TurnResult, WorkerError, WorkerFactory,
-    WorkerLedger,
+    WorkerLedger, intersect_autonomy,
 };
-use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
+use nerve_runtime::{DelegateAutonomy, Step, Strategy, WorkerRef, WorkflowDef};
 use std::sync::Arc;
 
 use super::{FlowOutcome, NodeId};
@@ -94,6 +94,46 @@ pub(crate) fn replay_generation_provider(
 /// strategy by stripping the prefix and recursing.
 pub(super) fn step_for_node<'a>(def: &'a WorkflowDef, node: &NodeId) -> Option<&'a Step> {
     step_in_strategy(&def.strategy, node.as_str())
+}
+
+/// The autonomy a node may actually run with (design §6, monotone de-escalation):
+/// the node's own declared autonomy INTERSECTED with every ANCESTOR planner's, so a
+/// `Hierarchical` child can only NARROW its parent's authority — never widen it. For a
+/// flat (non-child) node this is just the node's own autonomy (no ancestor planner);
+/// for a `child/…` node it is `min(child, planner)`, and a deeper `child/child/…` node
+/// clamps against EVERY planner on its path. Pure + deterministic (a string decode over
+/// the strategy tree), so it replays identically. Falls back to the node's own autonomy
+/// when an ancestor planner can't be resolved (defensive; the engine only builds tasks
+/// for resolvable nodes).
+pub(super) fn effective_autonomy(def: &WorkflowDef, node: &NodeId) -> DelegateAutonomy {
+    let own = step_for_node(def, node).map_or(DelegateAutonomy::ReadOnly, |step| step.autonomy);
+    ancestor_planner_autonomies(&def.strategy, node.as_str())
+        .into_iter()
+        .fold(own, intersect_autonomy)
+}
+
+/// The autonomy of every ANCESTOR `Hierarchical` planner on `node`'s path: one per
+/// `child/` prefix the node descends through. A `child/X` node has the root planner as
+/// its sole ancestor; a `child/child/X` node has the root planner AND the child
+/// planner. Pure walk over the strategy tree (the planner step lives at each
+/// `Hierarchical` level the node passes into).
+fn ancestor_planner_autonomies(strategy: &Strategy, node: &str) -> Vec<DelegateAutonomy> {
+    let mut ancestors = Vec::new();
+    collect_ancestor_planners(strategy, node, &mut ancestors);
+    ancestors
+}
+
+fn collect_ancestor_planners(strategy: &Strategy, node: &str, out: &mut Vec<DelegateAutonomy>) {
+    // Only a `child/…` node has an ancestor planner: it descends into the current
+    // strategy's Hierarchical child, so this level's planner is its ancestor.
+    let Some(inner) = node.strip_prefix(crate::flow::CHILD_PREFIX) else {
+        return;
+    };
+    if let Strategy::Hierarchical { planner, child } = strategy {
+        out.push(planner.autonomy);
+        // Recurse so a deeper child clamps against the child planner too.
+        collect_ancestor_planners(child, inner, out);
+    }
 }
 
 /// Resolve a node id against a (possibly child) strategy. Pure string decode over the

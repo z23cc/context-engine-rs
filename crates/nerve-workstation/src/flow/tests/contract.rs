@@ -293,3 +293,68 @@ fn per_node_snapshot_generation_is_pinned_recorded_and_replayed() {
         "replay re-pins each node's recorded generation"
     );
 }
+
+#[test]
+fn parallel_wave_pins_one_generation_for_every_branch_regardless_of_thread_timing() {
+    // Finding M: every branch in a PARALLEL wave must record the SAME snapshot
+    // generation, pinned ONCE on the engine thread before the wave spawns — not read
+    // independently inside each concurrent branch (which made the recorded generation
+    // depend on thread timing under concurrent mutation). The provider here BUMPS on
+    // each call; if it were called per-branch the branches would record distinct
+    // generations, but pinned per-wave they all record the SAME first value.
+    let workflow = def(
+        "gen-parallel",
+        Strategy::Parallel {
+            branches: vec![
+                cli_step("branch a"),
+                cli_step("branch b"),
+                cli_step("branch c"),
+            ],
+            join: Join::All,
+        },
+    );
+    // A provider that returns 100, 101, … on successive calls AND sleeps a touch, so a
+    // per-branch (concurrent) call would interleave nondeterministically; a per-wave
+    // call is made exactly once.
+    let counter = Arc::new(AtomicU32::new(100));
+    let counter_in = Arc::clone(&counter);
+    let provider = move |_def: &nerve_runtime::WorkflowDef, _node: &str| {
+        let g = counter_in.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(5));
+        u64::from(g)
+    };
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let resolver = GenerationResolver {
+        seen: Arc::clone(&seen),
+    };
+    let ledger = Arc::new(WorkerLedger::new());
+    let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
+    Driver::new(&resolver, Arc::clone(&ledger), approver, None)
+        .with_concurrency(8) // force all three branches to overlap
+        .with_generation(&provider)
+        .run(&workflow, &CancelToken::never());
+
+    // Every branch recorded the SAME generation (the one wave pin), and the provider
+    // was consulted exactly once (so the counter advanced by exactly 1).
+    let recorded = ledger.node_generations();
+    assert_eq!(recorded.get("branch-0"), Some(&100));
+    assert_eq!(recorded.get("branch-1"), Some(&100));
+    assert_eq!(recorded.get("branch-2"), Some(&100));
+    assert_eq!(
+        crate::sync::lock_recover(&seen).len(),
+        3,
+        "all three branches ran"
+    );
+    assert_eq!(
+        counter_after(&counter),
+        101,
+        "the generation provider was consulted ONCE for the whole wave"
+    );
+}
+
+/// Read the next value the counter would yield (without consuming), for asserting how
+/// many times the per-wave generation provider was consulted.
+fn counter_after(counter: &Arc<AtomicU32>) -> u32 {
+    counter.load(Ordering::SeqCst)
+}

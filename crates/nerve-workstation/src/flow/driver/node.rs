@@ -34,6 +34,7 @@ impl Driver<'_> {
         node: &NodeId,
         step_index: usize,
         slot: Option<WorkerSlot>,
+        wave_generation: u64,
         cancel: &CancelToken,
     ) -> NodeRun {
         // The process-global worker slot (C3b, the semaphore that bounds
@@ -53,17 +54,23 @@ impl Driver<'_> {
         if let Some(observer) = self.observer {
             observer.node_started(node.as_str(), &step_def.worker);
         }
-        let task = self.build_task(step_def, def, node, step_index);
-        let ctx = self.worker_context(def, node);
+        // The node's EFFECTIVE autonomy: its declared autonomy intersected with every
+        // ancestor planner's, so a Hierarchical child can only NARROW its parent's
+        // authority (finding H, design §6 monotone de-escalation). For a flat node this
+        // is its own autonomy; for a `child/…` node it is `min(child, planner…)`.
+        let autonomy = crate::flow::resolve::effective_autonomy(def, node);
+        let task = self.build_task(step_def, def, node, step_index, autonomy);
+        let ctx = self.worker_context(node, wave_generation);
         // Writer-node path-lease (C4, design §6): a writer (Edit/Full autonomy) holds
         // its scope's lease for the whole turn, so two writer-nodes on overlapping
         // scope SERIALIZE (never concurrent) — the safety property + the precondition
-        // for replay fidelity under file mutation. A reader takes no lease. The
+        // for replay fidelity under file mutation. A reader takes no lease. Keyed by the
+        // EFFECTIVE autonomy, so a child clamped to ReadOnly takes no writer lease. The
         // `lease` Arc and its `_lease_guard` both live for the body of `run_node`
         // (across `worker.start`); the guard releases when this returns.
         let lease = self
             .leases
-            .and_then(|leases| leases.lease_for(step_def.autonomy, self.root.as_deref()));
+            .and_then(|leases| leases.lease_for(autonomy, self.root.as_deref()));
         let _lease_guard = lease.as_ref().map(|scope| crate::sync::lock_recover(scope));
         // The node-start to record FIRST (the rendered prompt + pinned generation,
         // design §5): the worker is genuinely starting here, so this is recorded for
@@ -133,6 +140,7 @@ impl Driver<'_> {
         def: &WorkflowDef,
         node: &NodeId,
         step_index: usize,
+        autonomy: nerve_runtime::DelegateAutonomy,
     ) -> WorkerTask {
         let ledger = Arc::clone(&self.ledger);
         let prev_node = (is_pipeline(def) && step_index > 0).then(|| NodeId::stage(step_index - 1));
@@ -154,8 +162,15 @@ impl Driver<'_> {
             // the tape) and the CLI approval-projection namespace.
             node_id: node.to_string(),
             prompt,
-            autonomy: step_def.autonomy,
+            // The EFFECTIVE autonomy (already intersected with every ancestor planner's
+            // by `effective_autonomy`, finding H), so a Hierarchical child can only
+            // narrow its parent's authority — never widen it.
+            autonomy,
             model: provider_model(&step_def.worker),
+            // Tool filter is the intersection with each ancestor planner's (monotone
+            // de-escalation, finding H). A declared `Step` carries no per-step filter
+            // today, so the intersection is vacuously `None` (∩ of empties); the
+            // de-escalation seam is the `autonomy` clamp above, where authority lives.
             tool_filter: None,
             // Carve this node's grant from the fleet envelope (C3b, design §6): the
             // per-node ceiling is the remaining fleet budget, INTERSECTED so a node
@@ -181,17 +196,18 @@ impl Driver<'_> {
         }
     }
 
-    /// Build the [`WorkerContext`] for a node, pinning the `snapshot_generation` at
-    /// node-start (design §5, replay fidelity under file mutation). The generation is
-    /// resolved from the optional `generation` provider — the host (flow job) supplies
-    /// one backed by the live snapshot, so a node that mutated files makes a LATER
-    /// node observe a different generation, recorded honestly into the ledger. The
-    /// CLI driver and tests leave it unset, pinning `0` (a stable, file-mutation-free
-    /// generation), which keeps their replay byte-identical.
-    fn worker_context(&self, def: &WorkflowDef, node: &NodeId) -> WorkerContext {
+    /// Build the [`WorkerContext`] for a node with the `wave_generation` already pinned
+    /// ONCE for the whole wave on the engine thread (design §5, finding M). Pinning per
+    /// wave — not per concurrent `run_node` — makes the recorded generation independent
+    /// of thread timing: every branch in a parallel wave starts against the SAME
+    /// snapshot, so a concurrent external/steer mutation can't make the recorded
+    /// per-node generations depend on which branch read the live snapshot first. The CLI
+    /// driver and tests pin `0` (a stable, file-mutation-free generation), keeping their
+    /// replay byte-identical.
+    fn worker_context(&self, node: &NodeId, wave_generation: u64) -> WorkerContext {
         WorkerContext {
             root: self.root.clone(),
-            snapshot_generation: self.pin_generation(def, node),
+            snapshot_generation: wave_generation,
             ledger: Arc::clone(&self.ledger),
             approver: Arc::clone(&self.approver),
             // Threaded so a CLI worker keys its approval by `flow_id` (finding F),
@@ -201,14 +217,17 @@ impl Driver<'_> {
         }
     }
 
-    /// Resolve the snapshot generation to pin for `node` at start. A `generation`
-    /// provider (the live snapshot, supplied by the host) is consulted per node-start;
-    /// without one the generation is `0` (the deterministic default for the CLI driver
-    /// and tests). Pure given the provider — replay supplies a provider that returns
-    /// the node's RECORDED generation, so the pinned value matches the record run.
-    fn pin_generation(&self, def: &WorkflowDef, node: &NodeId) -> u64 {
+    /// Pin the snapshot generation for an entire wave ONCE, on the engine thread, before
+    /// any branch spawns (design §5, finding M). A `generation` provider (the live
+    /// snapshot, supplied by the host) is consulted a SINGLE time per wave — keyed by the
+    /// wave's FIRST admitted node in declared order — so all branches in the wave record
+    /// the same generation regardless of completion/thread timing. Without a provider the
+    /// generation is `0` (the deterministic default for the CLI driver and tests). Pure
+    /// given the provider — replay supplies a provider returning each node's RECORDED
+    /// generation (all equal within a wave), so the pinned value matches the record run.
+    pub(super) fn pin_wave_generation(&self, def: &WorkflowDef, first_node: &NodeId) -> u64 {
         match &self.generation {
-            Some(provider) => provider(def, node.as_str()),
+            Some(provider) => provider(def, first_node.as_str()),
             None => 0,
         }
     }
@@ -217,12 +236,31 @@ impl Driver<'_> {
 /// The deterministic split item a `map-{i}` node of a `MapReduce` strategy sees as its
 /// `{{split}}` (design §3), or `None` for any other node/strategy. A pure function of
 /// the `WorkflowDef` + node id (the split is data, no filesystem walk), so a map worker
-/// renders byte-identically on replay.
+/// renders byte-identically on replay. A nested `child/map-{i}` node (a `Hierarchical`
+/// whose child is a `MapReduce`) resolves against the child strategy by stripping the
+/// `child/` prefix and recursing — mirroring [`step_in_strategy`](crate::flow::resolve)
+/// — so a nested map node still finds its shard (finding L).
 fn map_split_item(def: &WorkflowDef, node: &NodeId) -> Option<String> {
-    let nerve_runtime::Strategy::MapReduce { over, .. } = &def.strategy else {
+    split_item_in_strategy(&def.strategy, node.as_str())
+}
+
+/// Resolve a (possibly `child/`-prefixed) map node's split item against `strategy`,
+/// descending into a `Hierarchical` child per stripped prefix until a `MapReduce` is
+/// reached. Pure string decode, total over the closed enum.
+fn split_item_in_strategy(strategy: &nerve_runtime::Strategy, node: &str) -> Option<String> {
+    // A child-flow node delegates to the Hierarchical child strategy, prefix stripped.
+    if let Some(inner) = node.strip_prefix(crate::flow::CHILD_PREFIX) {
+        return match strategy {
+            nerve_runtime::Strategy::Hierarchical { child, .. } => {
+                split_item_in_strategy(child, inner)
+            }
+            _ => None,
+        };
+    }
+    let nerve_runtime::Strategy::MapReduce { over, .. } = strategy else {
         return None;
     };
-    let index: usize = node.as_str().strip_prefix("map-")?.parse().ok()?;
+    let index: usize = node.strip_prefix("map-")?.parse().ok()?;
     crate::flow::split_item(over, index)
 }
 
