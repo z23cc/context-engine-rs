@@ -777,6 +777,48 @@
             "task"
           ],
           "type": "object"
+        },
+        {
+          "description": "Steer a live delegated session with a follow-up user message, running one more turn against the same long-lived agent process. Pure protocol vocabulary: the host job manager looks up the live session (DA-5a) and continues it; progress streams back as [`crate::RuntimeEvent::DelegateProgress`]. `session_id` is the `job_id` of the originating [`Self::DelegateStart`] job (a started delegated session keeps that id for its whole lifetime).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "delegate.steer"
+              ],
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "End a live delegated session: close the agent process's stdin (which it treats as EOF and exits on) and reap it. Pure protocol vocabulary; the host job manager deregisters the live session. `session_id` is the originating [`Self::DelegateStart`] job id (see [`Self::DelegateSteer`]).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "delegate.close"
+              ],
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id"
+          ],
+          "type": "object"
         }
       ]
     },

@@ -24,6 +24,8 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "auth.status",
     "auth.logout",
     "delegate.start",
+    "delegate.steer",
+    "delegate.close",
 ];
 
 /// Transport-neutral command understood by human-facing runtime adapters.
@@ -159,6 +161,20 @@ pub enum RuntimeCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
+    /// Steer a live delegated session with a follow-up user message, running one
+    /// more turn against the same long-lived agent process. Pure protocol
+    /// vocabulary: the host job manager looks up the live session (DA-5a) and
+    /// continues it; progress streams back as [`crate::RuntimeEvent::DelegateProgress`].
+    /// `session_id` is the `job_id` of the originating [`Self::DelegateStart`] job
+    /// (a started delegated session keeps that id for its whole lifetime).
+    #[serde(rename = "delegate.steer")]
+    DelegateSteer { session_id: String, message: String },
+    /// End a live delegated session: close the agent process's stdin (which it
+    /// treats as EOF and exits on) and reap it. Pure protocol vocabulary; the host
+    /// job manager deregisters the live session. `session_id` is the originating
+    /// [`Self::DelegateStart`] job id (see [`Self::DelegateSteer`]).
+    #[serde(rename = "delegate.close")]
+    DelegateClose { session_id: String },
 }
 
 /// Autonomy posture handed to a delegated external agent CLI, mapping to each
@@ -261,6 +277,8 @@ impl RuntimeCommand {
             Self::AuthStatus { .. } => "auth.status",
             Self::AuthLogout { .. } => "auth.logout",
             Self::DelegateStart { .. } => "delegate.start",
+            Self::DelegateSteer { .. } => "delegate.steer",
+            Self::DelegateClose { .. } => "delegate.close",
         }
     }
 
@@ -284,7 +302,9 @@ impl RuntimeCommand {
             | Self::AuthComplete { .. }
             | Self::AuthStatus { .. }
             | Self::AuthLogout { .. }
-            | Self::DelegateStart { .. } => None,
+            | Self::DelegateStart { .. }
+            | Self::DelegateSteer { .. }
+            | Self::DelegateClose { .. } => None,
         }
     }
 }
@@ -372,6 +392,43 @@ mod tests {
             other => panic!("unexpected variant: {}", other.name()),
         }
         assert!(RUNTIME_COMMAND_NAMES.contains(&"delegate.start"));
+    }
+
+    #[test]
+    fn delegate_steer_and_close_round_trip() {
+        let steer: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "delegate.steer",
+            "session_id": "job-7",
+            "message": "now run the tests",
+        }))
+        .expect("parse delegate.steer");
+        assert_eq!(steer.name(), "delegate.steer");
+        assert_eq!(steer.tool_name(), None);
+        match steer {
+            RuntimeCommand::DelegateSteer {
+                session_id,
+                message,
+            } => {
+                assert_eq!(session_id, "job-7");
+                assert_eq!(message, "now run the tests");
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+
+        let close: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "delegate.close",
+            "session_id": "job-7",
+        }))
+        .expect("parse delegate.close");
+        assert_eq!(close.name(), "delegate.close");
+        assert_eq!(close.tool_name(), None);
+        match close {
+            RuntimeCommand::DelegateClose { session_id } => assert_eq!(session_id, "job-7"),
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"delegate.steer"));
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"delegate.close"));
     }
 
     #[test]

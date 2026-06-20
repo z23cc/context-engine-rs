@@ -94,13 +94,25 @@ impl SandboxLauncher for ProcessLauncher {
             timed_out,
         })
     }
+
+    fn launch_persistent(
+        &self,
+        spec: &CommandSpec,
+        policy: &SandboxPolicy,
+    ) -> Result<super::PersistentChild> {
+        super::PersistentChild::spawn(spec, policy)
+    }
 }
 
 /// Build and spawn the contained child with the shared containment (forced cwd,
 /// env-clear + scrubbed allowlist, isolated process group). `stdin` selects the
 /// stdin disposition (`null` for [`ProcessLauncher::launch`], a pipe for the
 /// streaming variant that feeds the task in).
-fn spawn_child(spec: &CommandSpec, policy: &SandboxPolicy, stdin: Stdio) -> Result<Child> {
+pub(super) fn spawn_child(
+    spec: &CommandSpec,
+    policy: &SandboxPolicy,
+    stdin: Stdio,
+) -> Result<Child> {
     let mut command = Command::new(&spec.command);
     command
         .args(&spec.args)
@@ -225,7 +237,7 @@ fn isolate_process_group(_command: &mut Command) {}
 /// Called only while the group leader is still alive (before reaping), so the
 /// group id cannot have been recycled.
 #[cfg(unix)]
-fn kill_process_tree(child: &mut Child) {
+pub(super) fn kill_process_tree(child: &mut Child) {
     let pgid = child.id() as libc::pid_t;
     // SAFETY: `killpg` is async-signal-safe; we target the child's own process
     // group, created via `process_group(0)`, and the leader has not been reaped.
@@ -235,7 +247,7 @@ fn kill_process_tree(child: &mut Child) {
 }
 
 #[cfg(not(unix))]
-fn kill_process_tree(child: &mut Child) {
+pub(super) fn kill_process_tree(child: &mut Child) {
     let _ = child.kill();
 }
 

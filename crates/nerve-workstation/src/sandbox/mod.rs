@@ -28,8 +28,10 @@
 // `memory.rs`, which also predeclare their not-yet-wired surface.
 #![allow(dead_code)]
 
+mod persistent;
 mod process;
 
+pub(crate) use persistent::PersistentChild;
 pub(crate) use process::ProcessLauncher;
 
 use anyhow::{Result, anyhow};
@@ -238,6 +240,29 @@ pub(crate) trait SandboxLauncher: Send + Sync {
             on_line(line);
         }
         Ok(output)
+    }
+
+    /// Spawn a **long-lived** contained child and hand back a [`PersistentChild`]
+    /// handle: an open stdin writer (so the caller can feed multiple messages over
+    /// time) plus a stdout line stream. Unlike [`launch_streaming`](Self::launch_streaming),
+    /// this does **not** wait for the process to exit — the child stays alive across
+    /// turns and exits when its stdin reaches EOF (the persistent steerable delegate
+    /// session, DA-5a). The same containment (forced cwd, scrubbed env, isolated
+    /// process group) applies; the wall-clock timeout does **not**, because a live
+    /// session is bounded by explicit close/cancel, not a single command's clock.
+    ///
+    /// The default implementation refuses: a launcher that cannot stream a real
+    /// subprocess cannot host a live session. [`ProcessLauncher`] overrides this;
+    /// [`RefuseLauncher`] inherits the refusal.
+    fn launch_persistent(
+        &self,
+        spec: &CommandSpec,
+        policy: &SandboxPolicy,
+    ) -> Result<PersistentChild> {
+        let _ = (spec, policy);
+        Err(anyhow!(
+            "persistent sessions are unavailable in this context (no contained sandbox backend)"
+        ))
     }
 }
 

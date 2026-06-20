@@ -5,7 +5,9 @@
 //! thread spawning, event emission wiring, and cooperative cancellation tokens.
 
 use crate::auth::AuthManager;
+use crate::delegate_live::LiveSessions;
 use crate::delegate_runtime::{self, DelegateAgent, DelegateError, DelegateParser};
+use crate::delegate_session::DelegateSession;
 use crate::policy::{Policy, ToolGate};
 use crate::sandbox::SandboxLauncher;
 use crate::session::SessionStore;
@@ -48,6 +50,10 @@ pub(crate) struct JobManager {
     /// launcher unless the daemon was started with `--allow-delegate`, so a
     /// served daemon refuses to spawn external agents by default.
     delegate_launcher: Arc<dyn SandboxLauncher>,
+    /// Live, steerable delegated sessions (DA-5a), keyed by their `delegate.start`
+    /// job id. A `claude` start job registers its session here and parks; later
+    /// `delegate.steer` / `delegate.close` commands route through this registry.
+    live_sessions: LiveSessions,
     jobs: Mutex<JobStore>,
     next_id: AtomicU64,
     emit: Arc<EventEmitter>,
@@ -165,6 +171,7 @@ impl JobManager {
             sessions,
             auth: AuthManager::new(Arc::clone(&emit)),
             delegate_launcher,
+            live_sessions: LiveSessions::default(),
             jobs: Mutex::new(JobStore::default()),
             next_id: AtomicU64::new(1),
             emit,
@@ -248,6 +255,11 @@ impl JobManager {
             }
         };
         if should_emit {
+            // A cancelled `delegate.start` job may be parked on a live session
+            // (DA-5a). The cancel token alone won't wake the parked thread (it
+            // waits on the close condvar), so also request close: the parked
+            // thread then force-kills the child and finishes as cancelled.
+            let _ = self.live_sessions.close(job_id);
             self.emit(RuntimeEvent::job_cancel_requested(job_id.to_string()));
         }
         Ok((requested, snapshot))
@@ -382,40 +394,151 @@ impl JobManager {
         }
     }
 
-    /// Execute a `delegate.start` command (DA-2): resolve the agent, build the
-    /// headless CLI argv, and run it through the [`SandboxLauncher`] streaming seam,
-    /// emitting each human-meaningful stream line as a
-    /// [`RuntimeEvent::DelegateProgress`]. The job result is the parsed
-    /// [`DelegateOutcome`] JSON. Honors `token` (a cancel kills the child).
-    ///
-    /// A refusing `delegate_launcher` (the default trust context) surfaces a clear
-    /// "delegation is disabled" error instead of spawning anything.
+    /// Execute a `delegate.*` command. `delegate.start` (DA-2/DA-5a) resolves the
+    /// agent and either runs a one-shot CLI (codex/gemini) or starts a live,
+    /// steerable `claude` session that parks for later steering; `delegate.steer`
+    /// and `delegate.close` (DA-5a) route into the live-session registry by
+    /// session id. A refusing `delegate_launcher` (the default trust context)
+    /// surfaces a clear "delegation is disabled" error instead of spawning.
     fn run_delegate_command(
         &self,
         job_id: &str,
         command: RuntimeCommand,
         token: &CancelToken,
     ) -> Result<Value, nerve_runtime::RuntimeError> {
-        let RuntimeCommand::DelegateStart {
-            agent,
-            task,
-            cwd,
-            autonomy,
-            model,
-        } = command
-        else {
-            return Err(nerve_runtime::RuntimeError::adapter(
-                "expected delegate.start command",
-            ));
-        };
-        let resolved = DelegateAgent::from_name(&agent)
+        match command {
+            RuntimeCommand::DelegateStart {
+                agent,
+                task,
+                cwd,
+                autonomy,
+                model,
+            } => self.run_delegate_start(job_id, &agent, &task, cwd, autonomy, model, token),
+            RuntimeCommand::DelegateSteer {
+                session_id,
+                message,
+            } => self.run_delegate_steer(&session_id, &message, token),
+            RuntimeCommand::DelegateClose { session_id } => self.run_delegate_close(&session_id),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected a delegate.* command",
+            )),
+        }
+    }
+
+    /// Start a delegated run: a `claude` agent becomes a live, steerable session
+    /// (DA-5a) that parks after turn 1; codex/gemini stay one-shot (DA-2).
+    #[allow(clippy::too_many_arguments)] // reason: one cohesive start call; the agent
+    // name, task, cwd, autonomy, and model are independent inputs to the spawn,
+    // and bundling them into a struct would add indirection without isolating any
+    // separate responsibility.
+    fn run_delegate_start(
+        &self,
+        job_id: &str,
+        agent: &str,
+        task: &str,
+        cwd: Option<String>,
+        autonomy: DelegateAutonomy,
+        model: Option<String>,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let resolved = DelegateAgent::from_name(agent)
             .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
         let root = self.delegate_root()?;
         let run_cwd = delegate_runtime::resolve_delegate_cwd(&root, cwd.as_deref())
             .map_err(delegate_error)?;
+        if resolved == DelegateAgent::Claude {
+            return self.run_delegate_live(job_id, &run_cwd, autonomy, task, model, token);
+        }
         self.run_delegate(
-            job_id, resolved, &agent, &task, &run_cwd, autonomy, model, token,
+            job_id, resolved, agent, task, &run_cwd, autonomy, model, token,
         )
+    }
+
+    /// Start a live `claude` session: spawn the persistent child, run turn 1
+    /// (streaming progress), register the session, and park the job thread until
+    /// close/cancel. The job stays `running` while parked, so a client can steer
+    /// it. The job result (delivered when it finally closes) is turn 1's outcome.
+    fn run_delegate_live(
+        &self,
+        job_id: &str,
+        cwd: &std::path::Path,
+        autonomy: DelegateAutonomy,
+        task: &str,
+        model: Option<String>,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let emit = Arc::clone(&self.emit);
+        let job = job_id.to_string();
+        let mut on_progress = |text: &str| {
+            emit(RuntimeEvent::delegate_progress(
+                job.clone(),
+                "claude",
+                text.to_string(),
+            ));
+        };
+        let (session, turn) = DelegateSession::start(
+            self.delegate_launcher.as_ref(),
+            cwd,
+            autonomy,
+            model.as_deref(),
+            task,
+            token,
+            &mut on_progress,
+        )
+        .map_err(|err| delegate_session_error("claude", &err.to_string()))?;
+        if token.is_cancelled() {
+            return Err(nerve_runtime::RuntimeError::cancelled());
+        }
+        let session_id = session.session_id().unwrap_or(job_id).to_string();
+        let result = turn.to_json(&session_id);
+        // Register and park: the session stays live for `delegate.steer` until a
+        // `delegate.close` (or cancel) wakes this thread to tear it down.
+        let handle = self.live_sessions.register(job_id, session);
+        self.live_sessions.park_until_closed(job_id, &handle);
+        if token.is_cancelled() {
+            return Err(nerve_runtime::RuntimeError::cancelled());
+        }
+        Ok(result)
+    }
+
+    /// Steer a live delegated session with a follow-up message, streaming this
+    /// turn's progress and returning the turn result. Errors if no live session is
+    /// registered under `session_id`.
+    fn run_delegate_steer(
+        &self,
+        session_id: &str,
+        message: &str,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let handle = self
+            .live_sessions
+            .get(session_id)
+            .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
+        let emit = Arc::clone(&self.emit);
+        let session = session_id.to_string();
+        let mut on_progress = |text: &str| {
+            emit(RuntimeEvent::delegate_progress(
+                session.clone(),
+                "claude",
+                text.to_string(),
+            ));
+        };
+        let turn = handle
+            .steer(message, token, &mut on_progress)
+            .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
+        if token.is_cancelled() {
+            return Err(nerve_runtime::RuntimeError::cancelled());
+        }
+        Ok(turn.to_json(session_id))
+    }
+
+    /// Close a live delegated session: request close (the parked start thread then
+    /// reaps the child and deregisters). Errors if the id is unknown.
+    fn run_delegate_close(&self, session_id: &str) -> Result<Value, nerve_runtime::RuntimeError> {
+        self.live_sessions
+            .close(session_id)
+            .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
+        Ok(json!({ "session_id": session_id, "closed": true }))
     }
 
     /// Resolve the workspace root a delegated run is confined to (the default
@@ -505,6 +628,19 @@ fn delegate_launch_error(agent: &str, err: &anyhow::Error) -> nerve_runtime::Run
         ));
     }
     nerve_runtime::RuntimeError::adapter(format!("delegate `{agent}` failed: {message}"))
+}
+
+/// Render a live-session start failure (DA-5a). Like [`delegate_launch_error`], a
+/// refused persistent spawn (the default trust context) points at the lift flag;
+/// any other failure (the child died, a turn stalled) is surfaced verbatim.
+fn delegate_session_error(agent: &str, message: &str) -> nerve_runtime::RuntimeError {
+    if message.contains("no contained sandbox backend") {
+        return nerve_runtime::RuntimeError::adapter(format!(
+            "delegation is disabled: cannot start a live `{agent}` session (start the daemon with \
+             --allow-delegate, which requires a non-refusing exec context)"
+        ));
+    }
+    nerve_runtime::RuntimeError::adapter(format!("delegate `{agent}` session failed: {message}"))
 }
 
 impl JobRecord {
@@ -632,7 +768,9 @@ enum Executor {
 fn executor_for(command: &RuntimeCommand) -> Executor {
     match command {
         RuntimeCommand::AgentRun { .. } => Executor::AgentRun,
-        RuntimeCommand::DelegateStart { .. } => Executor::Delegate,
+        RuntimeCommand::DelegateStart { .. }
+        | RuntimeCommand::DelegateSteer { .. }
+        | RuntimeCommand::DelegateClose { .. } => Executor::Delegate,
         RuntimeCommand::SessionStart { .. }
         | RuntimeCommand::SessionMessage { .. }
         | RuntimeCommand::SessionInterrupt { .. }
@@ -714,6 +852,8 @@ mod command_executor_partition {
             "auth.start" | "auth.status" | "auth.logout" => json!({ "provider": "p" }),
             "auth.complete" => json!({ "login_id": "l" }),
             "delegate.start" => json!({ "agent": "codex", "task": "t" }),
+            "delegate.steer" => json!({ "session_id": "s", "message": "m" }),
+            "delegate.close" => json!({ "session_id": "s" }),
             other => panic!(
                 "RUNTIME_COMMAND_NAMES gained `{other}` with no representative here; add one and \
                  wire the variant to exactly one executor in `run_job`"
