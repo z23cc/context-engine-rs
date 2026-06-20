@@ -212,6 +212,33 @@ pub(crate) trait SandboxLauncher: Send + Sync {
         policy: &SandboxPolicy,
         cancel: &CancelToken,
     ) -> Result<Output>;
+
+    /// Run `spec` like [`launch`](Self::launch), additionally feeding `stdin` to
+    /// the child and invoking `on_line` for each newline-terminated stdout line as
+    /// it arrives. This is the streaming variant used by the delegate runtime to
+    /// surface an external agent's progress live (DA-2): the agent's stdout is a
+    /// JSONL/stream-json event stream, so a per-line callback is the natural seam.
+    ///
+    /// The default implementation has no true streaming — it runs the blocking
+    /// [`launch`](Self::launch) (which ignores `stdin`) and then replays the
+    /// captured stdout line-by-line through `on_line`, so a non-streaming backend
+    /// still drives the same parser. [`ProcessLauncher`] overrides this with real
+    /// incremental line delivery and stdin write; [`RefuseLauncher`] refuses.
+    fn launch_streaming(
+        &self,
+        spec: &CommandSpec,
+        policy: &SandboxPolicy,
+        stdin: &str,
+        cancel: &CancelToken,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<Output> {
+        let _ = stdin;
+        let output = self.launch(spec, policy, cancel)?;
+        for line in output.stdout.lines() {
+            on_line(line);
+        }
+        Ok(output)
+    }
 }
 
 /// A launcher that refuses every command — the safe default for any context
@@ -261,6 +288,63 @@ mod tests {
             .launch(&spec, &policy, &CancelToken::never())
             .expect_err("refuse launcher must error");
         assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn refuse_launcher_refuses_streaming_too() {
+        // The streaming variant must also refuse (its default impl calls `launch`,
+        // which errors), so a delegate spawn cannot bypass the refusal by asking
+        // for the streaming path.
+        let spec = CommandSpec {
+            command: "echo".into(),
+            args: Vec::new(),
+        };
+        let policy = SandboxPolicy::for_root(None);
+        let mut lines = Vec::new();
+        let err = RefuseLauncher
+            .launch_streaming(&spec, &policy, "task", &CancelToken::never(), &mut |line| {
+                lines.push(line.to_string());
+            })
+            .expect_err("refuse launcher must error on streaming");
+        assert!(err.to_string().contains("unavailable"));
+        assert!(lines.is_empty(), "no lines from a refused stream");
+    }
+
+    /// A trivial launcher whose `launch` returns canned multi-line stdout, used to
+    /// prove the trait's default `launch_streaming` replays it line-by-line.
+    struct CannedReplay;
+
+    impl SandboxLauncher for CannedReplay {
+        fn launch(
+            &self,
+            _spec: &CommandSpec,
+            _policy: &SandboxPolicy,
+            _cancel: &CancelToken,
+        ) -> Result<Output> {
+            Ok(Output {
+                exit_code: Some(0),
+                stdout: "one\ntwo\nthree\n".into(),
+                stderr: String::new(),
+                timed_out: false,
+            })
+        }
+    }
+
+    #[test]
+    fn default_streaming_replays_captured_lines() {
+        let spec = CommandSpec {
+            command: "x".into(),
+            args: Vec::new(),
+        };
+        let policy = SandboxPolicy::for_root(None);
+        let mut lines = Vec::new();
+        let output = CannedReplay
+            .launch_streaming(&spec, &policy, "", &CancelToken::never(), &mut |line| {
+                lines.push(line.to_string());
+            })
+            .expect("canned stream");
+        assert_eq!(lines, vec!["one", "two", "three"]);
+        assert_eq!(output.exit_code, Some(0));
     }
 
     #[test]

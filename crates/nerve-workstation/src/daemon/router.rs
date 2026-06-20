@@ -27,13 +27,15 @@ impl RuntimeDaemonRouter {
         registry: ProviderRegistry,
         policy: Policy,
         session_store: Option<SessionStore>,
+        delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
         emit_notification: impl Fn(Value) + Send + Sync + 'static,
     ) -> Self {
-        let jobs = Arc::new(JobManager::new(
+        let jobs = Arc::new(JobManager::with_delegate_launcher(
             runtime,
             registry,
             policy,
             session_store,
+            delegate_launcher,
             sequenced_emitter(emit_notification),
         ));
         Self { jobs }

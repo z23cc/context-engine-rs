@@ -25,6 +25,15 @@ pub(crate) struct RuntimeDaemonArgs {
     /// bearer token (it is never anonymous) and is not embedded into the GUI.
     #[arg(long, requires = "http")]
     http_allow_remote: bool,
+    /// Allow `delegate.start` jobs to spawn external coding-agent CLIs (codex /
+    /// claude / gemini). Default off: the daemon refuses delegation, like it
+    /// refuses `run_command` exec. The delegated agent runs with the workspace as
+    /// its cwd, a scrubbed environment (its own on-disk login is used, never
+    /// nerve's credentials), network allowed (it calls its LLM API), and a long
+    /// wall-clock timeout. The delegated autonomy defaults to read-only; `edit` /
+    /// `full` require the explicit `autonomy` argument on `delegate.start`.
+    #[arg(long = "allow-delegate")]
+    allow_delegate: bool,
     #[command(flatten)]
     serve: workspace::ServeArgs,
 }
@@ -35,7 +44,7 @@ pub(crate) fn run(args: RuntimeDaemonArgs) -> Result<()> {
     match (args.stdio, args.http) {
         (true, Some(_)) => bail!("choose a single daemon transport: --stdio or --http <addr>"),
         (false, None) => bail!("daemon requires a transport: --stdio or --http <addr>"),
-        (true, None) => stdio::run_stdio(args.serve),
+        (true, None) => stdio::run_stdio(args.serve, args.allow_delegate),
         (false, Some(addr)) => {
             if !addr.ip().is_loopback() && !args.http_allow_remote {
                 bail!(
@@ -43,7 +52,7 @@ pub(crate) fn run(args: RuntimeDaemonArgs) -> Result<()> {
                      --http-allow-remote to expose it (the per-run bearer token is then required)"
                 );
             }
-            http::run_http(args.serve, addr)
+            http::run_http(args.serve, addr, args.allow_delegate)
         }
     }
 }

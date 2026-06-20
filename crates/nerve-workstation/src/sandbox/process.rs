@@ -14,8 +14,9 @@ use super::{CommandSpec, EnvPolicy, Output, SandboxLauncher, SandboxPolicy};
 use anyhow::{Context, Result};
 use nerve_core::CancelToken;
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// How often to poll a running child while waiting for it to exit, time out, or
@@ -32,22 +33,7 @@ impl SandboxLauncher for ProcessLauncher {
         policy: &SandboxPolicy,
         cancel: &CancelToken,
     ) -> Result<Output> {
-        let mut command = Command::new(&spec.command);
-        command
-            .args(&spec.args)
-            .current_dir(&policy.cwd)
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        isolate_process_group(&mut command);
-        for (name, value) in child_env(std::env::vars(), &policy.env) {
-            command.env(name, value);
-        }
-
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("failed to spawn `{}`", spec.command))?;
+        let mut child = spawn_child(spec, policy, Stdio::null())?;
 
         // Drain both pipes on dedicated threads so a chatty child can never
         // deadlock on a full pipe buffer while we poll for the timeout. On a
@@ -69,6 +55,122 @@ impl SandboxLauncher for ProcessLauncher {
             stderr,
             timed_out,
         })
+    }
+
+    fn launch_streaming(
+        &self,
+        spec: &CommandSpec,
+        policy: &SandboxPolicy,
+        stdin: &str,
+        cancel: &CancelToken,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<Output> {
+        let mut child = spawn_child(spec, policy, Stdio::piped())?;
+        // Write the task to the child's stdin on its own thread and drop the
+        // pipe (EOF), so a large task never deadlocks against a child that is
+        // still emitting stdout before it finishes reading stdin.
+        write_stdin(&mut child, stdin.to_owned());
+
+        let stdout = child.stdout.take().context("child stdout missing")?;
+        let stderr = child.stderr.take().context("child stderr missing")?;
+        let cap = policy.max_output;
+        // stdout is streamed line-by-line over a channel so the caller sees
+        // progress live; the captured text is still cap-bounded for the result.
+        let (line_tx, line_rx) = channel::<String>();
+        let stdout_reader = std::thread::spawn(move || stream_capped(stdout, cap, &line_tx));
+        let stderr_reader = std::thread::spawn(move || read_capped(stderr, cap));
+
+        let timed_out = drive_streaming(&mut child, policy.timeout, cancel, &line_rx, on_line)?;
+        // Drain any lines produced between the last poll and EOF.
+        drain_lines(&line_rx, on_line);
+
+        let status = child.wait().context("reaping streamed child")?;
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        Ok(Output {
+            exit_code: status.code(),
+            stdout,
+            stderr,
+            timed_out,
+        })
+    }
+}
+
+/// Build and spawn the contained child with the shared containment (forced cwd,
+/// env-clear + scrubbed allowlist, isolated process group). `stdin` selects the
+/// stdin disposition (`null` for [`ProcessLauncher::launch`], a pipe for the
+/// streaming variant that feeds the task in).
+fn spawn_child(spec: &CommandSpec, policy: &SandboxPolicy, stdin: Stdio) -> Result<Child> {
+    let mut command = Command::new(&spec.command);
+    command
+        .args(&spec.args)
+        .current_dir(&policy.cwd)
+        .env_clear()
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_process_group(&mut command);
+    for (name, value) in child_env(std::env::vars(), &policy.env) {
+        command.env(name, value);
+    }
+    command
+        .spawn()
+        .with_context(|| format!("failed to spawn `{}`", spec.command))
+}
+
+/// Feed `input` to the child's stdin on a detached thread, then close the pipe so
+/// the child observes EOF. Errors (e.g. the child closed stdin early) are ignored:
+/// a broken-pipe write must not abort the run.
+fn write_stdin(child: &mut Child, input: String) {
+    let Some(mut stdin) = child.stdin.take() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+        // Dropping `stdin` here closes the write end → the child reads EOF.
+    });
+}
+
+/// Poll the child to exit / time out / cancel, forwarding any streamed stdout
+/// lines to `on_line` between polls so progress is live. Returns whether the
+/// child was killed by the wall-clock timeout. The actual reap is the caller's.
+fn drive_streaming(
+    child: &mut Child,
+    timeout: Duration,
+    cancel: &CancelToken,
+    lines: &Receiver<String>,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        drain_lines(lines, on_line);
+        if child
+            .try_wait()
+            .context("polling streamed child")?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        if cancel.is_cancelled() {
+            kill_process_tree(child);
+            return Ok(false);
+        }
+        if Instant::now() >= deadline {
+            if child.try_wait().context("final streamed status")?.is_some() {
+                return Ok(false);
+            }
+            kill_process_tree(child);
+            return Ok(true);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Forward every line currently buffered in the channel to `on_line` without
+/// blocking (the producer thread sends as it reads; this is the consumer side).
+fn drain_lines(lines: &Receiver<String>, on_line: &mut dyn FnMut(&str)) {
+    while let Ok(line) = lines.try_recv() {
+        on_line(&line);
     }
 }
 
@@ -187,6 +289,34 @@ fn read_capped(mut reader: impl Read, cap: usize) -> String {
             Ok(n) => {
                 total += n;
                 append_capped(&mut head, &mut tail, head_cap, tail_cap, &scratch[..n]);
+            }
+            Err(_) => break,
+        }
+    }
+    finalize_output(&head, &tail, total, cap)
+}
+
+/// Read `reader` line by line, sending each newline-terminated line over `lines`
+/// for live forwarding while *also* accumulating the cap-bounded capture that
+/// becomes the run's `stdout`. The send is best-effort: if the consumer hung up
+/// (e.g. the run was cancelled), the line is still captured. Returns the same
+/// head+tail capped string as [`read_capped`].
+fn stream_capped(reader: impl Read, cap: usize, lines: &Sender<String>) -> String {
+    let head_cap = cap / 2;
+    let tail_cap = cap - head_cap;
+    let mut head: Vec<u8> = Vec::new();
+    let mut tail: VecDeque<u8> = VecDeque::new();
+    let mut total = 0usize;
+    let mut buf = BufReader::new(reader);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match buf.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                total += line.len();
+                append_capped(&mut head, &mut tail, head_cap, tail_cap, line.as_bytes());
+                let _ = lines.send(line.trim_end_matches(['\n', '\r']).to_string());
             }
             Err(_) => break,
         }
@@ -367,6 +497,32 @@ mod tests {
             assert!(out.timed_out, "expected the wall-clock kill to fire");
             // Killed by signal → no exit code.
             assert_eq!(out.exit_code, None);
+        }
+
+        #[test]
+        fn streaming_feeds_stdin_and_delivers_lines() {
+            // `cat` echoes its stdin to stdout line-by-line: this proves the
+            // streaming path both writes the task to stdin AND surfaces each
+            // newline-terminated line through `on_line` (the DelegateProgress seam).
+            let spec = CommandSpec {
+                command: "/bin/cat".into(),
+                args: Vec::new(),
+            };
+            let mut lines = Vec::new();
+            let out = ProcessLauncher
+                .launch_streaming(
+                    &spec,
+                    &policy(Duration::from_secs(10)),
+                    "alpha\nbeta\ngamma\n",
+                    &CancelToken::never(),
+                    &mut |line| lines.push(line.to_string()),
+                )
+                .expect("cat streams");
+            assert_eq!(out.exit_code, Some(0));
+            assert!(!out.timed_out);
+            assert_eq!(lines, vec!["alpha", "beta", "gamma"]);
+            // The captured stdout mirrors the streamed lines.
+            assert_eq!(out.stdout, "alpha\nbeta\ngamma\n");
         }
 
         #[test]

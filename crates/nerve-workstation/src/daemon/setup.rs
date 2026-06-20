@@ -16,8 +16,14 @@ use std::sync::Arc;
 
 /// Build the runtime daemon router for a transport, wiring its notification
 /// sink to `emit_notification` (stdout for stdio, the SSE hub for HTTP).
+///
+/// `allow_delegate` lifts the daemon's default refusal of `delegate.start` jobs:
+/// when set, the router injects a real (process) exec launcher for the delegate
+/// path *only* (the agent-run / session exec posture stays refusing). Off by
+/// default — the daemon refuses to spawn external agents.
 pub(super) fn build_router(
     serve_args: &workspace::ServeArgs,
+    allow_delegate: bool,
     emit_notification: impl Fn(Value) + Send + Sync + 'static,
 ) -> Result<RuntimeDaemonRouter> {
     let registry = ProviderRegistry::from_args(serve_args)?;
@@ -28,11 +34,18 @@ pub(super) fn build_router(
     // `.nerve/sessions` (global config home when no root is served).
     let session_store =
         SessionStore::for_scope(serve_args.roots.first().map(|root| root.as_path())).ok();
+    // Trust context for delegation: a real launcher only under --allow-delegate.
+    let delegate_launcher = if allow_delegate {
+        crate::sandbox::process_launcher()
+    } else {
+        crate::sandbox::refuse_launcher()
+    };
     Ok(RuntimeDaemonRouter::new(
         runtime,
         registry,
         policy,
         session_store,
+        delegate_launcher,
         emit_notification,
     ))
 }

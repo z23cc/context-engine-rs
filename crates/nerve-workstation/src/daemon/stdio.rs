@@ -5,10 +5,10 @@ use serde_json::Value;
 use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 
-pub(super) fn run_stdio(serve_args: workspace::ServeArgs) -> Result<()> {
+pub(super) fn run_stdio(serve_args: workspace::ServeArgs, allow_delegate: bool) -> Result<()> {
     let stdout = Arc::new(Mutex::new(io::stdout()));
     let notification_stdout = Arc::clone(&stdout);
-    let router = super::setup::build_router(&serve_args, move |value| {
+    let router = super::setup::build_router(&serve_args, allow_delegate, move |value| {
         let _ = write_locked(&notification_stdout, value);
     })?;
     let stdin = io::stdin();

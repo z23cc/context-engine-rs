@@ -73,11 +73,17 @@ const GUI_HTML: &str = include_str!("gui.html");
 const GUI_TOKEN_PLACEHOLDER: &str = "__NERVE_DAEMON_TOKEN__";
 
 /// Run the daemon HTTP transport, blocking until the process exits.
-pub(super) fn run_http(serve_args: workspace::ServeArgs, addr: SocketAddr) -> Result<()> {
+pub(super) fn run_http(
+    serve_args: workspace::ServeArgs,
+    addr: SocketAddr,
+    allow_delegate: bool,
+) -> Result<()> {
     let security = HttpSecurity::new(addr);
     let hub = Arc::new(SseHub::new());
     let broadcast = Arc::clone(&hub);
-    let router = super::setup::build_router(&serve_args, move |value| broadcast.broadcast(value))?;
+    let router = super::setup::build_router(&serve_args, allow_delegate, move |value| {
+        broadcast.broadcast(value)
+    })?;
     let ctx = Arc::new(HttpContext {
         router,
         hub,
@@ -682,6 +688,7 @@ mod tests {
             ProviderRegistry::default(),
             Policy::default(),
             None,
+            crate::sandbox::refuse_launcher(),
             |_| {},
         );
         (root, router)

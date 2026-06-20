@@ -1,3 +1,5 @@
+mod delegate;
+
 use super::router::{RuntimeDaemonRouter, runtime_event_notification};
 use crate::jobs::JobManager;
 use crate::providers::ProviderRegistry;
@@ -41,6 +43,14 @@ fn rpc(id: impl Into<Option<Value>>, method: &str, params: Value) -> RpcMessage 
 fn output_router(
     runtime: Arc<tools::NerveRuntime>,
 ) -> (RuntimeDaemonRouter, Arc<Mutex<Vec<Value>>>) {
+    // Default daemon trust context: delegation refused.
+    output_router_with_delegate(runtime, crate::sandbox::refuse_launcher())
+}
+
+fn output_router_with_delegate(
+    runtime: Arc<tools::NerveRuntime>,
+    delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
+) -> (RuntimeDaemonRouter, Arc<Mutex<Vec<Value>>>) {
     let output = Arc::new(Mutex::new(Vec::new()));
     let event_output = Arc::clone(&output);
     let router = RuntimeDaemonRouter::new(
@@ -48,6 +58,7 @@ fn output_router(
         ProviderRegistry::default(),
         crate::policy::Policy::default(),
         None,
+        delegate_launcher,
         move |value| {
             event_output.lock().expect("output lock").push(value);
         },
@@ -277,50 +288,6 @@ fn job_failure_stores_error_and_emits_terminal_event() {
     let job = &response_with_id(&observed, json!(2))["result"]["job"];
     assert_eq!(job["status"], "failed");
     assert!(job["error"]["message"].is_string());
-}
-
-#[test]
-fn delegate_start_job_fails_with_not_yet_implemented_marker() {
-    // DA-1 stub: the protocol + job plumbing run end-to-end, but the delegate
-    // runtime (DA-2) is not yet implemented, so the job reaches a terminal
-    // failure carrying the explicit not-yet-implemented marker.
-    let fixture = runtime_with_file();
-    let (router, output) = output_router(Arc::clone(&fixture.runtime));
-    dispatch(
-        &router,
-        &output,
-        rpc(
-            json!(1),
-            "runtime/jobs/start",
-            json!({
-                "job_id": "delegate-job",
-                "command": {
-                    "kind": "delegate.start",
-                    "agent": "codex",
-                    "task": "add a test"
-                }
-            }),
-        ),
-    );
-    let failed = wait_for_job_event(&output, "job_failed", "delegate-job");
-    let message = failed["params"]["error"]["message"]
-        .as_str()
-        .expect("error message string");
-    assert!(message.contains("DA-2"), "{message}");
-    assert!(message.contains("codex"), "{message}");
-
-    let observed = dispatch(
-        &router,
-        &output,
-        rpc(
-            json!(2),
-            "runtime/jobs/get",
-            json!({ "job_id": "delegate-job" }),
-        ),
-    );
-    let job = &response_with_id(&observed, json!(2))["result"]["job"];
-    assert_eq!(job["status"], "failed");
-    assert_eq!(job["command"], "delegate.start");
 }
 
 #[test]

@@ -5,15 +5,17 @@
 //! thread spawning, event emission wiring, and cooperative cancellation tokens.
 
 use crate::auth::AuthManager;
+use crate::delegate_runtime::{self, DelegateAgent, DelegateError, DelegateParser};
 use crate::policy::{Policy, ToolGate};
+use crate::sandbox::SandboxLauncher;
 use crate::session::SessionStore;
 use crate::session_manager::SessionManager;
 use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::AgentEvent;
-use nerve_core::CancelToken;
+use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{
-    RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
-    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
+    DelegateAutonomy, RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobGetRequest,
+    RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -41,6 +43,11 @@ pub(crate) struct JobManager {
     sessions: SessionManager,
     /// Host executor for the protocol `auth.*` command family.
     auth: AuthManager,
+    /// Containment backend for `delegate.start` jobs, bound to the **trust
+    /// context** like [`agent::AgentRunConfig::exec_launcher`]: a refusing
+    /// launcher unless the daemon was started with `--allow-delegate`, so a
+    /// served daemon refuses to spawn external agents by default.
+    delegate_launcher: Arc<dyn SandboxLauncher>,
     jobs: Mutex<JobStore>,
     next_id: AtomicU64,
     emit: Arc<EventEmitter>,
@@ -97,12 +104,42 @@ impl fmt::Display for JobError {
 }
 
 impl JobManager {
+    /// Construct a [`JobManager`] that refuses delegation (the default daemon
+    /// trust context). Test-only convenience over [`with_delegate_launcher`];
+    /// production builds the router with an explicit launcher chosen by
+    /// `--allow-delegate`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn new(
         runtime: Arc<tools::NerveRuntime>,
         registry: ProviderRegistry,
         policy: Policy,
         session_store: Option<SessionStore>,
+        emit: impl Fn(RuntimeEvent) + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_delegate_launcher(
+            runtime,
+            registry,
+            policy,
+            session_store,
+            crate::sandbox::refuse_launcher(),
+            emit,
+        )
+    }
+
+    /// Construct a [`JobManager`] with an explicit delegate launcher. The daemon
+    /// composition root injects a real (non-refusing) launcher here only when
+    /// `--allow-delegate` is set; otherwise it passes a refusing launcher, so a
+    /// served daemon refuses delegation. Scoping the lift to the delegate launcher
+    /// keeps the agent-run / session exec posture (which refuses by trust context)
+    /// untouched.
+    #[must_use]
+    pub(crate) fn with_delegate_launcher(
+        runtime: Arc<tools::NerveRuntime>,
+        registry: ProviderRegistry,
+        policy: Policy,
+        session_store: Option<SessionStore>,
+        delegate_launcher: Arc<dyn SandboxLauncher>,
         emit: impl Fn(RuntimeEvent) + Send + Sync + 'static,
     ) -> Self {
         let emit: Arc<EventEmitter> = Arc::new(emit);
@@ -120,6 +157,7 @@ impl JobManager {
             session_store,
             sessions,
             auth: AuthManager::new(Arc::clone(&emit)),
+            delegate_launcher,
             jobs: Mutex::new(JobStore::default()),
             next_id: AtomicU64::new(1),
             emit,
@@ -235,7 +273,7 @@ impl JobManager {
         // `RUNTIME_COMMAND_NAMES`.
         let outcome = match executor_for(&command) {
             Executor::AgentRun => self.run_agent_command(&job_id, command, &token),
-            Executor::Delegate => run_delegate_command(command),
+            Executor::Delegate => self.run_delegate_command(&job_id, command, &token),
             Executor::Session => self.sessions.handle_command(command, &token),
             Executor::Auth => self.auth.handle_command(command, &token),
             Executor::CoreHub => self.runtime.handle_command_cancellable(command, &token),
@@ -331,25 +369,129 @@ impl JobManager {
         }
     }
 
+    /// Execute a `delegate.start` command (DA-2): resolve the agent, build the
+    /// headless CLI argv, and run it through the [`SandboxLauncher`] streaming seam,
+    /// emitting each human-meaningful stream line as a
+    /// [`RuntimeEvent::DelegateProgress`]. The job result is the parsed
+    /// [`DelegateOutcome`] JSON. Honors `token` (a cancel kills the child).
+    ///
+    /// A refusing `delegate_launcher` (the default trust context) surfaces a clear
+    /// "delegation is disabled" error instead of spawning anything.
+    fn run_delegate_command(
+        &self,
+        job_id: &str,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let RuntimeCommand::DelegateStart {
+            agent,
+            task,
+            cwd,
+            autonomy,
+            model,
+        } = command
+        else {
+            return Err(nerve_runtime::RuntimeError::adapter(
+                "expected delegate.start command",
+            ));
+        };
+        let resolved = DelegateAgent::from_name(&agent)
+            .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
+        let root = self.delegate_root()?;
+        let run_cwd = delegate_runtime::resolve_delegate_cwd(&root, cwd.as_deref())
+            .map_err(delegate_error)?;
+        self.run_delegate(
+            job_id, resolved, &agent, &task, &run_cwd, autonomy, model, token,
+        )
+    }
+
+    /// Resolve the workspace root a delegated run is confined to (the default
+    /// workspace's first root). Delegation needs a concrete root to confine `cwd`.
+    fn delegate_root(&self) -> Result<std::path::PathBuf, nerve_runtime::RuntimeError> {
+        self.runtime
+            .resolver()
+            .resolve_workspace(None)
+            .ok()
+            .and_then(|workspace| workspace.roots().first().map(|root| root.path.clone()))
+            .ok_or_else(|| {
+                nerve_runtime::RuntimeError::adapter(
+                    "delegation requires a served workspace root (start the daemon with --root)",
+                )
+            })
+    }
+
+    /// Spawn the delegated CLI through the streaming launcher, forwarding progress
+    /// and parsing the stream into a [`DelegateOutcome`].
+    #[allow(clippy::too_many_arguments)] // reason: one cohesive spawn call; splitting the
+    // resolved/raw agent name, cwd, autonomy, and model into a struct would add
+    // indirection without separating any responsibility.
+    fn run_delegate(
+        &self,
+        job_id: &str,
+        resolved: DelegateAgent,
+        agent_name: &str,
+        task: &str,
+        cwd: &std::path::Path,
+        autonomy: DelegateAutonomy,
+        model: Option<String>,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let invocation =
+            delegate_runtime::build_command(resolved, task, cwd, autonomy, model.as_deref());
+        let policy = delegate_runtime::delegate_policy(cwd);
+        let mut parser = DelegateParser::new(resolved);
+        let emit = Arc::clone(&self.emit);
+        let job = job_id.to_string();
+        let agent_owned = agent_name.to_string();
+        let mut on_line = |line: &str| {
+            if let Some(text) = parser.ingest(line) {
+                emit(RuntimeEvent::delegate_progress(
+                    job.clone(),
+                    agent_owned.clone(),
+                    text,
+                ));
+            }
+        };
+        let output = self
+            .delegate_launcher
+            .launch_streaming(
+                &invocation.spec,
+                &policy,
+                &invocation.stdin,
+                token,
+                &mut on_line,
+            )
+            .map_err(|err| delegate_launch_error(agent_name, &err))?;
+        if token.is_cancelled() {
+            return Err(nerve_runtime::RuntimeError::cancelled());
+        }
+        let outcome = parser.finish(agent_name, output.exit_code, output.timed_out);
+        Ok(outcome.to_json())
+    }
+
     fn emit(&self, event: RuntimeEvent) {
         (self.emit)(event);
     }
 }
 
-/// Execute a `delegate.start` command. DA-1 stub: the protocol and job plumbing
-/// are proven end-to-end here, but the external-agent subprocess driving (DA-2)
-/// is not yet implemented, so the job fails immediately with a clear marker. DA-2
-/// replaces this body with the real subprocess runtime, streaming output via
-/// [`RuntimeEvent::DelegateProgress`].
-fn run_delegate_command(command: RuntimeCommand) -> Result<Value, nerve_runtime::RuntimeError> {
-    let RuntimeCommand::DelegateStart { agent, .. } = command else {
-        return Err(nerve_runtime::RuntimeError::adapter(
-            "expected delegate.start command",
+/// Map a delegate-runtime caller error (unknown agent / cwd escape) to a protocol
+/// adapter error.
+fn delegate_error(err: DelegateError) -> nerve_runtime::RuntimeError {
+    nerve_runtime::RuntimeError::adapter(err.to_string())
+}
+
+/// Render a launcher failure for a delegated spawn. A refusing launcher (the
+/// default daemon trust context) produces a message that points at the lift flag;
+/// any other spawn failure is surfaced verbatim.
+fn delegate_launch_error(agent: &str, err: &anyhow::Error) -> nerve_runtime::RuntimeError {
+    let message = err.to_string();
+    if message.contains("no contained sandbox backend") {
+        return nerve_runtime::RuntimeError::adapter(format!(
+            "delegation is disabled: cannot spawn agent `{agent}` (start the daemon with \
+             --allow-delegate, which requires a non-refusing exec context)"
         ));
-    };
-    Err(nerve_runtime::RuntimeError::adapter(format!(
-        "delegate runtime not yet implemented (DA-2): cannot run agent `{agent}`"
-    )))
+    }
+    nerve_runtime::RuntimeError::adapter(format!("delegate `{agent}` failed: {message}"))
 }
 
 impl JobRecord {
