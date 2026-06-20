@@ -64,6 +64,51 @@ pub fn provider_models_tool(provider: &str) -> Option<&'static str> {
     }
 }
 
+/// The agents a `/delegate` command accepts, matching the delegate runtime's
+/// catalog names (DA-1/DA-2). Listed in the hint/help and rejected otherwise.
+pub const DELEGATE_AGENTS: &[&str] = &["codex", "claude", "gemini"];
+
+/// A parsed `/delegate <agent> [task...]` argument string: the validated agent
+/// name plus the rest of the line as the task (empty when none was supplied).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegateArgs {
+    pub agent: String,
+    pub task: String,
+}
+
+/// Parse the `rest` of a `/delegate` command into an agent + task. The first
+/// whitespace-delimited token is the agent (must be one of [`DELEGATE_AGENTS`]);
+/// the remainder is the task. `Err` carries a user-facing hint: a missing agent
+/// or an unknown one.
+///
+/// # Errors
+/// Returns a hint string when no agent token is present or it is not a known
+/// delegate agent.
+pub fn parse_delegate(rest: &str) -> Result<DelegateArgs, String> {
+    let rest = rest.trim();
+    let (agent, task) = match rest.split_once(char::is_whitespace) {
+        Some((agent, task)) => (agent, task.trim()),
+        None => (rest, ""),
+    };
+    if agent.is_empty() {
+        return Err(format!(
+            "usage: /delegate <agent> [task] — agent ∈ {}",
+            DELEGATE_AGENTS.join("|")
+        ));
+    }
+    let agent = agent.to_ascii_lowercase();
+    if !DELEGATE_AGENTS.contains(&agent.as_str()) {
+        return Err(format!(
+            "unknown agent: {agent} — try {}",
+            DELEGATE_AGENTS.join("|")
+        ));
+    }
+    Ok(DelegateArgs {
+        agent,
+        task: task.to_string(),
+    })
+}
+
 /// One model row extracted from a model-list tool result. Tolerant of shape:
 /// a bare string, or an object with `id`/`slug`/`name` (+ optional `live`).
 fn extract_model_rows(result: &Value) -> Vec<String> {
@@ -138,6 +183,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "approval mode: always-ask|write|yolo",
     },
     CommandSpec {
+        name: "delegate",
+        hint: "start a steerable agent (codex|claude|gemini)",
+    },
+    CommandSpec {
+        name: "done",
+        hint: "end the active delegate session",
+    },
+    CommandSpec {
         name: "new",
         hint: "fresh session (clears history)",
     },
@@ -185,6 +238,8 @@ pub const HELP_TEXT: &str = "commands:\n  \
 /provider <name> [model]   switch provider (claude|chatgpt|xai)\n  \
 /models                    list the current provider's models\n  \
 /mode [always-ask|write|yolo]  set the approval mode (bare = show current)\n  \
+/delegate <agent> [task]   start a steerable delegate session (codex|claude|gemini)\n  \
+/done                      end the active delegate session (alias: /close)\n  \
 /new                       start a fresh session (clears history)\n  \
 /login [provider]          how to authenticate a provider\n  \
 /theme                     cycle the accent color\n  \
@@ -268,6 +323,46 @@ mod tests {
         assert_eq!(match_commands("/model x").len(), 0);
         assert_eq!(match_commands("hi").len(), 0);
         assert!(match_commands("/").len() >= 5);
+    }
+
+    #[test]
+    fn parse_delegate_splits_agent_and_task() {
+        assert_eq!(
+            parse_delegate("claude fix the bug"),
+            Ok(DelegateArgs {
+                agent: "claude".into(),
+                task: "fix the bug".into(),
+            })
+        );
+        // Bare agent → empty task (the handler prompts for one).
+        assert_eq!(
+            parse_delegate("codex"),
+            Ok(DelegateArgs {
+                agent: "codex".into(),
+                task: String::new(),
+            })
+        );
+        // Agent is lowercased to match the catalog names.
+        assert_eq!(
+            parse_delegate("GEMINI refactor").map(|d| d.agent),
+            Ok("gemini".into())
+        );
+    }
+
+    #[test]
+    fn parse_delegate_rejects_missing_and_unknown_agents() {
+        assert!(parse_delegate("").is_err());
+        assert!(parse_delegate("   ").is_err());
+        let err = parse_delegate("opus do it").expect_err("unknown agent");
+        assert!(err.contains("unknown agent: opus"), "{err}");
+    }
+
+    #[test]
+    fn delegate_and_done_are_in_palette_and_help() {
+        assert!(COMMANDS.iter().any(|c| c.name == "delegate"));
+        assert!(COMMANDS.iter().any(|c| c.name == "done"));
+        assert!(HELP_TEXT.contains("/delegate"));
+        assert!(HELP_TEXT.contains("/done"));
     }
 
     #[test]

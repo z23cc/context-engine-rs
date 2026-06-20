@@ -40,6 +40,16 @@ pub enum Mode {
     Approval,
 }
 
+/// The active delegated agent session driven from the chat input (DA-5d). Its
+/// `session_id` is the `job_id` of the `delegate.start` job (a started session
+/// keeps that id for its whole lifetime); while present, plain input steers it
+/// instead of messaging the chat session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegateSession {
+    pub session_id: String,
+    pub agent: String,
+}
+
 /// A pending approval request the modal renders and `on_approval_key` answers.
 /// Mirrors the TS `state.approval`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +96,9 @@ pub struct State {
     pub mode: Mode,
     /// Pending approval, when `mode == Approval` (T4 renders/handles it).
     pub approval: Option<ApprovalState>,
+    /// The active delegated agent session, when steering one (DA-5d). While set,
+    /// plain input steers this session and the header shows the steer indicator.
+    pub delegate_session: Option<DelegateSession>,
     /// The session's approval posture, shown in the header and pushed on `/mode`.
     pub approval_mode: ApprovalMode,
     /// True while a turn is in flight (drives the status line).
@@ -133,6 +146,7 @@ impl State {
             editor: Editor::new(),
             mode: Mode::Input,
             approval: None,
+            delegate_session: None,
             approval_mode: ApprovalMode::Yolo,
             running: false,
             hint: String::new(),

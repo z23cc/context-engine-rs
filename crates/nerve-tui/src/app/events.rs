@@ -60,7 +60,15 @@ pub fn apply_event(state: &mut State, event: &RuntimeEvent) -> bool {
             true
         }
         RuntimeEvent::SessionAgent { event, .. } => apply_agent_event(state, event),
-        RuntimeEvent::JobFailed { error, .. } => {
+        RuntimeEvent::JobFailed { job_id, error } => {
+            // A delegate-start job dying ends the steer session (DA-5d): clear it
+            // and note the failure (e.g. delegation disabled). Otherwise it is a
+            // chat-turn failure.
+            if clear_delegate_on_terminal(state, job_id) {
+                state.running = false;
+                state.push_notice(Tone::Error, error.message.clone());
+                return true;
+            }
             // A second message racing an in-flight turn: the genuine turn is still
             // live, so hint rather than clearing `running` / dumping a red line.
             if error.message.contains("is already running") {
@@ -71,7 +79,35 @@ pub fn apply_event(state: &mut State, event: &RuntimeEvent) -> bool {
             }
             true
         }
+        RuntimeEvent::JobCompleted { job_id } | RuntimeEvent::JobCancelled { job_id } => {
+            // The delegate-start job (whose id is the session id) reaching a
+            // terminal state means the session ended — clear the steer state so
+            // input returns to the chat (DA-5d).
+            if clear_delegate_on_terminal(state, job_id) {
+                state.running = false;
+                state.note("delegate session ended");
+                return true;
+            }
+            false
+        }
         _ => false,
+    }
+}
+
+/// If `job_id` is the active delegate session's id, clear it and report `true`
+/// (the caller surfaces the reason). A delegate session keeps the `delegate.start`
+/// job id for its whole lifetime, so a terminal event for that id ends the session.
+fn clear_delegate_on_terminal(state: &mut State, job_id: &str) -> bool {
+    if state
+        .delegate_session
+        .as_ref()
+        .map(|s| s.session_id.as_str())
+        == Some(job_id)
+    {
+        state.delegate_session = None;
+        true
+    } else {
+        false
     }
 }
 
@@ -281,5 +317,52 @@ mod tests {
         let mut state = State::new("p", "m");
         let redraw = apply_event(&mut state, &RuntimeEvent::job_completed("j"));
         assert!(!redraw);
+    }
+
+    use crate::app::state::DelegateSession;
+
+    fn with_delegate(session_id: &str, agent: &str) -> State {
+        let mut state = State::new("p", "m");
+        state.delegate_session = Some(DelegateSession {
+            session_id: session_id.into(),
+            agent: agent.into(),
+        });
+        state
+    }
+
+    #[test]
+    fn delegate_start_job_completed_clears_active_session() {
+        // The delegate session keeps the start-job id; a terminal event for it ends
+        // the session and returns input to the chat (DA-5d §2).
+        let mut state = with_delegate("del-1", "claude");
+        state.running = true;
+        let redraw = apply_event(&mut state, &RuntimeEvent::job_completed("del-1"));
+        assert!(redraw);
+        assert!(state.delegate_session.is_none());
+        assert!(!state.running);
+    }
+
+    #[test]
+    fn delegate_start_job_failed_clears_session_and_notes_error() {
+        let mut state = with_delegate("del-2", "claude");
+        let redraw = apply_event(
+            &mut state,
+            &RuntimeEvent::job_failed("del-2", RuntimeJobError::new("k", "delegation disabled")),
+        );
+        assert!(redraw);
+        assert!(state.delegate_session.is_none());
+        assert!(matches!(
+            state.blocks.last(),
+            Some(Block::Notice { tone: Tone::Error, text }) if text.contains("delegation disabled")
+        ));
+    }
+
+    #[test]
+    fn unrelated_terminal_event_keeps_delegate_session() {
+        // A `delegate.steer`/other job is a *separate* job from the start job, so its
+        // terminal event must not clear the session.
+        let mut state = with_delegate("del-3", "codex");
+        apply_event(&mut state, &RuntimeEvent::job_completed("tui-job-9"));
+        assert!(state.delegate_session.is_some());
     }
 }

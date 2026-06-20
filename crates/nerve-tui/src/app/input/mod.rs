@@ -18,6 +18,8 @@
 //!   Tab              complete the selected palette command
 //!   mouse wheel      scroll (handled in the event loop)
 
+mod delegate;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nerve_runtime::{ApprovalMode, RuntimeCommand, SessionApprovalDecision};
 use serde_json::Value;
@@ -30,6 +32,7 @@ use crate::ui::commands::{
     match_commands, parse_approval_mode, parse_command, provider_models_tool,
 };
 use crate::ui::theme::THEMES;
+use delegate::{SubmitRoute, submit_route};
 
 /// One-screen worth of rows to jump on PgUp/PgDn (a generous default; the loop
 /// clamps the scroll to the transcript length at render time).
@@ -218,22 +221,21 @@ impl Shell {
         self.send_message(text).await;
     }
 
-    /// Send a user message, with the TS guards (no session / already running).
+    /// Send a user message. When a delegate session is active, plain input steers
+    /// that session (`delegate.steer`) instead of messaging the chat
+    /// (`session.message`) (DA-5d); the routing + guards are decided purely by
+    /// [`submit_route`], so this method only applies the side effects.
     async fn send_message(&mut self, text: String) {
-        let Some(session_id) = self.state.session_id.clone() else {
-            self.state.hint = "session not ready yet".to_string();
-            return;
-        };
-        if self.state.running {
-            self.state.hint = "still working — Ctrl-C to interrupt".to_string();
-            return;
+        match submit_route(&self.state, text) {
+            SubmitRoute::Hint(hint) => self.state.hint = hint,
+            SubmitRoute::Send(command, echo) => {
+                self.state.push_user(&echo);
+                self.state.running = true;
+                self.state.scroll = 0;
+                self.state.end_stream();
+                self.send(*command).await;
+            }
         }
-        self.state.push_user(&text);
-        self.state.running = true;
-        self.state.scroll = 0;
-        self.state.end_stream();
-        self.send(RuntimeCommand::SessionMessage { session_id, text })
-            .await;
     }
 
     /// Dispatch a parsed slash command. Ports `#onCommand` (+ friendly aliases).
@@ -249,6 +251,8 @@ impl Shell {
             "yolo" => self.set_mode(ApprovalMode::Yolo).await,
             "write" => self.set_mode(ApprovalMode::Write).await,
             "ask" => self.set_mode(ApprovalMode::AlwaysAsk).await,
+            "delegate" => self.cmd_delegate(&rest).await,
+            "done" | "close" => self.cmd_done().await,
             "new" | "reset" => self.new_session().await,
             "login" => self.cmd_login(&rest),
             "theme" => self.cmd_theme(),
@@ -589,6 +593,35 @@ mod tests {
                 assert_eq!(session_id, "sess-3");
                 assert_eq!(request_id, "req-7");
                 assert_eq!(decision, SessionApprovalDecision::AllowAlways);
+            }
+            other => panic!("expected SessionRespond, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn respond_command_uses_the_events_session_id_for_a_delegate_approval() {
+        use nerve_runtime::RiskTier;
+        // A delegate tool's approval carries the delegate-job id as session_id (the
+        // `ApprovalRequested` event populates it). The respond must route there, not
+        // to the chat session — so the delegated agent gets the decision (DA-5d §3).
+        let approval = ApprovalState {
+            tool: "edit".into(),
+            args: "{}".into(),
+            request_id: "req-delegate-1".into(),
+            session_id: "delegate-job-42".into(),
+            tier: RiskTier::Edit,
+            preview: String::new(),
+        };
+        let command = respond_command(approval, SessionApprovalDecision::Allow);
+        match command {
+            RuntimeCommand::SessionRespond {
+                session_id,
+                request_id,
+                decision,
+            } => {
+                assert_eq!(session_id, "delegate-job-42");
+                assert_eq!(request_id, "req-delegate-1");
+                assert_eq!(decision, SessionApprovalDecision::Allow);
             }
             other => panic!("expected SessionRespond, got {other:?}"),
         }

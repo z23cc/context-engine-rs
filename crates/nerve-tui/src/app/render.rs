@@ -93,17 +93,26 @@ pub fn compose(state: &State, width: usize, height: usize) -> Composed {
 }
 
 /// The header: `⬡ Nerve  <provider>/<model>  · N tools  · mode: <label>`, accent
-/// logo over a reversed bar. Ports `headerLine`.
+/// logo over a reversed bar. Ports `headerLine`. When a delegate session is active
+/// (DA-5d) the right side becomes the steer indicator instead.
 fn header_line(state: &State, width: usize) -> Line<'static> {
     let accent = Style::default().fg(state.accent());
-    let mode = approval_mode_label(state.approval_mode);
     let dim = palette::dim();
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(" ⬡ Nerve  ", accent),
         Span::styled(format!("{}/{}", state.provider, state.model), dim),
         Span::styled(format!("  · {} tools", state.tools), dim),
-        Span::styled(format!("  · mode: {mode}"), dim),
     ];
+    if let Some(session) = &state.delegate_session {
+        spans.push(Span::styled(
+            format!("  · ⟳ delegate → {}", session.agent),
+            accent,
+        ));
+        spans.push(Span::styled("  · /done to return", dim));
+    } else {
+        let mode = approval_mode_label(state.approval_mode);
+        spans.push(Span::styled(format!("  · mode: {mode}"), dim));
+    }
     reversed_bar(Line::from(spans), width)
 }
 
@@ -137,14 +146,28 @@ fn status_body(state: &State) -> Vec<Span<'static>> {
         return vec![Span::styled(state.hint.clone(), palette::yellow())];
     }
     if state.running {
+        // Name the delegate while steering one so the operator knows whose turn is
+        // running (DA-5d); otherwise the plain chat "working…" line.
+        let label = match &state.delegate_session {
+            Some(session) => format!(
+                "{} {} steering… ",
+                SPINNER[state.spinner % SPINNER.len()],
+                session.agent
+            ),
+            None => format!("{} working… ", SPINNER[state.spinner % SPINNER.len()]),
+        };
         return vec![
-            Span::raw(format!(
-                "{} working… ",
-                SPINNER[state.spinner % SPINNER.len()]
-            )),
+            Span::raw(label),
             Span::raw(format_duration(state.elapsed_ms)),
             Span::raw("  "),
             Span::styled("Ctrl-C interrupt", palette::dim()),
+        ];
+    }
+    if let Some(session) = &state.delegate_session {
+        return vec![
+            Span::styled("⟳", palette::yellow()),
+            Span::raw(format!(" steering {}  ", session.agent)),
+            Span::styled("message to steer · /done to end", palette::dim()),
         ];
     }
     vec![
@@ -513,6 +536,34 @@ mod tests {
         let mut ask = sample();
         ask.approval_mode = ApprovalMode::AlwaysAsk;
         assert!(plain(&compose(&ask, 80, 12).lines[0]).contains("mode: always-ask"));
+    }
+
+    #[test]
+    fn header_shows_delegate_steer_indicator_when_active() {
+        use crate::app::state::DelegateSession;
+        let mut state = sample();
+        state.delegate_session = Some(DelegateSession {
+            session_id: "del-1".into(),
+            agent: "claude".into(),
+        });
+        let header = plain(&compose(&state, 80, 12).lines[0]);
+        assert!(header.contains("⟳ delegate → claude"), "{header}");
+        assert!(header.contains("/done to return"), "{header}");
+        // The mode label is replaced by the steer indicator while steering.
+        assert!(!header.contains("mode:"), "{header}");
+    }
+
+    #[test]
+    fn status_shows_steer_hint_when_delegate_idle() {
+        use crate::app::state::DelegateSession;
+        let mut state = sample();
+        state.delegate_session = Some(DelegateSession {
+            session_id: "del-1".into(),
+            agent: "codex".into(),
+        });
+        let status = plain(&compose(&state, 100, 12).lines[10]);
+        assert!(status.contains("steering codex"), "{status}");
+        assert!(status.contains("/done to end"), "{status}");
     }
 
     #[test]
