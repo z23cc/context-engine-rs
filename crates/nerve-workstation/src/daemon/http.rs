@@ -688,6 +688,7 @@ mod tests {
             ProviderRegistry::default(),
             Policy::default(),
             None,
+            false,
             crate::sandbox::refuse_launcher(),
             |_| {},
         );

@@ -12,6 +12,7 @@ mod cost;
 mod daemon;
 mod delegate;
 mod delegate_runtime;
+mod delegate_tool;
 mod exec_tool;
 mod hooks;
 mod jobs;

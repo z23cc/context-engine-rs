@@ -160,6 +160,7 @@ pub(crate) fn format_preview(tool: &str, args: &Value) -> String {
     const MAX: usize = 500;
     let detail = match tool {
         "run_command" => command_preview(args),
+        "delegate_agent" => delegate_preview(args),
         "edit" | "write" => string_field(args, "path"),
         "delete" => string_field(args, "path"),
         "move" => move_preview(args),
@@ -185,6 +186,21 @@ fn command_preview(args: &Value) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" ")
     })
+}
+
+/// `delegate_agent` preview: `<agent>: <task> (cwd <cwd>) [<autonomy>]`, so the
+/// approval modal shows which external agent is being spawned, on what task, where,
+/// and at what permission level. `cwd` defaults to the workspace root (shown as
+/// `.`) and `autonomy` to `read_only` when omitted.
+fn delegate_preview(args: &Value) -> Option<String> {
+    let agent = args.get("agent").and_then(Value::as_str)?;
+    let task = args.get("task").and_then(Value::as_str).unwrap_or("");
+    let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
+    let autonomy = args
+        .get("autonomy")
+        .and_then(Value::as_str)
+        .unwrap_or("read_only");
+    Some(format!("{agent}: {task} (cwd {cwd}) [{autonomy}]"))
 }
 
 /// `move` preview: `<from> -> <to>` when both are present, else whichever exists.
@@ -838,6 +854,26 @@ mod tests {
                 &serde_json::json!({ "prompt": "a cat" })
             ),
             "a cat"
+        );
+        // delegate_agent renders agent + task + cwd + autonomy, with defaults.
+        assert_eq!(
+            format_preview(
+                "delegate_agent",
+                &serde_json::json!({
+                    "agent": "codex",
+                    "task": "add a test",
+                    "cwd": "crates/core",
+                    "autonomy": "edit"
+                })
+            ),
+            "codex: add a test (cwd crates/core) [edit]"
+        );
+        assert_eq!(
+            format_preview(
+                "delegate_agent",
+                &serde_json::json!({ "agent": "claude", "task": "investigate" })
+            ),
+            "claude: investigate (cwd .) [read_only]"
         );
     }
 

@@ -58,6 +58,10 @@ fn output_router_with_delegate(
         ProviderRegistry::default(),
         crate::policy::Policy::default(),
         None,
+        // These helpers exercise the `delegate.start` JOB path, whose lift is the
+        // launcher (not the session-tool bool); pass `false` for the bool since the
+        // session chat-tool path isn't under test here.
+        false,
         delegate_launcher,
         move |value| {
             event_output.lock().expect("output lock").push(value);

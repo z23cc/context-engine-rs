@@ -217,9 +217,10 @@ impl SubAgentSpawner {
     /// Assemble the agent's toolbox for one run. The P4 gate stays the
     /// **OUTERMOST** decorator (north-star invariant 9): every tool the model can
     /// call — read tools, `spawn_agent`, the agent-state tools, and (when enabled)
-    /// `run_command` — passes through it. `run_command` is added by the
-    /// `ExecToolBox` immediately inside the gate, so each call is authorized (Ask)
-    /// and contained by the run's launcher: `PolicyToolBox(ExecToolBox(…))`.
+    /// `run_command` / `delegate_agent` — passes through it. The exec and delegate
+    /// decorators sit immediately inside the gate, so each of their calls is
+    /// authorized (exec-tier → Ask) and contained by the run's launcher:
+    /// `PolicyToolBox(DelegateAgentToolBox(ExecToolBox(…)))`.
     fn assemble_toolbox(
         &self,
         config: &AgentRunConfig,
@@ -236,31 +237,42 @@ impl SubAgentSpawner {
             parent,
         );
         let checkpoint_tb = CheckpointToolBox::new(raw, Arc::clone(&self.checkpoint));
-        let exec_policy = crate::sandbox::SandboxPolicy::for_root(root);
-        let launcher = Arc::clone(&config.exec_launcher);
-        // ExecToolBox sits just inside the gate; it advertises `run_command` only
-        // when `allow_exec` is set, and routes it through the trust-context launcher.
         match memory_store {
             Some(store) => {
                 let mem = crate::memory::MemoryToolBox::new(checkpoint_tb, Arc::clone(store));
-                let exec = crate::exec_tool::ExecToolBox::new(
-                    mem,
-                    launcher,
-                    exec_policy,
-                    config.allow_exec,
-                );
-                Box::new(self.gate.clone().wrap(exec))
+                self.wrap_exec_delegate_gate(mem, config, root, depth)
             }
-            None => {
-                let exec = crate::exec_tool::ExecToolBox::new(
-                    checkpoint_tb,
-                    launcher,
-                    exec_policy,
-                    config.allow_exec,
-                );
-                Box::new(self.gate.clone().wrap(exec))
-            }
+            None => self.wrap_exec_delegate_gate(checkpoint_tb, config, root, depth),
         }
+    }
+
+    /// Wrap `inner` with the exec decorator, then the delegate decorator, then the
+    /// outermost gate. Both delegated tools (`run_command`, `delegate_agent`) sit
+    /// inside the gate so exec-tier approval applies; `delegate_agent` is exposed
+    /// only at the **top level** (`depth == 0`) and when `allow_delegate` is set —
+    /// the recursion guard that keeps a delegated/sub-agent context from spawning
+    /// more external agents.
+    fn wrap_exec_delegate_gate<T: ToolBox + 'static>(
+        &self,
+        inner: T,
+        config: &AgentRunConfig,
+        root: Option<&Path>,
+        depth: usize,
+    ) -> Box<dyn ToolBox> {
+        let exec = crate::exec_tool::ExecToolBox::new(
+            inner,
+            Arc::clone(&config.exec_launcher),
+            crate::sandbox::SandboxPolicy::for_root(root),
+            config.allow_exec,
+        );
+        let delegate = crate::delegate_tool::DelegateAgentToolBox::new(
+            exec,
+            Arc::clone(&config.delegate_launcher),
+            root.map(Path::to_path_buf),
+            config.allow_delegate && depth == 0,
+            config.delegate_event_sink.clone(),
+        );
+        Box::new(self.gate.clone().wrap(delegate))
     }
 }
 
@@ -380,6 +392,11 @@ fn sub_config(parent: &ParentRun, args: SpawnAgentArgs) -> Result<AgentRunConfig
         // parent's capability; refuse is the safe default for the launcher field.
         allow_exec: false,
         exec_launcher: crate::sandbox::refuse_launcher(),
+        // Only the top-level agent delegates (recursion guard): a sub-agent never
+        // gets the delegate tool. Refuse is the safe default for the launcher field.
+        allow_delegate: false,
+        delegate_launcher: crate::sandbox::refuse_launcher(),
+        delegate_event_sink: None,
         // Spawned sub-agents always start fresh.
         resume_truncations: 0,
         // Sub-agents inherit no budget guard; the parent's guard already bounds it.

@@ -27,6 +27,7 @@ impl RuntimeDaemonRouter {
         registry: ProviderRegistry,
         policy: Policy,
         session_store: Option<SessionStore>,
+        allow_delegate: bool,
         delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
         emit_notification: impl Fn(Value) + Send + Sync + 'static,
     ) -> Self {
@@ -35,6 +36,7 @@ impl RuntimeDaemonRouter {
             registry,
             policy,
             session_store,
+            allow_delegate,
             delegate_launcher,
             sequenced_emitter(emit_notification),
         ));

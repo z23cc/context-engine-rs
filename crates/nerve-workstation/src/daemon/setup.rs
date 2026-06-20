@@ -45,6 +45,7 @@ pub(super) fn build_router(
         registry,
         policy,
         session_store,
+        allow_delegate,
         delegate_launcher,
         emit_notification,
     ))

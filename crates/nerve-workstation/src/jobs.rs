@@ -122,6 +122,7 @@ impl JobManager {
             registry,
             policy,
             session_store,
+            false,
             crate::sandbox::refuse_launcher(),
             emit,
         )
@@ -139,16 +140,22 @@ impl JobManager {
         registry: ProviderRegistry,
         policy: Policy,
         session_store: Option<SessionStore>,
+        allow_delegate: bool,
         delegate_launcher: Arc<dyn SandboxLauncher>,
         emit: impl Fn(RuntimeEvent) + Send + Sync + 'static,
     ) -> Self {
         let emit: Arc<EventEmitter> = Arc::new(emit);
+        // The session chat-tool path (DA-3) shares the daemon's `--allow-delegate`
+        // lift and its delegate launcher with the `delegate.start` job path (DA-2),
+        // so `nerve chat`'s spawned daemon enables `delegate_agent` in session turns.
         let sessions = SessionManager::new(
             Arc::clone(&runtime),
             registry.clone(),
             policy.clone(),
             session_store.clone(),
             Arc::clone(&emit),
+            allow_delegate,
+            Arc::clone(&delegate_launcher),
         );
         Self {
             runtime,
@@ -331,6 +338,12 @@ impl JobManager {
             // Daemon-served runs refuse exec by trust context, not just by flag.
             allow_exec: false,
             exec_launcher: crate::sandbox::refuse_launcher(),
+            // One-shot daemon `agent.run` jobs don't expose the delegate tool;
+            // delegation is the dedicated `delegate.start` job (DA-2) and the
+            // session chat-tool path (DA-3). Refuse by trust context here.
+            allow_delegate: false,
+            delegate_launcher: crate::sandbox::refuse_launcher(),
+            delegate_event_sink: None,
             // One-shot agent.run jobs start fresh (resume is the session layer).
             resume_truncations: 0,
             // Cost budget guard is opt-in; off for daemon agent.run jobs.

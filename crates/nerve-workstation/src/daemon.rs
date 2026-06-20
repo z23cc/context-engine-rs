@@ -25,8 +25,9 @@ pub(crate) struct RuntimeDaemonArgs {
     /// bearer token (it is never anonymous) and is not embedded into the GUI.
     #[arg(long, requires = "http")]
     http_allow_remote: bool,
-    /// Allow `delegate.start` jobs to spawn external coding-agent CLIs (codex /
-    /// claude / gemini). Default off: the daemon refuses delegation, like it
+    /// Allow delegation to external coding-agent CLIs (codex / claude / gemini):
+    /// both the `delegate.start` JOB path and the chat agent's `delegate_agent`
+    /// TOOL in session turns. Default off: the daemon refuses delegation, like it
     /// refuses `run_command` exec. The delegated agent runs with the workspace as
     /// its cwd, a scrubbed environment (its own on-disk login is used, never
     /// nerve's credentials), network allowed (it calls its LLM API), and a long

@@ -6,13 +6,14 @@
 //! emission.
 
 mod approval;
+mod run_config;
 
 use crate::capabilities::{Capabilities, ResolvedAgent};
 use crate::checkpoint::Checkpoint;
 use crate::policy::{Policy, ToolGate};
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
-use crate::{agent, providers::ProviderRegistry, tools};
+use crate::{providers::ProviderRegistry, tools};
 use nerve_agent::{AgentEvent, Message};
 use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{ApprovalMode, RuntimeCommand, RuntimeError, RuntimeEvent};
@@ -21,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use approval::{ApprovalHub, DecisionMemory, ProtocolApprover};
+use run_config::{map_session_agent_event, session_run_config};
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 type SessionCheckpoint = Arc<Mutex<Checkpoint>>;
@@ -34,6 +36,15 @@ pub(crate) struct SessionManager {
     sessions: Mutex<HashMap<String, LiveSession>>,
     approvals: Arc<ApprovalHub>,
     emit: Arc<EventEmitter>,
+    /// Whether session turns expose the `delegate_agent` tool. Bound to the
+    /// daemon's `--allow-delegate` lift (same flag as the `delegate.start` job
+    /// launcher): off by default, so a session cannot spawn an external agent
+    /// unless the daemon was started with it.
+    allow_delegate: bool,
+    /// Containment backend for `delegate_agent` spawns in a session turn, bound to
+    /// the trust context: the real (process) launcher when delegation is allowed,
+    /// else a refusing one.
+    delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
 }
 
 struct LiveSession {
@@ -93,6 +104,8 @@ impl SessionManager {
         policy: Policy,
         store: Option<SessionStore>,
         emit: Arc<EventEmitter>,
+        allow_delegate: bool,
+        delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
     ) -> Self {
         Self {
             runtime,
@@ -102,6 +115,8 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             approvals: Arc::new(ApprovalHub::new(Arc::clone(&emit))),
             emit,
+            allow_delegate,
+            delegate_launcher,
         }
     }
 
@@ -265,7 +280,15 @@ impl SessionManager {
         } = turn;
         let root = self.root_for(config.workspace.as_deref());
         let resolved = self.resolve_agent(&config, root.as_deref())?;
-        let run_config = session_run_config(&config, resolved, text);
+        let delegate_sink = self.delegate_progress_sink(session_id);
+        let run_config = session_run_config(
+            &config,
+            resolved,
+            text,
+            self.allow_delegate,
+            Arc::clone(&self.delegate_launcher),
+            delegate_sink,
+        );
         let gate = ToolGate::with_approver(
             self.policy.clone(),
             mode,
@@ -299,6 +322,30 @@ impl SessionManager {
             Err(_) if token.is_cancelled() => Err(RuntimeError::cancelled()),
             Err(err) => Err(RuntimeError::adapter(err.to_string())),
         }
+    }
+
+    /// Build the live-progress sink for a session's `delegate_agent` calls: each
+    /// human-meaningful stream line is forwarded as a job-scoped
+    /// [`RuntimeEvent::DelegateProgress`] (scoped by `session_id` so the TUI can
+    /// route it to the right session), reusing the same event the `delegate.start`
+    /// job emits so a client renders both paths uniformly. `None` when delegation
+    /// is disabled — no need to stream progress for a tool that isn't exposed.
+    fn delegate_progress_sink(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<crate::delegate_tool::DelegateProgressSink>> {
+        if !self.allow_delegate {
+            return None;
+        }
+        let emit = Arc::clone(&self.emit);
+        let session = session_id.to_string();
+        Some(Arc::new(move |agent: &str, text: &str| {
+            emit(RuntimeEvent::delegate_progress(
+                session.clone(),
+                agent.to_string(),
+                text.to_string(),
+            ));
+        }))
     }
 
     fn root_for(&self, workspace: Option<&str>) -> Option<std::path::PathBuf> {
@@ -515,42 +562,6 @@ impl LiveSession {
     }
 }
 
-fn session_run_config(
-    config: &SessionConfig,
-    resolved: ResolvedAgent,
-    task: &str,
-) -> agent::AgentRunConfig {
-    agent::AgentRunConfig {
-        workspace: config.workspace.clone(),
-        provider: config.provider.clone(),
-        model: config.model.clone(),
-        task: task.to_string(),
-        system_prompt: config.system_prompt.clone().or(resolved.system_prompt),
-        max_turns: config.max_turns.or(resolved.max_turns),
-        temperature: config.temperature.or(resolved.temperature),
-        reasoning_effort: config
-            .reasoning_effort
-            .clone()
-            .or(resolved.reasoning_effort),
-        tool_filter: config.tool_filter.clone().or(resolved.tool_filter),
-        api_key: None,
-        distill_memory: false,
-        verify_completion: false,
-        // Daemon session turns refuse exec by trust context, not just by flag.
-        allow_exec: false,
-        exec_launcher: crate::sandbox::refuse_launcher(),
-        // Carry the resumed truncation counter into the orchestrator's ResumeState.
-        resume_truncations: config.resume_truncations,
-        // Session turns don't impose a cost budget guard (opt-in elsewhere).
-        cost_budget_usd: None,
-    }
-}
-
-fn map_session_agent_event(session_id: &str, event: AgentEvent) -> Option<RuntimeEvent> {
-    crate::agent_event::agent_event_kind(event)
-        .map(|kind| RuntimeEvent::session_agent(session_id.to_string(), kind))
-}
-
 #[cfg(test)]
 mod tests {
     use super::approval::{ApprovalHub, ProtocolApprover};
@@ -579,7 +590,14 @@ mod tests {
             tool_filter: None,
             resume_truncations: 0,
         };
-        let run = session_run_config(&config, ResolvedAgent::default(), "do work");
+        let run = session_run_config(
+            &config,
+            ResolvedAgent::default(),
+            "do work",
+            false,
+            crate::sandbox::refuse_launcher(),
+            None,
+        );
         assert!(!run.allow_exec, "session exec capability must be off");
         let spec = CommandSpec {
             command: "ls".into(),
@@ -590,6 +608,50 @@ mod tests {
                 .launch(&spec, &SandboxPolicy::for_root(None), &CancelToken::never())
                 .is_err(),
             "session launcher must refuse execution"
+        );
+    }
+
+    #[test]
+    fn delegate_flag_and_launcher_thread_into_session_run_config() {
+        // The daemon's --allow-delegate lift (and its delegate launcher + the
+        // progress sink) must reach the per-turn run config so a session can expose
+        // the `delegate_agent` tool. Off-by-default and on-when-lifted both pinned.
+        let config = SessionConfig {
+            workspace: None,
+            provider: "claude".into(),
+            model: "m".into(),
+            system_prompt: None,
+            agent: None,
+            max_turns: None,
+            temperature: None,
+            reasoning_effort: None,
+            tool_filter: None,
+            resume_truncations: 0,
+        };
+        let off = session_run_config(
+            &config,
+            ResolvedAgent::default(),
+            "do work",
+            false,
+            crate::sandbox::refuse_launcher(),
+            None,
+        );
+        assert!(!off.allow_delegate, "delegation off by default");
+        assert!(off.delegate_event_sink.is_none());
+
+        let sink: Arc<crate::delegate_tool::DelegateProgressSink> = Arc::new(|_, _| {});
+        let on = session_run_config(
+            &config,
+            ResolvedAgent::default(),
+            "do work",
+            true,
+            crate::sandbox::process_launcher(),
+            Some(sink),
+        );
+        assert!(on.allow_delegate, "lift threads through to allow_delegate");
+        assert!(
+            on.delegate_event_sink.is_some(),
+            "progress sink threads through for live streaming"
         );
     }
 
@@ -814,6 +876,8 @@ mod tests {
             Policy::default(),
             Some(store),
             Arc::new(|_event| {}),
+            false,
+            crate::sandbox::refuse_launcher(),
         )
     }
 
@@ -868,7 +932,14 @@ mod tests {
         assert_eq!(live.config.resume_truncations, 2);
 
         // The run config built for the next turn threads that counter through.
-        let run_config = session_run_config(&live.config, ResolvedAgent::default(), "next");
+        let run_config = session_run_config(
+            &live.config,
+            ResolvedAgent::default(),
+            "next",
+            false,
+            crate::sandbox::refuse_launcher(),
+            None,
+        );
         assert_eq!(run_config.resume_truncations, 2);
     }
 
@@ -883,6 +954,8 @@ mod tests {
             Policy::default(),
             None,
             Arc::new(|_event| {}),
+            false,
+            crate::sandbox::refuse_launcher(),
         );
         let config = SessionConfig {
             workspace: None,

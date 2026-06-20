@@ -6,6 +6,8 @@
 //! through a [`ToolBox`], and runs the orchestrator loop against a workspace,
 //! streaming [`AgentEvent`]s to stdout.
 
+mod sessions;
+
 use crate::capabilities::{Capabilities, ResolvedAgent};
 use crate::checkpoint::Checkpoint;
 use crate::providers::ProviderRegistry;
@@ -18,7 +20,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use nerve_agent::auth::{self, AuthMode, LoginOptions};
 use nerve_agent::{AgentEvent, ProviderId, RunOutcome};
 use nerve_core::CancelToken;
-use std::path::PathBuf;
+use sessions::SessionsArgs;
 use std::sync::{Arc, Mutex};
 
 pub(crate) const DEFAULT_SYSTEM_PROMPT: &str = "You are a coding agent operating inside the Nerve Workstation \
@@ -133,6 +135,12 @@ struct AgentRunArgs {
     /// capped output. The daemon never honors this — it refuses exec.
     #[arg(long = "allow-exec")]
     allow_exec: bool,
+    /// Enable the `delegate_agent` tool (default off): let the agent hand a
+    /// subtask to an external coding-agent CLI (codex / claude / gemini). Even
+    /// when enabled, every call is permission-gated (Ask), only the top-level
+    /// agent can delegate, and the child runs read-only by default.
+    #[arg(long = "allow-delegate")]
+    allow_delegate: bool,
     /// Distil durable facts into long-term memory after a substantive run
     /// (opt-in; off by default — one extra LLM call per qualifying session).
     #[arg(long = "distill-memory")]
@@ -145,82 +153,11 @@ struct AgentRunArgs {
     task: String,
 }
 
-#[derive(Debug, Args)]
-struct SessionsArgs {
-    #[command(subcommand)]
-    command: SessionsCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum SessionsCommand {
-    /// List recent agent sessions, most recent first.
-    List(SessionsScopeArgs),
-    /// Print a stored session transcript.
-    Show(SessionsShowArgs),
-}
-
-#[derive(Debug, Args)]
-struct SessionsScopeArgs {
-    /// Project root whose `.nerve/sessions` is read. Defaults to the current
-    /// directory; pass the same `--root` you ran the agent with.
-    #[arg(long = "root")]
-    root: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-struct SessionsShowArgs {
-    #[command(flatten)]
-    scope: SessionsScopeArgs,
-    /// Session id, as shown by `nerve agent sessions list`.
-    id: String,
-    /// Print the raw stored JSON instead of a formatted transcript.
-    #[arg(long)]
-    json: bool,
-}
-
-fn sessions(args: SessionsArgs) -> Result<()> {
-    match args.command {
-        SessionsCommand::List(scope) => sessions_list(&scope),
-        SessionsCommand::Show(show) => sessions_show(&show),
-    }
-}
-
-/// Resolve the session store for a browse scope. `--root` defaults to the current
-/// directory so `sessions list` works from inside a project; with neither a root
-/// nor a usable current directory, the global config home is used.
-fn sessions_store(scope: &SessionsScopeArgs) -> Result<SessionStore> {
-    let root = scope.root.clone().or_else(|| std::env::current_dir().ok());
-    SessionStore::for_scope(root.as_deref())
-}
-
-fn sessions_list(scope: &SessionsScopeArgs) -> Result<()> {
-    let store = sessions_store(scope)?;
-    let records = store.list()?;
-    if records.is_empty() {
-        println!("no sessions in {}", store.dir().display());
-        return Ok(());
-    }
-    for record in &records {
-        println!("{}", record.summary_line());
-    }
-    Ok(())
-}
-
-fn sessions_show(args: &SessionsShowArgs) -> Result<()> {
-    let store = sessions_store(&args.scope)?;
-    if args.json {
-        println!("{}", store.read_raw(&args.id)?);
-    } else {
-        print!("{}", store.load(&args.id)?.render_transcript());
-    }
-    Ok(())
-}
-
 pub(crate) fn run(args: AgentArgs) -> Result<()> {
     match args.command {
         AgentCommand::Login(login_args) => login(login_args),
         AgentCommand::Run(run_args) => run_task(run_args),
-        AgentCommand::Sessions(session_args) => sessions(session_args),
+        AgentCommand::Sessions(session_args) => sessions::sessions(session_args),
     }
 }
 
@@ -283,6 +220,11 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
             "\u{26a0}  --allow-exec: the run_command tool is enabled (each call is still permission-gated)"
         );
     }
+    if args.allow_delegate {
+        eprintln!(
+            "\u{26a0}  --allow-delegate: the delegate_agent tool is enabled (each call is still permission-gated)"
+        );
+    }
     let config = AgentRunConfig {
         workspace: None,
         provider: provider.clone(),
@@ -299,6 +241,18 @@ fn run_task(args: AgentRunArgs) -> Result<()> {
         allow_exec: args.allow_exec,
         // Trusted local CLI run: best-effort process containment.
         exec_launcher: crate::sandbox::process_launcher(),
+        allow_delegate: args.allow_delegate,
+        // Trusted local CLI run: a real launcher when delegation is enabled, else
+        // a refusing one (defence in depth — the tool is also absent when off).
+        delegate_launcher: if args.allow_delegate {
+            crate::sandbox::process_launcher()
+        } else {
+            crate::sandbox::refuse_launcher()
+        },
+        // The CLI streams agent events to stdout (not the runtime protocol), so the
+        // delegate progress sink is unused here; the final outcome is shown via the
+        // tool-finished event.
+        delegate_event_sink: None,
         // CLI runs start fresh; the session layer is the resume path.
         resume_truncations: 0,
         // Cost budget guard is opt-in; off for the default CLI run.
@@ -377,6 +331,20 @@ pub(crate) struct AgentRunConfig {
     /// remote paths inject a refusing launcher, so a served run cannot execute
     /// even if the capability flag were set.
     pub(crate) exec_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
+    /// Whether the `delegate_agent` tool is exposed (the daemon's `--allow-delegate`
+    /// lift, or the CLI's `--allow-delegate`). Off by default; only the top-level
+    /// agent (depth 0) ever sees the tool — sub-agents never delegate.
+    pub(crate) allow_delegate: bool,
+    /// Containment backend for `delegate_agent` spawns, bound to the **trust
+    /// context** like [`Self::exec_launcher`]: a real (process) launcher only when
+    /// delegation is allowed; otherwise a refusing launcher, so a served run cannot
+    /// spawn an external agent even if the flag were set.
+    pub(crate) delegate_launcher: Arc<dyn crate::sandbox::SandboxLauncher>,
+    /// Optional live-progress sink for `delegate_agent` (session / agent-run path):
+    /// the composition root closes over the run's scope id + the runtime event
+    /// emitter so a delegated child's progress streams during the turn. `None` (the
+    /// CLI path) drops progress; the final outcome is still returned to the agent.
+    pub(crate) delegate_event_sink: Option<Arc<crate::delegate_tool::DelegateProgressSink>>,
     /// Context-overflow truncations carried over from a resumed session, restored
     /// into the orchestrator via `ResumeState` so the counter continues across
     /// turns. `0` for a fresh run (#3 session resume).
