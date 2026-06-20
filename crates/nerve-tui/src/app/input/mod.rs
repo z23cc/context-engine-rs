@@ -19,6 +19,7 @@
 //!   mouse wheel      scroll (handled in the event loop)
 
 mod delegate;
+mod flow;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nerve_runtime::{ApprovalMode, RuntimeCommand, SessionApprovalDecision};
@@ -116,9 +117,14 @@ impl Shell {
         self.state.palette_index = 0;
     }
 
-    /// Handle a key while the approval modal is up. A decision key sends a
-    /// `session.respond`, clears the modal, returns to input, and pushes a notice;
+    /// Handle a key while the approval modal is up. A decision key answers the
+    /// pending approval, clears the modal, returns to input, and pushes a notice;
     /// other keys are ignored so the prompt persists. Ports the TS `#onApprovalKey`.
+    ///
+    /// The respond verb is chosen by the approval's id: a flow approval (whose
+    /// `ApprovalRequested` carries `session_id == flow_id`) is answered with
+    /// `flow.respond`; everything else (chat / delegate) with `session.respond`.
+    /// Both reach the SAME host `ApprovalHub` keyed by that id (C-TUI §3).
     async fn on_approval_key(&mut self, key: KeyEvent) {
         let Some(decision) = approval_decision_for_key(key) else {
             return;
@@ -130,7 +136,13 @@ impl Shell {
         };
         self.state.mode = Mode::Input;
         let tool = approval.tool.clone();
-        self.send(respond_command(approval, decision)).await;
+        let is_flow = self
+            .state
+            .flow_session
+            .as_ref()
+            .is_some_and(|f| f.flow_id == approval.session_id);
+        self.send(respond_command(approval, decision, is_flow))
+            .await;
         self.state
             .note(format!("{} {}", decision_verb(decision), tool));
     }
@@ -252,6 +264,7 @@ impl Shell {
             "write" => self.set_mode(ApprovalMode::Write).await,
             "ask" => self.set_mode(ApprovalMode::AlwaysAsk).await,
             "delegate" => self.cmd_delegate(&rest).await,
+            "flow" => self.cmd_flow(&rest).await,
             "done" | "close" => self.cmd_done().await,
             "new" | "reset" => self.new_session().await,
             "login" => self.cmd_login(&rest),
@@ -464,15 +477,28 @@ fn approval_decision_for_key(key: KeyEvent) -> Option<SessionApprovalDecision> {
     }
 }
 
-/// Build the `session.respond` command answering a pending approval. Pure so the
-/// session/request routing is testable without a live client. Ports the TS
-/// `#send({ kind: "session.respond", … })`.
+/// Build the command answering a pending approval, keyed by the approval's id.
+/// `is_flow` selects `flow.respond` (a flow branch's approval, keyed by `flow_id`)
+/// over `session.respond` (chat / delegate); both reach the same host approval hub.
+/// Pure so the routing is testable without a live client.
 #[must_use]
-fn respond_command(approval: ApprovalState, decision: SessionApprovalDecision) -> RuntimeCommand {
-    RuntimeCommand::SessionRespond {
-        session_id: approval.session_id,
-        request_id: approval.request_id,
-        decision,
+fn respond_command(
+    approval: ApprovalState,
+    decision: SessionApprovalDecision,
+    is_flow: bool,
+) -> RuntimeCommand {
+    if is_flow {
+        RuntimeCommand::FlowRespond {
+            flow_id: approval.session_id,
+            request_id: approval.request_id,
+            decision,
+        }
+    } else {
+        RuntimeCommand::SessionRespond {
+            session_id: approval.session_id,
+            request_id: approval.request_id,
+            decision,
+        }
     }
 }
 
@@ -583,7 +609,7 @@ mod tests {
             tier: RiskTier::Edit,
             preview: String::new(),
         };
-        let command = respond_command(approval, SessionApprovalDecision::AllowAlways);
+        let command = respond_command(approval, SessionApprovalDecision::AllowAlways, false);
         match command {
             RuntimeCommand::SessionRespond {
                 session_id,
@@ -612,7 +638,7 @@ mod tests {
             tier: RiskTier::Edit,
             preview: String::new(),
         };
-        let command = respond_command(approval, SessionApprovalDecision::Allow);
+        let command = respond_command(approval, SessionApprovalDecision::Allow, false);
         match command {
             RuntimeCommand::SessionRespond {
                 session_id,
@@ -624,6 +650,35 @@ mod tests {
                 assert_eq!(decision, SessionApprovalDecision::Allow);
             }
             other => panic!("expected SessionRespond, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn respond_command_routes_flow_respond_for_a_flow_approval() {
+        use nerve_runtime::RiskTier;
+        // A flow branch's approval carries the flow id as session_id; with the
+        // is_flow flag the respond must route `flow.respond` keyed by flow_id, so
+        // the daemon's ApprovalHub resolves it (C-TUI §3).
+        let approval = ApprovalState {
+            tool: "edit".into(),
+            args: "{}".into(),
+            request_id: "approval-3".into(),
+            session_id: "flow-job-7".into(),
+            tier: RiskTier::Edit,
+            preview: String::new(),
+        };
+        let command = respond_command(approval, SessionApprovalDecision::AllowAlways, true);
+        match command {
+            RuntimeCommand::FlowRespond {
+                flow_id,
+                request_id,
+                decision,
+            } => {
+                assert_eq!(flow_id, "flow-job-7");
+                assert_eq!(request_id, "approval-3");
+                assert_eq!(decision, SessionApprovalDecision::AllowAlways);
+            }
+            other => panic!("expected FlowRespond, got {other:?}"),
         }
     }
 

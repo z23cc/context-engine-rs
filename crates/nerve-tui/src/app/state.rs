@@ -50,6 +50,30 @@ pub struct DelegateSession {
     pub agent: String,
 }
 
+/// The active orchestration flow driven from the chat input (C-TUI §3). Its
+/// `flow_id` is the `job_id` of the `flow.start` job (the `flow_id` IS the job id),
+/// so a flow approval (whose `ApprovalRequested` carries `session_id == flow_id`)
+/// is answered with `flow.respond`, and a terminal event for that id ends the
+/// flow. One flow at a time; while present the header shows the running indicator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowSession {
+    pub flow_id: String,
+    /// The workflow name + strategy label, for the header indicator.
+    pub name: String,
+    pub strategy: String,
+}
+
+/// Running fleet-budget telemetry for the active flow (C-TUI §2): the cumulative
+/// spend + an optional limit a `budget_warning` reported. Drives the header
+/// budget indicator; the warning flag styles it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlowBudget {
+    pub spent_usd: f64,
+    pub tokens: u64,
+    /// The USD limit a `budget_warning` is relative to, once one fires.
+    pub warn_limit_usd: Option<f64>,
+}
+
 /// A pending approval request the modal renders and `on_approval_key` answers.
 /// Mirrors the TS `state.approval`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +102,26 @@ pub enum Block {
     /// Streaming output from a delegated external agent (codex/claude/gemini),
     /// coalesced per agent (dim, `⟳ delegating → <agent>` header).
     Delegate { agent: String, text: String },
+    /// A flow run header (C-TUI §2): `⛓ flow <name> (<strategy>) · <n> nodes`,
+    /// opened on `flow_started`. `nodes` grows as nodes start (the at-minimum
+    /// node count from the strategy shape).
+    FlowHeader {
+        name: String,
+        strategy: String,
+        nodes: usize,
+    },
+    /// One flow node's pane (C-TUI §2), keyed by `node_id` so concurrent nodes
+    /// don't interleave: a `▸ <node_id> → <worker>` header over the node's
+    /// streamed transcript. `done` carries the (ok, usage-summary) once finished.
+    FlowNode {
+        node_id: String,
+        worker: String,
+        text: String,
+        done: Option<(bool, String)>,
+    },
+    /// A flow audit line (C-TUI §2): a decision (`⚖ …`), edge summary, or
+    /// budget note — a distinct, dim/colored line in the transcript.
+    FlowAudit { tone: Tone, text: String },
     /// A client-side notice (connection status, errors, hints).
     Notice { tone: Tone, text: String },
 }
@@ -99,6 +143,12 @@ pub struct State {
     /// The active delegated agent session, when steering one (DA-5d). While set,
     /// plain input steers this session and the header shows the steer indicator.
     pub delegate_session: Option<DelegateSession>,
+    /// The active orchestration flow, when one is running (C-TUI §3). One flow at
+    /// a time; while set the header shows the running indicator and a flow
+    /// approval is answered with `flow.respond`.
+    pub flow_session: Option<FlowSession>,
+    /// Running fleet-budget telemetry for the active flow, once any reported.
+    pub flow_budget: Option<FlowBudget>,
     /// The session's approval posture, shown in the header and pushed on `/mode`.
     pub approval_mode: ApprovalMode,
     /// True while a turn is in flight (drives the status line).
@@ -133,6 +183,11 @@ pub struct State {
     reasoning: Option<usize>,
     /// Index of the delegate block currently being streamed into, if any.
     delegate: Option<usize>,
+    /// Block index of the current flow's header, for the live node count.
+    flow_header: Option<usize>,
+    /// Block index of each live flow node pane, keyed by `node_id`, so node
+    /// streams coalesce into their own pane regardless of interleaving (C-TUI §2).
+    flow_nodes: std::collections::HashMap<String, usize>,
 }
 
 impl State {
@@ -147,6 +202,8 @@ impl State {
             mode: Mode::Input,
             approval: None,
             delegate_session: None,
+            flow_session: None,
+            flow_budget: None,
             approval_mode: ApprovalMode::Yolo,
             running: false,
             hint: String::new(),
@@ -165,6 +222,8 @@ impl State {
             assistant: None,
             reasoning: None,
             delegate: None,
+            flow_header: None,
+            flow_nodes: std::collections::HashMap::new(),
         }
     }
 
@@ -254,6 +313,120 @@ impl State {
         self.delegate = Some(self.blocks.len() - 1);
         self.assistant = None;
         self.reasoning = None;
+    }
+
+    /// Open the flow header block for a started flow (C-TUI §2). Records the
+    /// active [`FlowSession`] + resets the node/budget bookkeeping so a fresh flow
+    /// starts clean. Ends any open text stream first.
+    pub fn start_flow(&mut self, flow_id: &str, name: &str, strategy: &str, nodes: usize) {
+        self.end_stream();
+        self.flow_nodes.clear();
+        self.flow_budget = None;
+        self.blocks.push(Block::FlowHeader {
+            name: name.to_string(),
+            strategy: strategy.to_string(),
+            nodes,
+        });
+        self.flow_header = Some(self.blocks.len() - 1);
+        self.flow_session = Some(FlowSession {
+            flow_id: flow_id.to_string(),
+            name: name.to_string(),
+            strategy: strategy.to_string(),
+        });
+    }
+
+    /// Open a node pane for `node_id` (C-TUI §2), recording its block index so its
+    /// later transcript deltas coalesce into the same pane. Bumps the header's
+    /// node count to reflect the node that just started.
+    pub fn open_flow_node(&mut self, node_id: &str, worker: &str) {
+        if self.flow_nodes.contains_key(node_id) {
+            return;
+        }
+        self.blocks.push(Block::FlowNode {
+            node_id: node_id.to_string(),
+            worker: worker.to_string(),
+            text: String::new(),
+            done: None,
+        });
+        self.flow_nodes
+            .insert(node_id.to_string(), self.blocks.len() - 1);
+        self.bump_flow_node_count();
+    }
+
+    /// Append a transcript delta to `node_id`'s pane, opening it first if the node
+    /// streamed before its `flow_node_started` arrived (defensive ordering).
+    pub fn append_flow_node(&mut self, node_id: &str, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        if !self.flow_nodes.contains_key(node_id) {
+            self.open_flow_node(node_id, node_id);
+        }
+        if let Some(&index) = self.flow_nodes.get(node_id)
+            && let Some(Block::FlowNode { text, .. }) = self.blocks.get_mut(index)
+        {
+            text.push_str(delta);
+        }
+    }
+
+    /// Mark `node_id`'s pane finished with `ok` + a usage summary (C-TUI §2).
+    pub fn finish_flow_node(&mut self, node_id: &str, ok: bool, usage: impl Into<String>) {
+        if let Some(&index) = self.flow_nodes.get(node_id)
+            && let Some(Block::FlowNode { done, .. }) = self.blocks.get_mut(index)
+        {
+            *done = Some((ok, usage.into()));
+        }
+    }
+
+    /// Push a flow audit line (a decision / edge / budget note) into the
+    /// transcript (C-TUI §2). Ends any open text stream so it reads as its own row.
+    pub fn push_flow_audit(&mut self, tone: Tone, text: impl Into<String>) {
+        self.blocks.push(Block::FlowAudit {
+            tone,
+            text: text.into(),
+        });
+        self.end_stream();
+    }
+
+    /// Fold a budget update into the flow budget indicator (C-TUI §2), keeping any
+    /// previously-reported warning limit.
+    pub fn record_flow_budget(&mut self, spent_usd: f64, tokens: u64) {
+        let warn = self.flow_budget.and_then(|b| b.warn_limit_usd);
+        self.flow_budget = Some(FlowBudget {
+            spent_usd,
+            tokens,
+            warn_limit_usd: warn,
+        });
+    }
+
+    /// Record a budget warning's limit (C-TUI §2), so the header indicator renders
+    /// in the warning style.
+    pub fn record_flow_budget_warning(&mut self, spent_usd: f64, limit_usd: f64) {
+        let tokens = self.flow_budget.map_or(0, |b| b.tokens);
+        self.flow_budget = Some(FlowBudget {
+            spent_usd,
+            tokens,
+            warn_limit_usd: Some(limit_usd),
+        });
+    }
+
+    /// End the active flow (its job reached a terminal state): clear the flow
+    /// session + node bookkeeping so input returns to the chat. The transcript
+    /// blocks remain. Returns `true` if a flow was active.
+    pub fn end_flow(&mut self) -> bool {
+        self.flow_nodes.clear();
+        self.flow_header = None;
+        self.flow_session.take().is_some()
+    }
+
+    /// Bump the live node count shown in the flow header (called as nodes start).
+    fn bump_flow_node_count(&mut self) {
+        let live = self.flow_nodes.len();
+        if let Some(index) = self.flow_header
+            && let Some(Block::FlowHeader { nodes, .. }) = self.blocks.get_mut(index)
+        {
+            *nodes = (*nodes).max(live);
+        }
     }
 
     /// Start a tool cell (status: running). Ends the open text stream first, as

@@ -13,6 +13,8 @@
 //! - [`diff`] — unified-diff coloring (intra-line via `REVERSED`),
 //! - [`markdown`] — markdown → styled lines,
 //! - [`render`] — the `Block` → lines entry points,
+//! - [`flow`] — `/flow` shorthand parsing → a `WorkflowDef`,
+//! - [`flow_render`] — flow `Block` → styled lines,
 //! - [`editor`] — the multiline input editor,
 //! - [`commands`] — slash-command parsing + palette,
 //! - [`models`] — per-model context-window + price table,
@@ -21,6 +23,8 @@
 pub mod commands;
 pub mod diff;
 pub mod editor;
+pub mod flow;
+pub mod flow_render;
 pub mod highlight;
 pub mod markdown;
 pub mod models;

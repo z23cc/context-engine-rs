@@ -93,8 +93,10 @@ pub fn compose(state: &State, width: usize, height: usize) -> Composed {
 }
 
 /// The header: `⬡ Nerve  <provider>/<model>  · N tools  · mode: <label>`, accent
-/// logo over a reversed bar. Ports `headerLine`. When a delegate session is active
-/// (DA-5d) the right side becomes the steer indicator instead.
+/// logo over a reversed bar. Ports `headerLine`. A delegate session (DA-5d) shows
+/// the steer indicator instead of the mode; a running flow (C-TUI §3) appends a
+/// `⛓ flow running · <name>` indicator (plus the budget) — a flow runs alongside
+/// the chat, so it is additive rather than replacing the mode/steer side.
 fn header_line(state: &State, width: usize) -> Line<'static> {
     let accent = Style::default().fg(state.accent());
     let dim = palette::dim();
@@ -113,7 +115,32 @@ fn header_line(state: &State, width: usize) -> Line<'static> {
         let mode = approval_mode_label(state.approval_mode);
         spans.push(Span::styled(format!("  · mode: {mode}"), dim));
     }
+    spans.extend(flow_header_spans(state, accent, dim));
     reversed_bar(Line::from(spans), width)
+}
+
+/// The header's flow indicator (C-TUI §3): `⛓ flow running · <name>` plus the
+/// budget (`$spent`, or `$spent / $limit` styled as a warning once one fires).
+/// Empty when no flow is running.
+fn flow_header_spans(state: &State, accent: Style, dim: Style) -> Vec<Span<'static>> {
+    let Some(session) = &state.flow_session else {
+        return Vec::new();
+    };
+    let mut spans = vec![Span::styled(
+        format!("  · ⛓ flow running · {}", session.name),
+        accent,
+    )];
+    if let Some(budget) = &state.flow_budget {
+        let (text, style) = match budget.warn_limit_usd {
+            Some(limit) => (
+                format!("  · ${:.2}/${:.2}", budget.spent_usd, limit),
+                palette::yellow(),
+            ),
+            None => (format!("  · ${:.2}", budget.spent_usd), dim),
+        };
+        spans.push(Span::styled(text, style));
+    }
+    spans
 }
 
 /// Format a token count compactly (`12.3k`). Ports `formatTokens`.
@@ -551,6 +578,53 @@ mod tests {
         assert!(header.contains("/done to return"), "{header}");
         // The mode label is replaced by the steer indicator while steering.
         assert!(!header.contains("mode:"), "{header}");
+    }
+
+    #[test]
+    fn header_shows_flow_running_indicator_and_budget() {
+        use crate::app::state::{FlowBudget, FlowSession};
+        let mut state = sample();
+        state.flow_session = Some(FlowSession {
+            flow_id: "flow-1".into(),
+            name: "vote".into(),
+            strategy: "vote".into(),
+        });
+        state.flow_budget = Some(FlowBudget {
+            spent_usd: 0.42,
+            tokens: 1234,
+            warn_limit_usd: None,
+        });
+        let header = plain(&compose(&state, 120, 12).lines[0]);
+        assert!(header.contains("⛓ flow running · vote"), "{header}");
+        assert!(header.contains("$0.42"), "{header}");
+        // The mode label still shows — a flow runs alongside the chat.
+        assert!(header.contains("mode:"), "{header}");
+    }
+
+    #[test]
+    fn header_flow_budget_warning_shows_limit_in_yellow() {
+        use crate::app::state::{FlowBudget, FlowSession};
+        let mut state = sample();
+        state.flow_session = Some(FlowSession {
+            flow_id: "flow-1".into(),
+            name: "parallel".into(),
+            strategy: "parallel".into(),
+        });
+        state.flow_budget = Some(FlowBudget {
+            spent_usd: 0.8,
+            tokens: 0,
+            warn_limit_usd: Some(1.0),
+        });
+        let header = &compose(&state, 120, 12).lines[0];
+        let text = plain(header);
+        assert!(text.contains("$0.80/$1.00"), "{text}");
+        // The budget span carries the yellow (warning) fg, even under the reversed bar.
+        assert!(
+            header
+                .spans
+                .iter()
+                .any(|s| s.content.contains("$0.80/$1.00") && s.style.fg == Some(Color::Yellow))
+        );
     }
 
     #[test]

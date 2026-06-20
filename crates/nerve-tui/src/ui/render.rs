@@ -139,6 +139,18 @@ pub fn render_block(block: &Block, cols: usize, opts: RenderOptions) -> Vec<Line
         Block::Reasoning(text) => render_reasoning(text, cols),
         Block::Tool(tool) => render_tool(tool, cols, opts),
         Block::Delegate { agent, text } => render_delegate(agent, text, cols),
+        Block::FlowHeader {
+            name,
+            strategy,
+            nodes,
+        } => super::flow_render::render_flow_header(name, strategy, *nodes),
+        Block::FlowNode {
+            node_id,
+            worker,
+            text,
+            done,
+        } => super::flow_render::render_flow_node(node_id, worker, text, done.as_ref(), cols),
+        Block::FlowAudit { tone, text } => super::flow_render::render_flow_audit(*tone, text, cols),
         Block::Notice { tone, text } => render_notice(*tone, text, cols),
     }
 }
@@ -777,5 +789,70 @@ mod tests {
             .collect();
         assert!(buf.contains("read_file"));
         assert!(buf.contains('╭') && buf.contains('╯'));
+    }
+
+    /// A full flow transcript (header → two node panes → audit → outcome) renders
+    /// the orchestration shape; the snapshot pins the glyphs/colors (C-TUI §2).
+    #[test]
+    fn snapshot_flow_transcript() {
+        let blocks = vec![
+            Block::FlowHeader {
+                name: "parallel".into(),
+                strategy: "parallel".into(),
+                nodes: 2,
+            },
+            Block::FlowNode {
+                node_id: "node-0".into(),
+                worker: "claude".into(),
+                text: "alpha answer".into(),
+                done: Some((true, "↑5 ↓3".into())),
+            },
+            Block::FlowNode {
+                node_id: "node-1".into(),
+                worker: "codex".into(),
+                text: "beta answer".into(),
+                done: Some((true, String::new())),
+            },
+            Block::FlowAudit {
+                tone: Tone::Info,
+                text: "⚖ judge picked → node-0".into(),
+            },
+            Block::FlowAudit {
+                tone: Tone::Info,
+                text: "✓ flow done · parallel: 2/2 ok".into(),
+            },
+        ];
+        let lines = blocks_to_lines(&blocks, 60, RenderOptions::default());
+        let rendered = lines.iter().map(styled_line).collect::<Vec<_>>().join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    /// Serialize a styled line as `«tag»text` segments (mirrors `app::render`'s
+    /// snapshot helper) so the snapshot pins glyphs + colors.
+    fn styled_line(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|s| {
+                let mut parts = Vec::new();
+                if let Some(fg) = s.style.fg {
+                    parts.push(format!("{fg:?}").to_lowercase());
+                }
+                if s.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+                {
+                    parts.push("bold".into());
+                }
+                if s.style.add_modifier.contains(ratatui::style::Modifier::DIM) {
+                    parts.push("dim".into());
+                }
+                let tag = parts.join("+");
+                if tag.is_empty() {
+                    s.content.to_string()
+                } else {
+                    format!("«{tag}»{}", s.content)
+                }
+            })
+            .collect()
     }
 }

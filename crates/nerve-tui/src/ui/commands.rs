@@ -191,6 +191,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "end the active delegate session",
     },
     CommandSpec {
+        name: "flow",
+        hint: "run a fleet: parallel|vote|pipeline|--file",
+    },
+    CommandSpec {
         name: "new",
         hint: "fresh session (clears history)",
     },
@@ -240,6 +244,8 @@ pub const HELP_TEXT: &str = "commands:\n  \
 /mode [always-ask|write|yolo]  set the approval mode (bare = show current)\n  \
 /delegate <agent> [task]   start a steerable delegate session (codex|claude|gemini)\n  \
 /done                      end the active delegate session (alias: /close)\n  \
+/flow <strategy> <agents> <task>  run a fleet (parallel|vote|pipeline) · /flow --file <p.json>\n  \
+/flow close                cancel the running flow\n  \
 /new                       start a fresh session (clears history)\n  \
 /login [provider]          how to authenticate a provider\n  \
 /theme                     cycle the accent color\n  \
@@ -363,6 +369,15 @@ mod tests {
         assert!(COMMANDS.iter().any(|c| c.name == "done"));
         assert!(HELP_TEXT.contains("/delegate"));
         assert!(HELP_TEXT.contains("/done"));
+    }
+
+    #[test]
+    fn flow_is_in_palette_and_help_with_close() {
+        assert!(COMMANDS.iter().any(|c| c.name == "flow"));
+        // The bare `/flow` prefix surfaces it in the palette.
+        assert!(match_commands("/flow").iter().any(|c| c.name == "flow"));
+        assert!(HELP_TEXT.contains("/flow"));
+        assert!(HELP_TEXT.contains("/flow close"));
     }
 
     #[test]

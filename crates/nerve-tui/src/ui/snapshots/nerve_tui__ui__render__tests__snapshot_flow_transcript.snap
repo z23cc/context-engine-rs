@@ -1,0 +1,15 @@
+---
+source: crates/nerve-tui/src/ui/render.rs
+expression: rendered
+---
+«cyan»⛓ flow «cyan+bold»parallel«dim» (parallel)«dim» · 2 nodes
+
+«cyan»▸ «cyan+bold»node-0«dim» → «dim»claude«green»  ✓«dim» ↑5 ↓3
+«cyan»╎ «dim»alpha answer
+
+«cyan»▸ «cyan+bold»node-1«dim» → «dim»codex«green»  ✓
+«cyan»╎ «dim»beta answer
+
+«cyan»⚖ judge picked → node-0
+
+«cyan»✓ flow done · parallel: 2/2 ok
