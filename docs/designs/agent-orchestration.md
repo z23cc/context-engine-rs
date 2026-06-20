@@ -551,12 +551,16 @@ freeze a protocol shape we regret ("versioned or dead", north-star §9).
   with **zero protocol commitment**. Land the `FakeWorker`/`ReplayWorker` golden tests. *Early
   flagship demo: "run the same task across claude + codex + grok, collect all results."*
 
-- **Wave C2 — the additive protocol (= P3 workflow-defs surface).** Add `flow.start`/`flow.get`/
-  `flow.list`/`flow.close` + `FlowStarted`/`FlowNode*`/`FlowEdge`/`FlowCompleted` + `Executor::Flow`
-  (the totality test forces the wiring). Regenerate `docs/protocol/*`; pass the drift test. Reuse
-  `ApprovalRequested` + add `flow.respond`; add `session_id() → flow_id` so the TUI renders node panes
-  and the existing approval modal works with zero rework. Load named `WorkflowDef`s via
-  `Capabilities::discover`.
+- **Wave C2 — the additive protocol (= P3 workflow-defs surface). [SHIPPED]** Added `flow.start`/
+  `flow.get`/`flow.list`/`flow.close`/`flow.respond` + `FlowStarted`/`FlowNode*`/`FlowEdge`/
+  `FlowNodeAgent`/`FlowCompleted`/`FlowFailed` + `Executor::Flow` (the totality test forced the
+  wiring), bumping `RUNTIME_PROTOCOL_VERSION` `"3"` → `"4"`; `docs/protocol/*` regenerated, drift +
+  round-trip tests green. Reused `ApprovalRequested` + added `flow.respond`; `session_id() → flow_id`
+  routes per-id fan-out + the existing approval modal with zero client rework. `flow.start` runs the
+  C1 engine as one cancellable daemon job (`crate::flow_job`; `job_id` == `flow_id`). **Deferred to a
+  later wave:** loading *named* `WorkflowDef`s via `Capabilities::discover` — the protocol carries the
+  inline-or-`workflow_ref` shape, but a `workflow_ref` is refused with a clear message until the P3
+  workflow-def loader lands (the inline `workflow` path is fully wired + tested).
 
 - **Wave C3 — pipeline + shared context + steer/close + budget.** Add `Strategy::Pipeline` (stage N
   reads the ledger), `flow.steer`/`flow.close` for live branches (reuse `LiveSessions` teardown), the

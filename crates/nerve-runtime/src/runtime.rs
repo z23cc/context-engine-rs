@@ -123,6 +123,13 @@ where
             | RuntimeCommand::DelegateClose { .. } => Err(RuntimeError::adapter(
                 "delegate commands are executed by the host delegate runtime, not the core runtime",
             )),
+            RuntimeCommand::FlowStart { .. }
+            | RuntimeCommand::FlowGet { .. }
+            | RuntimeCommand::FlowList
+            | RuntimeCommand::FlowClose { .. }
+            | RuntimeCommand::FlowRespond { .. } => Err(RuntimeError::adapter(
+                "flow commands are executed by the host flow engine, not the core runtime",
+            )),
         }
     }
 }

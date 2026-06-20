@@ -37,7 +37,7 @@ mod engine;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use driver::{Driver, FactoryResolver, FlowProgress, WorkerResolver};
+pub(crate) use driver::{Driver, FactoryResolver, FlowObserver, FlowProgress, WorkerResolver};
 
 use crate::worker::TurnResult;
 use nerve_runtime::Join;

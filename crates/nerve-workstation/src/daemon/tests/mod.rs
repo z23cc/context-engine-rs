@@ -3,6 +3,8 @@ mod delegate;
 mod delegate_session;
 #[cfg(unix)]
 mod delegate_session_codex;
+#[cfg(unix)]
+mod flow;
 
 use super::router::{RuntimeDaemonRouter, runtime_event_notification};
 use crate::jobs::JobManager;
@@ -125,7 +127,7 @@ fn initialize_returns_runtime_info() {
     let responses = dispatch(&router, &output, rpc(json!(1), "initialize", json!({})));
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["result"]["protocol"], "nerve-runtime");
-    assert_eq!(responses[0]["result"]["protocolVersion"], "3");
+    assert_eq!(responses[0]["result"]["protocolVersion"], "4");
     assert_eq!(responses[0]["result"]["serverInfo"]["name"], "nerve");
     assert_eq!(
         responses[0]["result"]["capabilities"]["jobs"]["methods"][0],

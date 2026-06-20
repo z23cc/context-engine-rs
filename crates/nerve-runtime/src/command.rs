@@ -1,4 +1,4 @@
-use crate::RiskTier;
+use crate::{RiskTier, WorkflowDef};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +26,11 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "delegate.start",
     "delegate.steer",
     "delegate.close",
+    "flow.start",
+    "flow.get",
+    "flow.list",
+    "flow.close",
+    "flow.respond",
 ];
 
 /// Transport-neutral command understood by human-facing runtime adapters.
@@ -183,6 +188,60 @@ pub enum RuntimeCommand {
     /// [`Self::DelegateStart`] job id (see [`Self::DelegateSteer`]).
     #[serde(rename = "delegate.close")]
     DelegateClose { session_id: String },
+    /// Start a declarative orchestration workflow (the Conductor, design §4) as one
+    /// cancellable **job**: the host job manager runs the deterministic flow engine
+    /// (C1) and the `job_id` IS the `flow_id`. The `workflow` is either an inline
+    /// [`WorkflowDef`] or a named reference resolved from a loaded `WorkflowDef`
+    /// data file ([`FlowSource`]). Progress streams back as the `flow_*` events
+    /// ([`crate::RuntimeEvent::FlowStarted`] …); approvals reuse
+    /// [`crate::RuntimeEvent::ApprovalRequested`] keyed by `flow_id`.
+    #[serde(rename = "flow.start")]
+    FlowStart {
+        #[serde(flatten)]
+        workflow: FlowSource,
+        /// Named-output seeds the engine exposes to the first node's task template.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<BTreeMap<String, String>>,
+        /// Workspace to run against when more than one is registered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Fetch one live or recently-finished flow by id. Mirrors `session.get`.
+    #[serde(rename = "flow.get")]
+    FlowGet { flow_id: String },
+    /// List flows the host knows about. Mirrors `session.list`.
+    #[serde(rename = "flow.list")]
+    FlowList,
+    /// Close (cancel) a live flow, tearing its workers down. Mirrors
+    /// `session.close` / `delegate.close`. `flow_id` is the originating
+    /// [`Self::FlowStart`] job id.
+    #[serde(rename = "flow.close")]
+    FlowClose { flow_id: String },
+    /// Reply to a flow approval request. **Reuses** the existing
+    /// [`SessionApprovalDecision`] + the host `ApprovalHub` round-trip, keyed by
+    /// `flow_id` (a flow branch is just another approval id). No new approval type.
+    #[serde(rename = "flow.respond")]
+    FlowRespond {
+        flow_id: String,
+        request_id: String,
+        decision: SessionApprovalDecision,
+    },
+}
+
+/// The workflow a [`RuntimeCommand::FlowStart`] runs: either an **inline**
+/// [`WorkflowDef`] or a **named reference** to a loaded `WorkflowDef` data file
+/// (design §4 / §6, the P3 workflow-defs surface). Untagged so a client can send
+/// either `{ "workflow": { ... } }` or `{ "workflow_ref": "name" }` inside the
+/// `flow.start` command without an extra discriminant.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FlowSource {
+    /// An inline workflow definition (the whole strategy as data). Boxed so the
+    /// large inline-def variant doesn't bloat every command value (the named-ref
+    /// variant is tiny).
+    Inline { workflow: Box<WorkflowDef> },
+    /// A named workflow resolved from a loaded data file (loaded, not compiled).
+    Named { workflow_ref: String },
 }
 
 /// Autonomy posture handed to a delegated external agent CLI, mapping to each
@@ -287,6 +346,11 @@ impl RuntimeCommand {
             Self::DelegateStart { .. } => "delegate.start",
             Self::DelegateSteer { .. } => "delegate.steer",
             Self::DelegateClose { .. } => "delegate.close",
+            Self::FlowStart { .. } => "flow.start",
+            Self::FlowGet { .. } => "flow.get",
+            Self::FlowList => "flow.list",
+            Self::FlowClose { .. } => "flow.close",
+            Self::FlowRespond { .. } => "flow.respond",
         }
     }
 
@@ -312,7 +376,12 @@ impl RuntimeCommand {
             | Self::AuthLogout { .. }
             | Self::DelegateStart { .. }
             | Self::DelegateSteer { .. }
-            | Self::DelegateClose { .. } => None,
+            | Self::DelegateClose { .. }
+            | Self::FlowStart { .. }
+            | Self::FlowGet { .. }
+            | Self::FlowList
+            | Self::FlowClose { .. }
+            | Self::FlowRespond { .. } => None,
         }
     }
 }
@@ -507,6 +576,116 @@ mod tests {
             assert_eq!(serde_json::to_value(mode).unwrap(), serde_json::json!(name));
             assert_eq!(mode.max_auto_tier(), tier);
         }
+    }
+
+    #[test]
+    fn flow_start_round_trips_inline_workflow() {
+        // An inline WorkflowDef parses through the untagged `FlowSource`.
+        let value = serde_json::json!({
+            "kind": "flow.start",
+            "workflow": {
+                "schema_version": 1,
+                "name": "fan",
+                "strategy": {
+                    "type": "single",
+                    "step": {
+                        "worker": { "kind": "cli", "name": "claude" },
+                        "task": "do it"
+                    }
+                }
+            },
+            "inputs": { "seed": "x" }
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse flow.start");
+        assert_eq!(command.name(), "flow.start");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::FlowStart {
+                workflow,
+                inputs,
+                workspace,
+            } => {
+                match workflow {
+                    FlowSource::Inline { workflow } => assert_eq!(workflow.name, "fan"),
+                    FlowSource::Named { .. } => panic!("expected inline workflow"),
+                }
+                assert_eq!(inputs.unwrap().get("seed").map(String::as_str), Some("x"));
+                assert_eq!(workspace, None);
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"flow.start"));
+    }
+
+    #[test]
+    fn flow_start_round_trips_named_reference() {
+        let value = serde_json::json!({
+            "kind": "flow.start",
+            "workflow_ref": "triage",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse flow.start ref");
+        match command {
+            RuntimeCommand::FlowStart { workflow, .. } => match workflow {
+                FlowSource::Named { workflow_ref } => assert_eq!(workflow_ref, "triage"),
+                FlowSource::Inline { .. } => panic!("expected named ref"),
+            },
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn flow_get_list_close_round_trip() {
+        let get: RuntimeCommand =
+            serde_json::from_value(serde_json::json!({ "kind": "flow.get", "flow_id": "f1" }))
+                .expect("parse flow.get");
+        assert_eq!(get.name(), "flow.get");
+        match get {
+            RuntimeCommand::FlowGet { flow_id } => assert_eq!(flow_id, "f1"),
+            other => panic!("unexpected: {}", other.name()),
+        }
+
+        let list: RuntimeCommand =
+            serde_json::from_value(serde_json::json!({ "kind": "flow.list" }))
+                .expect("parse flow.list");
+        assert_eq!(list.name(), "flow.list");
+        assert!(matches!(list, RuntimeCommand::FlowList));
+
+        let close: RuntimeCommand =
+            serde_json::from_value(serde_json::json!({ "kind": "flow.close", "flow_id": "f1" }))
+                .expect("parse flow.close");
+        assert_eq!(close.name(), "flow.close");
+        match close {
+            RuntimeCommand::FlowClose { flow_id } => assert_eq!(flow_id, "f1"),
+            other => panic!("unexpected: {}", other.name()),
+        }
+        for name in ["flow.get", "flow.list", "flow.close"] {
+            assert!(RUNTIME_COMMAND_NAMES.contains(&name));
+        }
+    }
+
+    #[test]
+    fn flow_respond_reuses_session_approval_decision() {
+        let value = serde_json::json!({
+            "kind": "flow.respond",
+            "flow_id": "f1",
+            "request_id": "approval-3",
+            "decision": "allow_always",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse flow.respond");
+        assert_eq!(command.name(), "flow.respond");
+        match command {
+            RuntimeCommand::FlowRespond {
+                flow_id,
+                request_id,
+                decision,
+            } => {
+                assert_eq!(flow_id, "f1");
+                assert_eq!(request_id, "approval-3");
+                assert_eq!(decision, SessionApprovalDecision::AllowAlways);
+            }
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"flow.respond"));
     }
 
     #[test]

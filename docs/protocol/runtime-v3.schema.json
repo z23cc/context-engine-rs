@@ -205,6 +205,89 @@
       ],
       "type": "string"
     },
+    "BudgetSpec": {
+      "description": "The fleet budget envelope (design §6). C1 threads it as a placeholder; C3 wires the deterministic debit/cancel loop. All fields optional — an omitted budget caps nothing (the engine still bounds concurrency separately).",
+      "properties": {
+        "max_total_cost_usd": {
+          "description": "Total USD ceiling across the whole tree.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "description": "Total token ceiling across the whole tree.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_workers": {
+          "description": "Maximum number of workers across the whole tree (the global semaphore).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ContextSplit": {
+      "description": "How a [`Strategy::MapReduce`] splits its shared context across map workers. Defined-ahead for C5; C1 never reads it.",
+      "oneOf": [
+        {
+          "description": "Split a build_context selection into `n` roughly equal shards.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "shards"
+              ],
+              "type": "string"
+            },
+            "n": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "n"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One map worker per listed path group.",
+          "properties": {
+            "groups": {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "paths"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "groups",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "DelegateAutonomy": {
       "description": "Autonomy posture handed to a delegated external agent CLI, mapping to each vendor's sandbox/permission flag: codex `--sandbox`, claude `--permission-mode`, gemini `--approval-mode` (read-only | edit | full). Defaults to the most restricted ([`Self::ReadOnly`]) so an omitted field never grants more than read access.",
       "oneOf": [
@@ -228,6 +311,192 @@
             "full"
           ],
           "type": "string"
+        }
+      ]
+    },
+    "FailPolicy": {
+      "description": "What the engine does when a step's worker fails (`ok == false` or errored).",
+      "oneOf": [
+        {
+          "description": "Stop the whole flow on this failure (the safe default).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "abort"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Record the failure and continue (used by `Parallel` branches).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "continue"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Retry the step up to `n` more times before applying `Abort`.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "retry"
+              ],
+              "type": "string"
+            },
+            "n": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "n"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FlowNodeUsage": {
+      "description": "A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`]. Mirrors the token fields of [`AgentEventKind::Usage`]; cache counts are optional and omitted when the worker did not report caching.",
+      "properties": {
+        "cache_creation_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "FlowRunOutcome": {
+      "description": "The aggregated outcome of a finished flow, carried on [`RuntimeEvent::FlowCompleted`]: whether the flow succeeded under its join/fail policy, a one-line summary, and the flow's final text (the kept results concatenated, in declared order).",
+      "properties": {
+        "final_text": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "FlowWorkerKind": {
+      "description": "Which worker family ran a flow node — the only place the CLI-vs-provider distinction is visible to a flow client (design §2/§7). Protocol data; the host maps its own worker kind onto these.",
+      "oneOf": [
+        {
+          "description": "An external agentic CLI (codex / claude / gemini) subprocess.",
+          "enum": [
+            "cli"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An in-process provider loop over the Nerve tool surface.",
+          "enum": [
+            "provider"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Join": {
+      "description": "How parallel/vote results are folded — always in **declared `Step` order**, never completion order (design §3, the determinism invariant).",
+      "oneOf": [
+        {
+          "description": "Keep every branch result (in declared order).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keep the first OK result in declared order (a branch with `ok == true`).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "first_ok"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Keep results once `n` branches succeed (the first `n` OKs in declared order); a short quorum yields whatever OKs there were.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "quorum"
+              ],
+              "type": "string"
+            },
+            "n": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "n"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -829,6 +1098,144 @@
             "session_id"
           ],
           "type": "object"
+        },
+        {
+          "anyOf": [
+            {
+              "description": "An inline workflow definition (the whole strategy as data). Boxed so the large inline-def variant doesn't bloat every command value (the named-ref variant is tiny).",
+              "properties": {
+                "workflow": {
+                  "$ref": "#/definitions/WorkflowDef"
+                }
+              },
+              "required": [
+                "workflow"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A named workflow resolved from a loaded data file (loaded, not compiled).",
+              "properties": {
+                "workflow_ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "workflow_ref"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Start a declarative orchestration workflow (the Conductor, design §4) as one cancellable **job**: the host job manager runs the deterministic flow engine (C1) and the `job_id` IS the `flow_id`. The `workflow` is either an inline [`WorkflowDef`] or a named reference resolved from a loaded `WorkflowDef` data file ([`FlowSource`]). Progress streams back as the `flow_*` events ([`crate::RuntimeEvent::FlowStarted`] …); approvals reuse [`crate::RuntimeEvent::ApprovalRequested`] keyed by `flow_id`.",
+          "properties": {
+            "inputs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Named-output seeds the engine exposes to the first node's task template.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "flow.start"
+              ],
+              "type": "string"
+            },
+            "workspace": {
+              "description": "Workspace to run against when more than one is registered.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fetch one live or recently-finished flow by id. Mirrors `session.get`.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "flow.get"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List flows the host knows about. Mirrors `session.list`.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "flow.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Close (cancel) a live flow, tearing its workers down. Mirrors `session.close` / `delegate.close`. `flow_id` is the originating [`Self::FlowStart`] job id.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "flow.close"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reply to a flow approval request. **Reuses** the existing [`SessionApprovalDecision`] + the host `ApprovalHub` round-trip, keyed by `flow_id` (a flow branch is just another approval id). No new approval type.",
+          "properties": {
+            "decision": {
+              "$ref": "#/definitions/SessionApprovalDecision"
+            },
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "flow.respond"
+              ],
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "flow_id",
+            "kind",
+            "request_id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1223,6 +1630,197 @@
             "agent",
             "job_id",
             "text",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative [`Strategy`] so a client can render the DAG shape before any node runs. All `flow_*` events carry the `flow_id` (which is the flow job's id).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "strategy": {
+              "$ref": "#/definitions/Strategy"
+            },
+            "type": {
+              "enum": [
+                "flow_started"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "strategy",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow node's worker has started. `worker` is a human-readable label (the CLI catalog name or `provider/model`); `kind` is the worker family (`cli` | `provider`) so a client can badge the node pane.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/FlowWorkerKind"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_node_started"
+              ],
+              "type": "string"
+            },
+            "worker": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind",
+            "node_id",
+            "type",
+            "worker"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is the node's token usage (zeroed when the worker reported none).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "flow_node_finished"
+              ],
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/definitions/FlowNodeUsage"
+            }
+          },
+          "required": [
+            "flow_id",
+            "node_id",
+            "ok",
+            "type",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph. Emitted as the engine wires a downstream node to its upstream producer.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_edge"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "from",
+            "to",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A structured agent-loop step scoped to a flow node — **reuses [`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the TUI renders a node pane exactly as a session pane keyed by `node_id`.",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/AgentEventKind"
+            },
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_node_agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "flow_id",
+            "node_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow finished with an aggregated outcome (the fold of the recorded node results, in declared order — design §3).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/definitions/FlowRunOutcome"
+            },
+            "type": {
+              "enum": [
+                "flow_completed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "outcome",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow failed. `node_id` names the offending node when the failure is node-local; `error` is a human-readable message.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "flow_failed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "flow_id",
             "type"
           ],
           "type": "object"
@@ -1634,6 +2232,197 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative [`Strategy`] so a client can render the DAG shape before any node runs. All `flow_*` events carry the `flow_id` (which is the flow job's id).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "strategy": {
+              "$ref": "#/definitions/Strategy"
+            },
+            "type": {
+              "enum": [
+                "flow_started"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "strategy",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow node's worker has started. `worker` is a human-readable label (the CLI catalog name or `provider/model`); `kind` is the worker family (`cli` | `provider`) so a client can badge the node pane.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/FlowWorkerKind"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_node_started"
+              ],
+              "type": "string"
+            },
+            "worker": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind",
+            "node_id",
+            "type",
+            "worker"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is the node's token usage (zeroed when the worker reported none).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "flow_node_finished"
+              ],
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/definitions/FlowNodeUsage"
+            }
+          },
+          "required": [
+            "flow_id",
+            "node_id",
+            "ok",
+            "type",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph. Emitted as the engine wires a downstream node to its upstream producer.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_edge"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "from",
+            "to",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A structured agent-loop step scoped to a flow node — **reuses [`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the TUI renders a node pane exactly as a session pane keyed by `node_id`.",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/AgentEventKind"
+            },
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_node_agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "flow_id",
+            "node_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow finished with an aggregated outcome (the fold of the recorded node results, in declared order — design §3).",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/definitions/FlowRunOutcome"
+            },
+            "type": {
+              "enum": [
+                "flow_completed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "outcome",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A flow failed. `node_id` names the offending node when the failure is node-local; `error` is a human-readable message.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "flow_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "flow_failed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "error",
+            "flow_id",
+            "type"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -1989,6 +2778,362 @@
           "type": "string"
         }
       ]
+    },
+    "Step": {
+      "description": "One unit of orchestrated work: which worker, what task, how autonomous, and what to do if it fails.",
+      "properties": {
+        "autonomy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DelegateAutonomy"
+            }
+          ],
+          "default": "read_only",
+          "description": "Autonomy posture (maps to the CLI sandbox flag / provider exec capability)."
+        },
+        "on_fail": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FailPolicy"
+            }
+          ],
+          "default": {
+            "kind": "abort"
+          },
+          "description": "What the engine does when this step's worker fails."
+        },
+        "task": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TaskTemplate"
+            }
+          ],
+          "description": "The task handed to the worker (with minimal named-output interpolation)."
+        },
+        "worker": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkerRef"
+            }
+          ],
+          "description": "Which worker runs this step."
+        }
+      },
+      "required": [
+        "task",
+        "worker"
+      ],
+      "type": "object"
+    },
+    "Strategy": {
+      "description": "The closed, additive-versioned set of orchestration combinators (design §3).\n\nC1 implements `Single` + `Parallel`; the rest are defined-ahead for C5 so the data is stable. `#[non_exhaustive]` keeps adding variants additive for downstream matchers, and the engine's interpreter matches every variant explicitly (returning `Terminate` with an \"unimplemented strategy\" outcome for the not-yet-wired ones), so the totality is compile-checked.",
+      "oneOf": [
+        {
+          "description": "Run one worker and return its result (design §3). **Implemented in C1.**",
+          "properties": {
+            "step": {
+              "$ref": "#/definitions/Step"
+            },
+            "type": {
+              "enum": [
+                "single"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "step",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fan out to N branches in parallel, then fold by `join` in **declared order** (design §3, the load-bearing invariant). **Implemented in C1.**",
+          "properties": {
+            "branches": {
+              "items": {
+                "$ref": "#/definitions/Step"
+              },
+              "type": "array"
+            },
+            "join": {
+              "$ref": "#/definitions/Join"
+            },
+            "type": {
+              "enum": [
+                "parallel"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "branches",
+            "join",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Run stages in sequence; stage N reads the ledger outputs of stages `< N`. Defined-ahead for C3/C5.",
+          "properties": {
+            "stages": {
+              "items": {
+                "$ref": "#/definitions/Step"
+              },
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "pipeline"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "stages",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Map a step over a context split, then reduce. Defined-ahead for C5.",
+          "properties": {
+            "map": {
+              "$ref": "#/definitions/Step"
+            },
+            "over": {
+              "$ref": "#/definitions/ContextSplit"
+            },
+            "reduce": {
+              "$ref": "#/definitions/Step"
+            },
+            "type": {
+              "enum": [
+                "map_reduce"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "map",
+            "over",
+            "reduce",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Generate `candidates`, keep the top `k`, and let a `judge` pick. Defined-ahead for C5.",
+          "properties": {
+            "candidates": {
+              "items": {
+                "$ref": "#/definitions/Step"
+              },
+              "type": "array"
+            },
+            "judge": {
+              "$ref": "#/definitions/Step"
+            },
+            "k": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "vote_judge"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "candidates",
+            "judge",
+            "k",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Multi-round debate between `sides`, adjudicated by `judge`. Defined-ahead for C5.",
+          "properties": {
+            "judge": {
+              "$ref": "#/definitions/Step"
+            },
+            "rounds": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "sides": {
+              "items": {
+                "$ref": "#/definitions/Step"
+              },
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "debate"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "judge",
+            "rounds",
+            "sides",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A planner emits a child strategy the engine runs bounded by `max_depth` (design §8). Defined-ahead for C5.",
+          "properties": {
+            "child": {
+              "$ref": "#/definitions/Strategy"
+            },
+            "planner": {
+              "$ref": "#/definitions/Step"
+            },
+            "type": {
+              "enum": [
+                "hierarchical"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "child",
+            "planner",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskTemplate": {
+      "description": "A minimal task template (design §3, open question 3): a plain prompt plus optional `{{name}}` placeholders substituted from named ledger outputs. **No expression language** — named-output substitution only, deliberately.",
+      "properties": {
+        "prompt": {
+          "description": "The raw prompt with optional `{{name}}` placeholders.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "WorkerRef": {
+      "description": "Which worker runs a [`Step`]. The only place the CLI-vs-provider distinction is encoded in the data (design §7); the engine resolves it through the `WorkerFactory` to a kind-agnostic `AgentWorker`.",
+      "oneOf": [
+        {
+          "description": "An external agentic CLI by catalog name (`codex` | `claude` | `gemini`).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "cli"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An in-process provider loop by provider + model.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "provider"
+              ],
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "model",
+            "provider"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A worker resolved from a named `WorkerDef` data file (design §6, C6). Defined ahead; the C1 engine does not resolve `Named` yet.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "named"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkflowDef": {
+      "description": "A complete, declarative workflow: a named [`Strategy`] plus the fleet-wide governance envelope (design §3). `schema_version` is bumped only on a breaking change to the data shape (additive fields don't bump it).",
+      "properties": {
+        "budget": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BudgetSpec"
+            }
+          ],
+          "default": {},
+          "description": "Fleet budget envelope (design §6). Threaded as a placeholder in C1 — the debit/cancel loop lands in C3."
+        },
+        "max_depth": {
+          "default": 2,
+          "description": "Hierarchy depth ceiling (design §8). Default 2, matching today's `DEFAULT_MAX_DEPTH`. Threaded as a placeholder in C1.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "A human-readable name for the workflow (surfaced in logs / the ledger).",
+          "type": "string"
+        },
+        "schema_version": {
+          "description": "The on-disk schema version of this workflow document (current: `1`).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "strategy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Strategy"
+            }
+          ],
+          "description": "The orchestration strategy the engine interprets."
+        }
+      },
+      "required": [
+        "name",
+        "schema_version",
+        "strategy"
+      ],
+      "type": "object"
     }
   },
   "properties": {

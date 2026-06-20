@@ -26,12 +26,27 @@ use std::sync::Arc;
 const DEFAULT_FLOW_CONCURRENCY: usize = 4;
 
 /// A streamed progress line from the engine: which node produced it and the
-/// underlying [`WorkerEvent`]. The hidden CLI renders these; a future
-/// `FlowNodeAgent` protocol event (C2) carries the same `(node, event)` pair.
+/// underlying [`WorkerEvent`]. The hidden CLI renders these; the C2
+/// `FlowNodeAgent` protocol event carries the same `(node, event)` pair.
 #[derive(Debug, Clone)]
 pub(crate) struct FlowProgress {
     pub(crate) node: String,
     pub(crate) event: WorkerEvent,
+}
+
+/// Node-lifecycle observer the driver fires so a host (C2's flow job) can map the
+/// run onto `flow_*` protocol events without parsing the progress stream. Additive
+/// over C1's `on_progress` (which still fires per worker event): C1's hidden CLI
+/// sets no observer; C2's flow job installs one that emits
+/// [`RuntimeEvent::FlowNodeStarted`]/[`FlowNodeFinished`]. All callbacks fire from
+/// the driver's own threads, so an implementor must be `Sync`.
+pub(crate) trait FlowObserver: Sync {
+    /// A node's worker is about to start. `worker` is the declared [`WorkerRef`].
+    fn node_started(&self, node: &str, worker: &WorkerRef);
+    /// A node's worker finished, with its recorded [`TurnResult`]. Fired in
+    /// declared order (from the ledger-write loop), so two parallel branches'
+    /// `node_finished` callbacks are ordered by branch index, not completion.
+    fn node_finished(&self, node: &str, result: &TurnResult);
 }
 
 /// How the driver resolves a [`WorkerRef`] into a runnable [`AgentWorker`]. The
@@ -105,6 +120,9 @@ pub(crate) struct Driver<'a> {
     concurrency: usize,
     /// Optional progress sink: each `(node, event)` pair as it is recorded.
     on_progress: Option<&'a (dyn Fn(FlowProgress) + Sync)>,
+    /// Optional node-lifecycle observer (C2): node start/finish callbacks the flow
+    /// job maps onto `flow_*` protocol events.
+    observer: Option<&'a dyn FlowObserver>,
 }
 
 impl<'a> Driver<'a> {
@@ -122,6 +140,7 @@ impl<'a> Driver<'a> {
             root,
             concurrency: DEFAULT_FLOW_CONCURRENCY,
             on_progress: None,
+            observer: None,
         }
     }
 
@@ -129,6 +148,14 @@ impl<'a> Driver<'a> {
     #[must_use]
     pub(crate) fn with_progress(mut self, sink: &'a (dyn Fn(FlowProgress) + Sync)) -> Self {
         self.on_progress = Some(sink);
+        self
+    }
+
+    /// Attach a node-lifecycle [`FlowObserver`] (C2): the flow job maps its
+    /// `node_started`/`node_finished` callbacks onto `flow_*` protocol events.
+    #[must_use]
+    pub(crate) fn with_observer(mut self, observer: &'a dyn FlowObserver) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -237,6 +264,13 @@ impl<'a> Driver<'a> {
                 self.ledger.record_event(node.as_str(), event);
             }
             self.ledger.record_result(node.as_str(), &result);
+            // Fire the lifecycle observer in declared order (this loop is the
+            // declared-order ledger write), so two parallel branches' finishes are
+            // ordered by branch index, not completion — C2 maps this to
+            // FlowNodeFinished.
+            if let Some(observer) = self.observer {
+                observer.node_finished(node.as_str(), &result);
+            }
             state.record_result(node, result);
         }
     }
@@ -265,6 +299,11 @@ impl<'a> Driver<'a> {
             Ok(worker) => worker,
             Err(err) => return (failed_result(&format!("resolve failed: {err}")), Vec::new()),
         };
+        // A node whose worker resolved is genuinely starting: fire the lifecycle
+        // observer (C2 maps this to FlowNodeStarted) with the declared WorkerRef.
+        if let Some(observer) = self.observer {
+            observer.node_started(node.as_str(), &step_def.worker);
+        }
         let task = self.build_task(step_def);
         let ctx = self.worker_context();
         let node_id = node.clone();

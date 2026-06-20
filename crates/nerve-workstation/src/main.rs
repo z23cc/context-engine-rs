@@ -20,6 +20,7 @@ mod delegate_session_codex;
 mod delegate_tool;
 mod exec_tool;
 mod flow;
+mod flow_job;
 mod hooks;
 mod jobs;
 mod mcp;

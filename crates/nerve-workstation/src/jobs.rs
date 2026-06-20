@@ -9,6 +9,7 @@ use crate::delegate_live::LiveSessions;
 use crate::delegate_proxy::{DelegateDecisions, DelegateProxy};
 use crate::delegate_runtime::{self, DelegateAgent, DelegateError, DelegateParser};
 use crate::delegate_session::DelegateSession;
+use crate::flow_job::{self, FlowDeps, LiveFlows};
 use crate::policy::{Policy, ToolGate};
 use crate::sandbox::SandboxLauncher;
 use crate::session::SessionStore;
@@ -17,8 +18,9 @@ use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::AgentEvent;
 use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{
-    DelegateAutonomy, RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobGetRequest,
-    RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
+    DelegateAutonomy, FlowSource, RuntimeCommand, RuntimeEvent, RuntimeJobError,
+    RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest,
+    RuntimeJobStatus, SessionApprovalDecision,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -51,10 +53,17 @@ pub(crate) struct JobManager {
     /// launcher unless the daemon was started with `--allow-delegate`, so a
     /// served daemon refuses to spawn external agents by default.
     delegate_launcher: Arc<dyn SandboxLauncher>,
+    /// Whether CLI workers (and `delegate_agent`) are lifted: the daemon's
+    /// `--allow-delegate` flag. A `flow.start` whose nodes include CLI workers needs
+    /// this lift (provider-worker flows do not), mirroring the delegate job path.
+    allow_delegate: bool,
     /// Live, steerable delegated sessions (DA-5a), keyed by their `delegate.start`
     /// job id. A `claude` start job registers its session here and parks; later
     /// `delegate.steer` / `delegate.close` commands route through this registry.
     live_sessions: LiveSessions,
+    /// Live + recently-finished flows (C2), keyed by their `flow.start` job id (the
+    /// `flow_id`). `flow.get` / `flow.list` / `flow.close` route through here.
+    flows: LiveFlows,
     jobs: Mutex<JobStore>,
     next_id: AtomicU64,
     emit: Arc<EventEmitter>,
@@ -172,7 +181,9 @@ impl JobManager {
             sessions,
             auth: AuthManager::new(Arc::clone(&emit)),
             delegate_launcher,
+            allow_delegate,
             live_sessions: LiveSessions::default(),
+            flows: LiveFlows::default(),
             jobs: Mutex::new(JobStore::default()),
             next_id: AtomicU64::new(1),
             emit,
@@ -296,6 +307,7 @@ impl JobManager {
             Executor::Delegate => self.run_delegate_command(&job_id, command, &token),
             Executor::Session => self.sessions.handle_command(command, &token),
             Executor::Auth => self.auth.handle_command(command, &token),
+            Executor::Flow => self.run_flow_command(&job_id, command, &token),
             Executor::CoreHub => self.runtime.handle_command_cancellable(command, &token),
         };
         let event = {
@@ -426,6 +438,84 @@ impl JobManager {
             _ => Err(nerve_runtime::RuntimeError::adapter(
                 "expected a delegate.* command",
             )),
+        }
+    }
+
+    /// Execute a `flow.*` command (C2). `flow.start` runs the deterministic C1 flow
+    /// engine as ONE cancellable job (the `job_id` IS the `flow_id`), mapping the
+    /// engine's worker events + node lifecycle onto the `flow_*` runtime events;
+    /// `flow.get` / `flow.list` / `flow.close` route through the live-flow registry;
+    /// `flow.respond` resolves a pending approval keyed by `flow_id` through the SAME
+    /// [`ApprovalHub`](crate::session_manager::ApprovalHub) `session.respond` uses.
+    fn run_flow_command(
+        &self,
+        job_id: &str,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::FlowStart { workflow, .. } => {
+                self.run_flow_start(job_id, workflow, token)
+            }
+            RuntimeCommand::FlowGet { flow_id } => flow_job::run_flow_get(&flow_id, &self.flows),
+            RuntimeCommand::FlowList => flow_job::run_flow_list(&self.flows),
+            RuntimeCommand::FlowClose { flow_id } => {
+                flow_job::run_flow_close(&flow_id, &self.flows)
+            }
+            RuntimeCommand::FlowRespond {
+                flow_id,
+                request_id,
+                decision,
+            } => self.run_flow_respond(&flow_id, &request_id, decision),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected a flow.* command",
+            )),
+        }
+    }
+
+    /// Run a `flow.start` as a job: build the shared [`FlowDeps`] from the daemon's
+    /// own runtime / registry / policy / launcher / approval hub, then drive the
+    /// flow engine to completion ([`flow_job::run_flow_start`]). The `job_id` is the
+    /// `flow_id`. CLI worker nodes require the `--allow-delegate` lift; provider
+    /// worker nodes do not (mirrors the C1 `FlowArgs` gating).
+    fn run_flow_start(
+        &self,
+        job_id: &str,
+        workflow: FlowSource,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let deps = self.flow_deps();
+        flow_job::run_flow_start(
+            job_id,
+            workflow,
+            &deps,
+            &self.flows,
+            &self.emit,
+            self.allow_delegate,
+            token,
+        )
+    }
+
+    /// Resolve a `flow.respond` through the shared approval hub keyed by `flow_id`.
+    fn run_flow_respond(
+        &self,
+        flow_id: &str,
+        request_id: &str,
+        decision: SessionApprovalDecision,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        flow_job::run_flow_respond(flow_id, request_id, decision, &self.sessions.approvals())
+    }
+
+    /// Assemble the [`FlowDeps`] the flow engine needs, all cloned from the daemon's
+    /// own deps so a flow reaches tools through the SAME runtime, is gated by the
+    /// SAME policy, and routes approvals through the SAME hub as sessions/delegation.
+    fn flow_deps(&self) -> FlowDeps {
+        FlowDeps {
+            runtime: Arc::clone(&self.runtime),
+            registry: self.registry.clone(),
+            policy: self.policy.clone(),
+            delegate_launcher: Arc::clone(&self.delegate_launcher),
+            approvals: self.sessions.approvals(),
         }
     }
 
@@ -909,6 +999,9 @@ enum Executor {
     Session,
     /// The host `AuthManager` (`auth.*` family).
     Auth,
+    /// The host flow engine (`flow.*` family, C2): runs the deterministic C1
+    /// orchestration engine as a job + the live-flow registry + approval routing.
+    Flow,
     /// The core `Runtime` hub — nerve-core dispatch (`ping` / `tool.*`).
     CoreHub,
 }
@@ -938,6 +1031,11 @@ fn executor_for(command: &RuntimeCommand) -> Executor {
         | RuntimeCommand::AuthComplete { .. }
         | RuntimeCommand::AuthStatus { .. }
         | RuntimeCommand::AuthLogout { .. } => Executor::Auth,
+        RuntimeCommand::FlowStart { .. }
+        | RuntimeCommand::FlowGet { .. }
+        | RuntimeCommand::FlowList
+        | RuntimeCommand::FlowClose { .. }
+        | RuntimeCommand::FlowRespond { .. } => Executor::Flow,
         RuntimeCommand::Ping | RuntimeCommand::ToolList | RuntimeCommand::ToolCall { .. } => {
             Executor::CoreHub
         }
@@ -992,7 +1090,7 @@ mod command_executor_partition {
     /// an executor decision in `every_runtime_command_has_exactly_one_executor`.
     fn representative(name: &str) -> RuntimeCommand {
         let fields: Value = match name {
-            "ping" | "tool.list" | "session.list" => json!({}),
+            "ping" | "tool.list" | "session.list" | "flow.list" => json!({}),
             "tool.call" => json!({ "name": "file_search" }),
             "agent.run" => json!({ "provider": "p", "model": "m", "task": "t" }),
             "session.start" => json!({ "provider": "p", "model": "m" }),
@@ -1008,6 +1106,18 @@ mod command_executor_partition {
             "delegate.start" => json!({ "agent": "codex", "task": "t" }),
             "delegate.steer" => json!({ "session_id": "s", "message": "m" }),
             "delegate.close" => json!({ "session_id": "s" }),
+            "flow.start" => json!({
+                "workflow": {
+                    "schema_version": 1,
+                    "name": "n",
+                    "strategy": {
+                        "type": "single",
+                        "step": { "worker": { "kind": "cli", "name": "claude" }, "task": "t" }
+                    }
+                }
+            }),
+            "flow.get" | "flow.close" => json!({ "flow_id": "f" }),
+            "flow.respond" => json!({ "flow_id": "f", "request_id": "r", "decision": "allow" }),
             other => panic!(
                 "RUNTIME_COMMAND_NAMES gained `{other}` with no representative here; add one and \
                  wire the variant to exactly one executor in `run_job`"
@@ -1052,6 +1162,7 @@ mod command_executor_partition {
             Executor::Delegate,
             Executor::Session,
             Executor::Auth,
+            Executor::Flow,
             Executor::CoreHub,
         ] {
             assert!(
@@ -1079,6 +1190,19 @@ mod command_executor_partition {
             Executor::Session
         );
         assert_eq!(executor_for(&representative("auth.start")), Executor::Auth);
+        for name in [
+            "flow.start",
+            "flow.get",
+            "flow.list",
+            "flow.close",
+            "flow.respond",
+        ] {
+            assert_eq!(
+                executor_for(&representative(name)),
+                Executor::Flow,
+                "`{name}` must route to the flow executor"
+            );
+        }
     }
 
     #[test]

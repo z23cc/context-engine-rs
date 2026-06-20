@@ -7,7 +7,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
-pub const RUNTIME_PROTOCOL_VERSION: &str = "3";
+// v4 (C2): additive `flow.*` command family + `flow_*` events (the Conductor,
+// agent-orchestration design §4). All additions are new serde-tagged variants
+// reusing AgentEventKind / SessionApprovalDecision / ApprovalRequested — no
+// broken or removed fields, so a v3 client keeps working.
+pub const RUNTIME_PROTOCOL_VERSION: &str = "4";
 pub const RUNTIME_DAEMON_NAME: &str = "nerve";
 pub const RUNTIME_EVENT_METHOD: &str = "runtime/event";
 pub const RUNTIME_INFO_METHOD: &str = "runtime/info";

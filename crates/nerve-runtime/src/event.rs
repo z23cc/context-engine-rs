@@ -1,4 +1,4 @@
-use crate::{RiskTier, RuntimeCommand, RuntimeJobError};
+use crate::{RiskTier, RuntimeCommand, RuntimeJobError, Strategy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,6 +105,96 @@ pub enum RuntimeEvent {
         agent: String,
         text: String,
     },
+    /// A flow run (the Conductor, design §4) has started. Carries the declarative
+    /// [`Strategy`] so a client can render the DAG shape before any node runs. All
+    /// `flow_*` events carry the `flow_id` (which is the flow job's id).
+    FlowStarted {
+        flow_id: String,
+        strategy: Strategy,
+    },
+    /// A flow node's worker has started. `worker` is a human-readable label (the
+    /// CLI catalog name or `provider/model`); `kind` is the worker family
+    /// (`cli` | `provider`) so a client can badge the node pane.
+    FlowNodeStarted {
+        flow_id: String,
+        node_id: String,
+        worker: String,
+        kind: FlowWorkerKind,
+    },
+    /// A flow node's worker has finished. `ok` is the node's success; `usage` is
+    /// the node's token usage (zeroed when the worker reported none).
+    FlowNodeFinished {
+        flow_id: String,
+        node_id: String,
+        ok: bool,
+        usage: FlowNodeUsage,
+    },
+    /// A DAG edge `from → to` between two flow nodes, for rendering the graph.
+    /// Emitted as the engine wires a downstream node to its upstream producer.
+    FlowEdge {
+        flow_id: String,
+        from: String,
+        to: String,
+    },
+    /// A structured agent-loop step scoped to a flow node — **reuses
+    /// [`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the
+    /// TUI renders a node pane exactly as a session pane keyed by `node_id`.
+    FlowNodeAgent {
+        flow_id: String,
+        node_id: String,
+        event: AgentEventKind,
+    },
+    /// A flow finished with an aggregated outcome (the fold of the recorded node
+    /// results, in declared order — design §3).
+    FlowCompleted {
+        flow_id: String,
+        outcome: FlowRunOutcome,
+    },
+    /// A flow failed. `node_id` names the offending node when the failure is
+    /// node-local; `error` is a human-readable message.
+    FlowFailed {
+        flow_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+        error: String,
+    },
+}
+
+/// Which worker family ran a flow node — the only place the CLI-vs-provider
+/// distinction is visible to a flow client (design §2/§7). Protocol data; the
+/// host maps its own worker kind onto these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowWorkerKind {
+    /// An external agentic CLI (codex / claude / gemini) subprocess.
+    Cli,
+    /// An in-process provider loop over the Nerve tool surface.
+    Provider,
+}
+
+/// A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`].
+/// Mirrors the token fields of [`AgentEventKind::Usage`]; cache counts are
+/// optional and omitted when the worker did not report caching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+pub struct FlowNodeUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u64>,
+}
+
+/// The aggregated outcome of a finished flow, carried on
+/// [`RuntimeEvent::FlowCompleted`]: whether the flow succeeded under its
+/// join/fail policy, a one-line summary, and the flow's final text (the kept
+/// results concatenated, in declared order).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+pub struct FlowRunOutcome {
+    pub ok: bool,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub final_text: String,
 }
 
 /// Authentication lifecycle event kind. Defined as pure protocol data; hosts map
@@ -205,6 +295,91 @@ impl RuntimeEvent {
             job_id: job_id.into(),
             agent: agent.into(),
             text: text.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn flow_started(flow_id: impl Into<String>, strategy: Strategy) -> Self {
+        Self::FlowStarted {
+            flow_id: flow_id.into(),
+            strategy,
+        }
+    }
+
+    #[must_use]
+    pub fn flow_node_started(
+        flow_id: impl Into<String>,
+        node_id: impl Into<String>,
+        worker: impl Into<String>,
+        kind: FlowWorkerKind,
+    ) -> Self {
+        Self::FlowNodeStarted {
+            flow_id: flow_id.into(),
+            node_id: node_id.into(),
+            worker: worker.into(),
+            kind,
+        }
+    }
+
+    #[must_use]
+    pub fn flow_node_finished(
+        flow_id: impl Into<String>,
+        node_id: impl Into<String>,
+        ok: bool,
+        usage: FlowNodeUsage,
+    ) -> Self {
+        Self::FlowNodeFinished {
+            flow_id: flow_id.into(),
+            node_id: node_id.into(),
+            ok,
+            usage,
+        }
+    }
+
+    #[must_use]
+    pub fn flow_edge(
+        flow_id: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+    ) -> Self {
+        Self::FlowEdge {
+            flow_id: flow_id.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn flow_node_agent(
+        flow_id: impl Into<String>,
+        node_id: impl Into<String>,
+        event: AgentEventKind,
+    ) -> Self {
+        Self::FlowNodeAgent {
+            flow_id: flow_id.into(),
+            node_id: node_id.into(),
+            event,
+        }
+    }
+
+    #[must_use]
+    pub fn flow_completed(flow_id: impl Into<String>, outcome: FlowRunOutcome) -> Self {
+        Self::FlowCompleted {
+            flow_id: flow_id.into(),
+            outcome,
+        }
+    }
+
+    #[must_use]
+    pub fn flow_failed(
+        flow_id: impl Into<String>,
+        node_id: Option<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self::FlowFailed {
+            flow_id: flow_id.into(),
+            node_id,
+            error: error.into(),
         }
     }
 
@@ -324,6 +499,16 @@ impl RuntimeEvent {
             | Self::SessionClosed { session_id }
             | Self::SessionAgent { session_id, .. }
             | Self::ApprovalRequested { session_id, .. } => Some(session_id.as_str()),
+            // A flow is just another id stream: returning `flow_id` here routes the
+            // per-id event fan-out and the existing TUI approval modal to a flow
+            // with zero client change (design §4). The `flow_id` IS the flow job id.
+            Self::FlowStarted { flow_id, .. }
+            | Self::FlowNodeStarted { flow_id, .. }
+            | Self::FlowNodeFinished { flow_id, .. }
+            | Self::FlowEdge { flow_id, .. }
+            | Self::FlowNodeAgent { flow_id, .. }
+            | Self::FlowCompleted { flow_id, .. }
+            | Self::FlowFailed { flow_id, .. } => Some(flow_id.as_str()),
             Self::JobStarted { .. }
             | Self::JobProgress { .. }
             | Self::JobCancelRequested { .. }
@@ -335,5 +520,121 @@ impl RuntimeEvent {
             | Self::DelegateProgress { .. }
             | Self::Auth { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Step, TaskTemplate, WorkerRef};
+
+    fn single_strategy() -> Strategy {
+        Strategy::Single {
+            step: Step {
+                worker: WorkerRef::Cli {
+                    name: "claude".into(),
+                },
+                task: TaskTemplate::new("do it"),
+                autonomy: crate::DelegateAutonomy::ReadOnly,
+                on_fail: crate::FailPolicy::Abort,
+            },
+        }
+    }
+
+    #[test]
+    fn flow_started_serializes_strategy_and_is_flow_scoped() {
+        let event = RuntimeEvent::flow_started("flow-1", single_strategy());
+        let value = serde_json::to_value(&event).expect("flow_started json");
+        assert_eq!(value["type"], "flow_started");
+        assert_eq!(value["flow_id"], "flow-1");
+        assert_eq!(value["strategy"]["type"], "single");
+        // Flow events route through the per-id fan-out via session_id() -> flow_id.
+        assert_eq!(event.session_id(), Some("flow-1"));
+        // Round-trips back to an equal event.
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn flow_node_events_round_trip() {
+        let started =
+            RuntimeEvent::flow_node_started("flow-1", "branch-0", "claude", FlowWorkerKind::Cli);
+        let value = serde_json::to_value(&started).expect("node_started json");
+        assert_eq!(value["type"], "flow_node_started");
+        assert_eq!(value["node_id"], "branch-0");
+        assert_eq!(value["worker"], "claude");
+        assert_eq!(value["kind"], "cli");
+        assert_eq!(started.session_id(), Some("flow-1"));
+
+        let finished = RuntimeEvent::flow_node_finished(
+            "flow-1",
+            "branch-0",
+            true,
+            FlowNodeUsage {
+                input_tokens: 5,
+                output_tokens: 3,
+                ..FlowNodeUsage::default()
+            },
+        );
+        let value = serde_json::to_value(&finished).expect("node_finished json");
+        assert_eq!(value["type"], "flow_node_finished");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["usage"]["input_tokens"], 5);
+        // Zero cache counts are omitted (optional, skip_serializing_if).
+        assert!(value["usage"].get("cache_read_tokens").is_none());
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, finished);
+    }
+
+    #[test]
+    fn flow_node_agent_reuses_agent_event_kind() {
+        // Symmetric with SessionAgent: a flow node pane renders the same shape.
+        let event = RuntimeEvent::flow_node_agent(
+            "flow-1",
+            "node-0",
+            AgentEventKind::Message {
+                text: "hello".into(),
+            },
+        );
+        let value = serde_json::to_value(&event).expect("node_agent json");
+        assert_eq!(value["type"], "flow_node_agent");
+        assert_eq!(value["event"]["kind"], "message");
+        assert_eq!(value["event"]["text"], "hello");
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn flow_edge_and_completed_and_failed_round_trip() {
+        let edge = RuntimeEvent::flow_edge("flow-1", "node-0", "node-1");
+        let value = serde_json::to_value(&edge).expect("edge json");
+        assert_eq!(value["type"], "flow_edge");
+        assert_eq!(value["from"], "node-0");
+        assert_eq!(value["to"], "node-1");
+
+        let completed = RuntimeEvent::flow_completed(
+            "flow-1",
+            FlowRunOutcome {
+                ok: true,
+                summary: "single: ok".into(),
+                final_text: "the answer".into(),
+            },
+        );
+        let value = serde_json::to_value(&completed).expect("completed json");
+        assert_eq!(value["type"], "flow_completed");
+        assert_eq!(value["outcome"]["ok"], true);
+        assert_eq!(value["outcome"]["final_text"], "the answer");
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, completed);
+
+        let failed = RuntimeEvent::flow_failed("flow-1", Some("branch-2".into()), "worker died");
+        let value = serde_json::to_value(&failed).expect("failed json");
+        assert_eq!(value["type"], "flow_failed");
+        assert_eq!(value["node_id"], "branch-2");
+        assert_eq!(value["error"], "worker died");
+        // A node-less failure omits node_id.
+        let global = RuntimeEvent::flow_failed("flow-1", None, "budget exhausted");
+        let value = serde_json::to_value(&global).expect("global failed json");
+        assert!(value.get("node_id").is_none());
     }
 }

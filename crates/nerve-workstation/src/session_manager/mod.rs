@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex};
 use approval::{DecisionMemory, ProtocolApprover};
 use run_config::{map_session_agent_event, session_run_config};
 
-pub(crate) use approval::ApprovalHub;
+pub(crate) use approval::{
+    ApprovalHub, DecisionMemory as FlowDecisionMemory, ProtocolApprover as FlowProtocolApprover,
+};
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 type SessionCheckpoint = Arc<Mutex<Checkpoint>>;

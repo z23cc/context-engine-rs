@@ -13,7 +13,7 @@ use crate::policy::{self, Approver};
 /// (allow-always) / `false` (deny-always). Owned by the `LiveSession` and shared
 /// into each turn's [`ProtocolApprover`], so an `AllowAlways` / `DenyAlways`
 /// decision persists across turns for the life of the session.
-pub(super) type DecisionMemory = Arc<Mutex<HashMap<String, bool>>>;
+pub(crate) type DecisionMemory = Arc<Mutex<HashMap<String, bool>>>;
 
 const APPROVAL_POLL: Duration = Duration::from_millis(100);
 
@@ -98,7 +98,7 @@ impl ApprovalHub {
         decision
     }
 
-    pub(super) fn respond(
+    pub(crate) fn respond(
         &self,
         session_id: &str,
         request_id: &str,
@@ -133,7 +133,7 @@ impl crate::delegate_proxy::DelegateApprover for ApprovalHub {
     }
 }
 
-pub(super) struct ProtocolApprover {
+pub(crate) struct ProtocolApprover {
     session_id: String,
     hub: Arc<ApprovalHub>,
     cancel: CancelToken,
@@ -147,7 +147,7 @@ pub(super) struct ProtocolApprover {
 }
 
 impl ProtocolApprover {
-    pub(super) fn new(
+    pub(crate) fn new(
         session_id: String,
         hub: Arc<ApprovalHub>,
         cancel: CancelToken,
