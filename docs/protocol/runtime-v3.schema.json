@@ -370,6 +370,80 @@
         }
       ]
     },
+    "FlowDecisionKind": {
+      "description": "The typed kinds a [`RuntimeEvent::FlowDecision`] can record (design §6/§8). A closed, additive-versioned enum so the audit trail is golden-diffable and replayable; later waves add vote/judge/debate kinds.",
+      "oneOf": [
+        {
+          "description": "The fleet budget (USD or tokens) was exhausted; the engine cooperatively cancelled every branch (design §6, the budget brake / fork-bomb cure).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "budget_exhausted"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A spawn was refused at the depth ceiling — the engine did not start more workers because `depth >= max_depth` (design §8, absence-at-floor). A deterministic, recorded refusal, not a crash.",
+          "properties": {
+            "depth": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "depth_ceiling"
+              ],
+              "type": "string"
+            },
+            "max_depth": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "depth",
+            "kind",
+            "max_depth"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A spawn was refused at the worker ceiling — `live_workers >= max_workers` across the whole tree (design §8, the process-global semaphore bound).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "worker_ceiling"
+              ],
+              "type": "string"
+            },
+            "live_workers": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "max_workers": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "live_workers",
+            "max_workers"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "FlowNodeUsage": {
       "description": "A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`]. Mirrors the token fields of [`AgentEventKind::Usage`]; cache counts are optional and omitted when the worker did not report caching.",
       "properties": {
@@ -1850,6 +1924,92 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens spent across the whole flow tree, emitted after each node's `Usage` is debited from the deterministic `BudgetLedger`. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "spent_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "budget_update"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "spent_usd",
+            "tokens",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%) of a configured limit but has not yet been exhausted. `limit_usd` is the USD ceiling the warning is relative to. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "limit_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "spent_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "enum": [
+                "budget_warning"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "limit_usd",
+            "spent_usd",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6): a budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and — in later waves — a vote tally / judge pick / debate round. `node_id` names the node the decision is about (the synthetic root `\"flow\"` for a flow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/FlowDecisionKind"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_decision"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind",
+            "node_id",
+            "type"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -2446,6 +2606,92 @@
           "required": [
             "error",
             "flow_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens spent across the whole flow tree, emitted after each node's `Usage` is debited from the deterministic `BudgetLedger`. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "spent_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "budget_update"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "spent_usd",
+            "tokens",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%) of a configured limit but has not yet been exhausted. `limit_usd` is the USD ceiling the warning is relative to. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "limit_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "spent_usd": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "enum": [
+                "budget_warning"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "limit_usd",
+            "spent_usd",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6): a budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and — in later waves — a vote tally / judge pick / debate round. `node_id` names the node the decision is about (the synthetic root `\"flow\"` for a flow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
+          "properties": {
+            "flow_id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/FlowDecisionKind"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "flow_decision"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_id",
+            "kind",
+            "node_id",
             "type"
           ],
           "type": "object"

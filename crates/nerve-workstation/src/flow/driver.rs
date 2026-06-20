@@ -9,15 +9,28 @@
 //! (it preserves INPUT ORDER, the invariant behind the declared-order fold).
 
 use super::engine::{FlowState, step};
+use super::resolve::{
+    WorkerResolver, cancelled_outcome, failed_result, is_pipeline, is_steerable_strategy,
+    provider_model, refused_result, step_for, terminated_without_emit,
+};
 use super::{Action, FlowOutcome, NodeId};
 use crate::subagent::bounded_fan_out;
 use crate::worker::{
-    AgentWorker, BudgetGrant, SteerRegistry, TurnResult, WorkerContext, WorkerError, WorkerEvent,
-    WorkerFactory, WorkerKind, WorkerLedger, WorkerSession, WorkerTask,
+    BudgetDecision, BudgetGrant, BudgetLedger, BudgetSnapshot, FleetBudget, SpawnRefusal,
+    SteerRegistry, TurnResult, WorkerContext, WorkerError, WorkerEvent, WorkerLedger,
+    WorkerSession, WorkerSlot, WorkerTask,
 };
 use nerve_core::CancelToken;
-use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
+use nerve_runtime::{Step, WorkerRef, WorkflowDef};
 use std::sync::Arc;
+
+/// One `StartWorker` instruction the driver dispatches: the node + its flat step
+/// index into the strategy's step list.
+type Dispatch = (NodeId, usize);
+
+/// A budget partition of one wave (design §8): the spawns the [`FleetBudget`]
+/// admits, and the ones it refuses at a ceiling (with the typed [`SpawnRefusal`]).
+type BudgetPartition = (Vec<Dispatch>, Vec<(NodeId, SpawnRefusal)>);
 
 /// Default concurrency for a `Parallel` wave — mirrors `subagent`'s
 /// `DEFAULT_FANOUT_CONCURRENCY`. ureq is synchronous, so each in-flight worker
@@ -47,65 +60,14 @@ pub(crate) trait FlowObserver: Sync {
     /// declared order (from the ledger-write loop), so two parallel branches'
     /// `node_finished` callbacks are ordered by branch index, not completion.
     fn node_finished(&self, node: &str, result: &TurnResult);
-}
-
-/// How the driver resolves a [`WorkerRef`] into a runnable [`AgentWorker`]. The
-/// production driver uses the C0 [`WorkerFactory`]; tests inject a closure that
-/// hands back scripted `FakeWorker`s / `ReplayWorker`s, so the loop is testable
-/// without a real LLM/subprocess.
-pub(crate) trait WorkerResolver: Sync {
-    /// Mint the worker for `worker_ref` (or fail before any spawn).
-    fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError>;
-}
-
-/// The production resolver: maps a [`WorkerRef`] onto a [`WorkerKind`] and mints
-/// it through the C0 [`WorkerFactory`].
-pub(crate) struct FactoryResolver {
-    factory: WorkerFactory,
-}
-
-impl FactoryResolver {
-    pub(crate) fn new(factory: WorkerFactory) -> Self {
-        Self { factory }
-    }
-}
-
-impl WorkerResolver for FactoryResolver {
-    fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError> {
-        let kind = worker_kind(worker_ref)?;
-        self.factory.create(kind)
-    }
-}
-
-/// Translate a declarative [`WorkerRef`] into the C0 [`WorkerKind`] the factory
-/// mints. `Named` is defined-ahead (design §6, C6) and refused here — C1 does not
-/// resolve named worker defs yet.
-fn worker_kind(worker_ref: &WorkerRef) -> Result<WorkerKind, WorkerError> {
-    match worker_ref {
-        WorkerRef::Cli { name } => {
-            // The factory's `Cli` kind takes a `&'static str` catalog name; map
-            // the data string onto the known catalog (an unknown name is refused
-            // before any spawn, mirroring the factory's own check).
-            let catalog = match name.as_str() {
-                "codex" => "codex",
-                "claude" => "claude",
-                "gemini" => "gemini",
-                other => {
-                    return Err(WorkerError::Start(format!(
-                        "unknown CLI worker `{other}` (expected codex|claude|gemini)"
-                    )));
-                }
-            };
-            Ok(WorkerKind::Cli(catalog))
-        }
-        WorkerRef::Provider { provider, model } => Ok(WorkerKind::Provider {
-            provider: provider.clone(),
-            model: model.clone(),
-        }),
-        WorkerRef::Named { name } => Err(WorkerError::Start(format!(
-            "named worker `{name}` is not resolvable in C1 (WorkerDef loading lands in C6)"
-        ))),
-    }
+    /// The running budget totals after a node's usage was debited (design §6).
+    /// `decision` says whether this debit warned or exhausted the budget; the host
+    /// maps it onto `BudgetUpdate` / `BudgetWarning` / `FlowDecision` events.
+    /// Default no-op so the hidden CLI (which sets no budget) need not implement it.
+    fn budget_debited(&self, _snapshot: BudgetSnapshot, _decision: BudgetDecision) {}
+    /// The engine refused to spawn `node` at a ceiling (design §8, absence-at-floor).
+    /// The host records a `FlowDecision`. Default no-op for the hidden CLI.
+    fn spawn_refused(&self, _node: &str, _refusal: SpawnRefusal) {}
 }
 
 /// The orchestration driver. Owns the shared [`WorkerContext`] deps (root /
@@ -128,6 +90,14 @@ pub(crate) struct Driver<'a> {
     /// session registered here so a concurrent `flow.steer` can run a follow-up
     /// turn against it. A `Parallel` wave never registers (no single live frontier).
     steer: Option<&'a SteerRegistry>,
+    /// Per-flow budget governance (C3b, design §6/§8). The [`BudgetLedger`] is a
+    /// pure fold over each finished node's recorded usage (debited in the
+    /// declared-order ledger-write loop, so it is replayable); the [`FleetBudget`]
+    /// gates each spawn (depth / process-global worker semaphore / remaining
+    /// budget — absence-at-floor). `None` = unbudgeted (the C1/C2/C3a behaviour),
+    /// so existing flow tests stay green.
+    budget: Option<Arc<BudgetLedger>>,
+    fleet: Option<FleetBudget>,
 }
 
 impl<'a> Driver<'a> {
@@ -147,6 +117,8 @@ impl<'a> Driver<'a> {
             on_progress: None,
             observer: None,
             steer: None,
+            budget: None,
+            fleet: None,
         }
     }
 
@@ -178,6 +150,17 @@ impl<'a> Driver<'a> {
     #[must_use]
     pub(crate) fn with_steer_registry(mut self, steer: &'a SteerRegistry) -> Self {
         self.steer = Some(steer);
+        self
+    }
+
+    /// Attach per-flow budget governance (C3b, design §6/§8): the shared
+    /// [`BudgetLedger`] (debited from each node's recorded usage, replayable) and
+    /// the root [`FleetBudget`] (gating each spawn — depth / worker semaphore /
+    /// remaining budget). Without this, the flow is unbudgeted (current behaviour).
+    #[must_use]
+    pub(crate) fn with_budget(mut self, budget: Arc<BudgetLedger>, fleet: FleetBudget) -> Self {
+        self.budget = Some(budget);
+        self.fleet = Some(fleet);
         self
     }
 
@@ -249,12 +232,29 @@ impl<'a> Driver<'a> {
         for (node, _) in starts {
             state.mark_dispatched(node.clone());
         }
+        // Budget gate (C3b, design §8): partition the wave into spawns the
+        // FleetBudget admits and spawns it refuses at a ceiling (absence-at-floor).
+        // A refused node is NOT spawned; it is recorded as a deterministic
+        // FlowDecision and folded as a failure result so the engine still
+        // terminates (the interpreter sees a recorded result for the node).
+        let (admitted, refused) = self.partition_by_budget(starts);
+        for (node, refusal) in &refused {
+            if let Some(observer) = self.observer {
+                observer.spawn_refused(node.as_str(), *refusal);
+            }
+            let result = refused_result(*refusal);
+            self.ledger.record_result(node.as_str(), &result);
+            state.record_result(node.clone(), result);
+        }
+        if admitted.is_empty() {
+            return;
+        }
         // A single-node wave on a steerable strategy (`Single`/`Pipeline`) is the
         // flow's current frontier: its live session is kept registered so a
         // concurrent `flow.steer` can run a follow-up turn (C3a). A `Parallel` wave
         // (multi-node) has no single live frontier and never registers.
-        let steerable = starts.len() == 1 && is_steerable_strategy(&def.strategy);
-        let inputs: Vec<(NodeId, usize)> = starts.to_vec();
+        let steerable = admitted.len() == 1 && is_steerable_strategy(&def.strategy);
+        let inputs: Vec<(NodeId, usize)> = admitted;
         let results = bounded_fan_out(
             inputs,
             self.concurrency,
@@ -286,6 +286,7 @@ impl<'a> Driver<'a> {
                 result,
                 events,
                 session,
+                slot,
             } = run;
             for event in events {
                 self.ledger.record_event(node.as_str(), event);
@@ -298,8 +299,53 @@ impl<'a> Driver<'a> {
             if let Some(observer) = self.observer {
                 observer.node_finished(node.as_str(), &result);
             }
+            // Debit the budget from this node's RECORDED result, in the same
+            // declared-order loop (C3b, design §6) — so the running totals are a
+            // pure fold over recorded usage and replay reproduces them
+            // byte-identically. On overrun, cooperatively cancel the run.
+            self.debit_budget(&result, cancel);
             self.handle_live_session(steerable, node.as_str(), session);
+            // The live-worker slot releases here (after the turn folded), so the
+            // process-global semaphore frees up for the next wave.
+            drop(slot);
             state.record_result(node, result);
+        }
+    }
+
+    /// Partition a wave's `starts` into the spawns the [`FleetBudget`] admits and
+    /// those it refuses at a ceiling (depth / worker / budget — absence-at-floor,
+    /// design §8). Unbudgeted flows (no [`FleetBudget`]) admit everything, so the
+    /// C1/C2/C3a behaviour is unchanged.
+    fn partition_by_budget(&self, starts: &[Dispatch]) -> BudgetPartition {
+        let Some(fleet) = &self.fleet else {
+            return (starts.to_vec(), Vec::new());
+        };
+        let mut admitted = Vec::new();
+        let mut refused = Vec::new();
+        for (node, step_index) in starts {
+            match fleet.may_spawn() {
+                Ok(()) => admitted.push((node.clone(), *step_index)),
+                Err(refusal) => refused.push((node.clone(), refusal)),
+            }
+        }
+        (admitted, refused)
+    }
+
+    /// Debit one finished node's recorded result into the [`BudgetLedger`] (a pure
+    /// fold), fire the budget observer, and — on a hard overrun — cooperatively
+    /// cancel the run (the same `CancelToken` mechanism `CostTelemetryHook` uses),
+    /// so every other branch stops at its next cancellation check. A no-op for an
+    /// unbudgeted flow.
+    fn debit_budget(&self, result: &TurnResult, cancel: &CancelToken) {
+        let Some(budget) = &self.budget else {
+            return;
+        };
+        let decision = budget.debit(result);
+        if let Some(observer) = self.observer {
+            observer.budget_debited(budget.snapshot(), decision);
+        }
+        if matches!(decision, BudgetDecision::Exhausted) {
+            cancel.cancel();
         }
     }
 
@@ -343,6 +389,23 @@ impl<'a> Driver<'a> {
         step_index: usize,
         cancel: &CancelToken,
     ) -> NodeRun {
+        // Acquire a process-global worker slot for this turn's lifetime (C3b, the
+        // semaphore that bounds `max_workers` tree-wide). `partition_by_budget`
+        // already deterministically admitted this node; the atomic acquire here is
+        // the real bound — if a concurrent wave grabbed the last slot first, fold as
+        // a recorded refusal rather than over-spawning.
+        let slot = match &self.fleet {
+            Some(fleet) => match fleet.acquire() {
+                Ok(slot) => Some(slot),
+                Err(refusal) => {
+                    if let Some(observer) = self.observer {
+                        observer.spawn_refused(node.as_str(), refusal);
+                    }
+                    return NodeRun::refused(refusal);
+                }
+            },
+            None => None,
+        };
         let Some(step_def) = step_for(def, step_index) else {
             return NodeRun::failed(&format!("no step at index {step_index}"));
         };
@@ -376,16 +439,19 @@ impl<'a> Driver<'a> {
                 result: session.result(),
                 events,
                 session: Some(session),
+                slot,
             },
             Err(WorkerError::Cancelled) => NodeRun {
                 result: failed_result("cancelled"),
                 events,
                 session: None,
+                slot,
             },
             Err(err) => NodeRun {
                 result: failed_result(&err.to_string()),
                 events,
                 session: None,
+                slot,
             },
         }
     }
@@ -424,8 +490,27 @@ impl<'a> Driver<'a> {
             autonomy: step_def.autonomy,
             model: provider_model(&step_def.worker),
             tool_filter: None,
-            // C1 threads an empty grant (recorded, not enforced — design §6, C3).
-            budget: BudgetGrant::default(),
+            // Carve this node's grant from the fleet envelope (C3b, design §6): the
+            // per-node ceiling is the remaining fleet budget, INTERSECTED so a node
+            // can never out-spend the fleet (monotone de-escalation). An unbudgeted
+            // flow yields a default (uncapped) grant — the C1/C2 behaviour.
+            budget: self.node_grant(),
+        }
+    }
+
+    /// Carve a node's [`BudgetGrant`] from the fleet's current remaining headroom
+    /// (design §6): the node may spend at most what the fleet has left, intersected
+    /// with a default (uncapped) ask — so the grant only ever NARROWS the fleet
+    /// envelope. Replayable: the grant is a pure function of the recorded budget
+    /// fold (which is itself replayable).
+    fn node_grant(&self) -> BudgetGrant {
+        match &self.budget {
+            Some(budget) => BudgetGrant {
+                max_cost_usd: budget.remaining_usd(),
+                max_tokens: budget.remaining_tokens(),
+            }
+            .intersect(&BudgetGrant::default()),
+            None => BudgetGrant::default(),
         }
     }
 
@@ -449,14 +534,18 @@ struct NodeResult {
 }
 
 /// What one [`Driver::run_node`] produced: the final [`TurnResult`], the BUFFERED
-/// events (written to the ledger in declared order by the caller), and the LIVE
+/// events (written to the ledger in declared order by the caller), the LIVE
 /// session when the turn started (so the caller registers it as a steerable
-/// frontier or closes it). The session is dropped — and thus implicitly NOT
-/// steerable — for any node whose start errored/cancelled.
+/// frontier or closes it), and the held [`WorkerSlot`] (the process-global
+/// semaphore unit, released when the run is folded). The session is dropped — and
+/// thus implicitly NOT steerable — for any node whose start errored/cancelled.
 struct NodeRun {
     result: TurnResult,
     events: Vec<WorkerEvent>,
     session: Option<Box<dyn WorkerSession>>,
+    /// The held worker slot (`None` for an unbudgeted flow or a refused/cancelled
+    /// run that never acquired one).
+    slot: Option<WorkerSlot>,
 }
 
 impl NodeRun {
@@ -466,6 +555,7 @@ impl NodeRun {
             result: failed_result(reason),
             events: Vec::new(),
             session: None,
+            slot: None,
         }
     }
 
@@ -473,68 +563,16 @@ impl NodeRun {
     fn cancelled() -> Self {
         Self::failed("cancelled")
     }
-}
 
-/// Look up the declared [`Step`] for a flat `step_index` across the wired
-/// strategies (`Single` / `Parallel` / `Pipeline`).
-fn step_for(def: &WorkflowDef, step_index: usize) -> Option<&Step> {
-    match &def.strategy {
-        Strategy::Single { step } if step_index == 0 => Some(step),
-        Strategy::Parallel { branches, .. } => branches.get(step_index),
-        Strategy::Pipeline { stages } => stages.get(step_index),
-        _ => None,
-    }
-}
-
-/// Whether `def`'s strategy interpolates a `{{prev}}` alias (only a `Pipeline` has
-/// an ordered upstream "previous stage"). For a `Single`/`Parallel` node `prev`
-/// has no meaning and is left as an unresolved placeholder.
-fn is_pipeline(def: &WorkflowDef) -> bool {
-    matches!(def.strategy, Strategy::Pipeline { .. })
-}
-
-/// Whether a strategy runs a single live frontier at a time (so that frontier is
-/// `flow.steer`-able, C3a). `Single` and `Pipeline` advance one node at a time; a
-/// `Parallel` wave has no single live frontier and is not steerable here.
-fn is_steerable_strategy(strategy: &Strategy) -> bool {
-    matches!(
-        strategy,
-        Strategy::Single { .. } | Strategy::Pipeline { .. }
-    )
-}
-
-/// A provider worker's model override comes from the `WorkerRef`; a CLI worker
-/// takes its model from config, so `None` here.
-fn provider_model(worker_ref: &WorkerRef) -> Option<String> {
-    match worker_ref {
-        WorkerRef::Provider { model, .. } => Some(model.clone()),
-        WorkerRef::Cli { .. } | WorkerRef::Named { .. } => None,
-    }
-}
-
-fn failed_result(reason: &str) -> TurnResult {
-    TurnResult {
-        ok: false,
-        text: format!("worker failed: {reason}"),
-        usage: nerve_agent::Usage::default(),
-        cost_usd: None,
-        timed_out: false,
-    }
-}
-
-fn cancelled_outcome() -> FlowOutcome {
-    FlowOutcome {
-        ok: false,
-        results: Vec::new(),
-        summary: "flow cancelled".to_string(),
-    }
-}
-
-fn terminated_without_emit() -> FlowOutcome {
-    FlowOutcome {
-        ok: false,
-        results: Vec::new(),
-        summary: "flow terminated without emitting an outcome".to_string(),
+    /// A run refused at a budget ceiling (design §8) — no session, no slot; folds
+    /// as the recorded refusal result.
+    fn refused(refusal: SpawnRefusal) -> Self {
+        Self {
+            result: refused_result(refusal),
+            events: Vec::new(),
+            session: None,
+            slot: None,
+        }
     }
 }
 

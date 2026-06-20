@@ -15,7 +15,8 @@
 
 use super::super::router::RuntimeDaemonRouter;
 use super::{
-    Arc, Mutex, Value, dispatch, json, response_with_id, rpc, runtime_with_file, wait_for_job_event,
+    Arc, Mutex, Value, dispatch, json, response_with_id, rpc, runtime_with_file,
+    wait_for_job_event, wait_for_job_terminal,
 };
 use crate::providers::ProviderRegistry;
 use std::os::unix::fs::PermissionsExt as _;
@@ -466,6 +467,92 @@ fn flow_steer_finished_flow_errors_cleanly() {
             .contains("finished"),
         "a finished flow is not steerable: {failed}"
     );
+}
+
+#[test]
+fn flow_start_emits_budget_telemetry_end_to_end() {
+    // A budgeted parallel flow (C3b) emits `budget_update` telemetry per debited
+    // node end-to-end through the real protocol path. The fake claude reports
+    // $0.001 + 8 tokens per turn, so a tiny budget warns then exhausts → a
+    // `flow_decision` (budget_exhausted) and the flow completes not-ok.
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "flow-budget",
+                "command": {
+                    "kind": "flow.start",
+                    "workflow": {
+                        "schema_version": 1,
+                        "name": "budgeted-fanout",
+                        // A USD cap below the flow's total reported cost: two $0.001
+                        // branches total $0.002 > $0.0015, so the second debit
+                        // exhausts the budget.
+                        "budget": { "max_total_cost_usd": 0.0015 },
+                        "strategy": {
+                            "type": "parallel",
+                            "branches": [
+                                { "worker": { "kind": "cli", "name": "claude" }, "task": "one" },
+                                { "worker": { "kind": "cli", "name": "claude" }, "task": "two" }
+                            ],
+                            "join": { "kind": "all" }
+                        }
+                    }
+                }
+            }),
+        ),
+    );
+    // A budget-exhausted flow finishes (the job goes terminal; cancelled flows map
+    // to job_failed, others to job_completed — either way the engine terminated).
+    wait_for_job_terminal(&output, "flow-budget");
+
+    // Budget telemetry (`budget_update` / `budget_warning` / `flow_decision`) is
+    // flow-scoped via session_id()->flow_id, but `budget_*` types do NOT share the
+    // `flow_` prefix, so collect by flow_id directly.
+    let scoped = scoped_event_types(&output, "flow-budget");
+    assert!(
+        scoped.iter().any(|t| t == "budget_update"),
+        "budget telemetry flowed: {scoped:?}"
+    );
+    assert!(
+        scoped.iter().any(|t| t == "flow_decision"),
+        "a budget_exhausted FlowDecision was recorded: {scoped:?}"
+    );
+    // The flow_decision is the budget_exhausted audit kind.
+    let events = scoped_events(&output, "flow-budget");
+    let decision = events
+        .iter()
+        .find(|e| e["type"] == "flow_decision")
+        .expect("a flow_decision event");
+    assert_eq!(decision["kind"]["kind"], "budget_exhausted");
+}
+
+/// Collect the params of every event scoped to `flow_id` (any `type`, including
+/// the `budget_*` events that do not share the `flow_` prefix).
+fn scoped_events(output: &Arc<Mutex<Vec<Value>>>, flow_id: &str) -> Vec<Value> {
+    output
+        .lock()
+        .expect("output lock")
+        .iter()
+        .filter_map(|value| {
+            let params = value.get("params")?;
+            (params.get("flow_id") == Some(&json!(flow_id))).then(|| params.clone())
+        })
+        .collect()
+}
+
+/// The ordered list of all event `type`s scoped to `flow_id`.
+fn scoped_event_types(output: &Arc<Mutex<Vec<Value>>>, flow_id: &str) -> Vec<String> {
+    scoped_events(output, flow_id)
+        .iter()
+        .filter_map(|p| p.get("type").and_then(Value::as_str).map(String::from))
+        .collect()
 }
 
 #[test]

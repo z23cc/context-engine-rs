@@ -25,7 +25,8 @@ pub use command::{
 };
 pub use error::RuntimeError;
 pub use event::{
-    AgentEventKind, AuthEventKind, FlowNodeUsage, FlowRunOutcome, FlowWorkerKind, RuntimeEvent,
+    AgentEventKind, AuthEventKind, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowWorkerKind,
+    RuntimeEvent,
 };
 pub use flow::{
     BudgetSpec, ContextSplit, FailPolicy, Join, Step, Strategy, TaskTemplate, WorkerRef,

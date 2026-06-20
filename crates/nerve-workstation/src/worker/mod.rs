@@ -45,6 +45,7 @@
     reason = "C0 worker port awaits its C1 engine caller (mirrors subagent::bounded_fan_out)"
 )]
 
+mod budget;
 mod cli;
 mod factory;
 mod ledger;
@@ -53,6 +54,10 @@ mod parity;
 mod provider;
 mod steer;
 
+pub(crate) use budget::{
+    BudgetDecision, BudgetLedger, BudgetSnapshot, FleetBudget, SpawnRefusal, WorkerSlot,
+    intersect_autonomy,
+};
 pub(crate) use cli::CliWorker;
 pub(crate) use factory::WorkerFactory;
 pub(crate) use ledger::{LedgerEntry, LedgerPayload, WorkerLedger};

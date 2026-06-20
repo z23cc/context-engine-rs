@@ -1,4 +1,6 @@
-use crate::{RiskTier, RuntimeCommand, RuntimeJobError, Strategy};
+mod ctor;
+
+use crate::{RiskTier, RuntimeJobError, Strategy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -158,6 +160,50 @@ pub enum RuntimeEvent {
         node_id: Option<String>,
         error: String,
     },
+    /// Running fleet-budget telemetry (design §6): the cumulative cost + tokens
+    /// spent across the whole flow tree, emitted after each node's `Usage` is
+    /// debited from the deterministic `BudgetLedger`. Additive within v4.
+    BudgetUpdate {
+        flow_id: String,
+        spent_usd: f64,
+        tokens: u64,
+    },
+    /// A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%)
+    /// of a configured limit but has not yet been exhausted. `limit_usd` is the
+    /// USD ceiling the warning is relative to. Additive within v4.
+    BudgetWarning {
+        flow_id: String,
+        spent_usd: f64,
+        limit_usd: f64,
+    },
+    /// A typed, replayable audit-trail decision the engine made (design §4/§6):
+    /// a budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and
+    /// — in later waves — a vote tally / judge pick / debate round. `node_id`
+    /// names the node the decision is about (the synthetic root `"flow"` for a
+    /// flow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.
+    FlowDecision {
+        flow_id: String,
+        node_id: String,
+        kind: FlowDecisionKind,
+    },
+}
+
+/// The typed kinds a [`RuntimeEvent::FlowDecision`] can record (design §6/§8).
+/// A closed, additive-versioned enum so the audit trail is golden-diffable and
+/// replayable; later waves add vote/judge/debate kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlowDecisionKind {
+    /// The fleet budget (USD or tokens) was exhausted; the engine cooperatively
+    /// cancelled every branch (design §6, the budget brake / fork-bomb cure).
+    BudgetExhausted,
+    /// A spawn was refused at the depth ceiling — the engine did not start more
+    /// workers because `depth >= max_depth` (design §8, absence-at-floor). A
+    /// deterministic, recorded refusal, not a crash.
+    DepthCeiling { depth: u32, max_depth: u32 },
+    /// A spawn was refused at the worker ceiling — `live_workers >= max_workers`
+    /// across the whole tree (design §8, the process-global semaphore bound).
+    WorkerCeiling { live_workers: u32, max_workers: u32 },
 }
 
 /// Which worker family ran a flow node — the only place the CLI-vs-provider
@@ -245,282 +291,6 @@ pub enum AgentEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_creation_tokens: Option<u64>,
     },
-}
-
-impl RuntimeEvent {
-    #[must_use]
-    pub fn auth(provider: impl Into<String>, kind: AuthEventKind) -> Self {
-        Self::Auth {
-            provider: provider.into(),
-            kind,
-        }
-    }
-
-    #[must_use]
-    pub fn agent(job_id: impl Into<String>, event: AgentEventKind) -> Self {
-        Self::Agent {
-            job_id: job_id.into(),
-            event,
-        }
-    }
-
-    #[must_use]
-    pub fn session_agent(session_id: impl Into<String>, event: AgentEventKind) -> Self {
-        Self::SessionAgent {
-            session_id: session_id.into(),
-            event,
-        }
-    }
-
-    #[must_use]
-    pub fn tool_call_delta(
-        job_id: impl Into<String>,
-        delta: impl Into<String>,
-        index: Option<u64>,
-    ) -> Self {
-        Self::ToolCallDelta {
-            job_id: job_id.into(),
-            delta: delta.into(),
-            index,
-        }
-    }
-
-    #[must_use]
-    pub fn delegate_progress(
-        job_id: impl Into<String>,
-        agent: impl Into<String>,
-        text: impl Into<String>,
-    ) -> Self {
-        Self::DelegateProgress {
-            job_id: job_id.into(),
-            agent: agent.into(),
-            text: text.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn flow_started(flow_id: impl Into<String>, strategy: Strategy) -> Self {
-        Self::FlowStarted {
-            flow_id: flow_id.into(),
-            strategy,
-        }
-    }
-
-    #[must_use]
-    pub fn flow_node_started(
-        flow_id: impl Into<String>,
-        node_id: impl Into<String>,
-        worker: impl Into<String>,
-        kind: FlowWorkerKind,
-    ) -> Self {
-        Self::FlowNodeStarted {
-            flow_id: flow_id.into(),
-            node_id: node_id.into(),
-            worker: worker.into(),
-            kind,
-        }
-    }
-
-    #[must_use]
-    pub fn flow_node_finished(
-        flow_id: impl Into<String>,
-        node_id: impl Into<String>,
-        ok: bool,
-        usage: FlowNodeUsage,
-    ) -> Self {
-        Self::FlowNodeFinished {
-            flow_id: flow_id.into(),
-            node_id: node_id.into(),
-            ok,
-            usage,
-        }
-    }
-
-    #[must_use]
-    pub fn flow_edge(
-        flow_id: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
-    ) -> Self {
-        Self::FlowEdge {
-            flow_id: flow_id.into(),
-            from: from.into(),
-            to: to.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn flow_node_agent(
-        flow_id: impl Into<String>,
-        node_id: impl Into<String>,
-        event: AgentEventKind,
-    ) -> Self {
-        Self::FlowNodeAgent {
-            flow_id: flow_id.into(),
-            node_id: node_id.into(),
-            event,
-        }
-    }
-
-    #[must_use]
-    pub fn flow_completed(flow_id: impl Into<String>, outcome: FlowRunOutcome) -> Self {
-        Self::FlowCompleted {
-            flow_id: flow_id.into(),
-            outcome,
-        }
-    }
-
-    #[must_use]
-    pub fn flow_failed(
-        flow_id: impl Into<String>,
-        node_id: Option<String>,
-        error: impl Into<String>,
-    ) -> Self {
-        Self::FlowFailed {
-            flow_id: flow_id.into(),
-            node_id,
-            error: error.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn session_started(session_id: impl Into<String>) -> Self {
-        Self::SessionStarted {
-            session_id: session_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn turn_started(session_id: impl Into<String>) -> Self {
-        Self::TurnStarted {
-            session_id: session_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn session_idle(session_id: impl Into<String>) -> Self {
-        Self::SessionIdle {
-            session_id: session_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn session_closed(session_id: impl Into<String>) -> Self {
-        Self::SessionClosed {
-            session_id: session_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn approval_requested(
-        session_id: impl Into<String>,
-        request_id: impl Into<String>,
-        tool: impl Into<String>,
-        arguments: Value,
-        tier: RiskTier,
-        preview: impl Into<String>,
-    ) -> Self {
-        Self::ApprovalRequested {
-            session_id: session_id.into(),
-            request_id: request_id.into(),
-            tool: tool.into(),
-            arguments,
-            tier,
-            preview: preview.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn job_started(job_id: impl Into<String>, command: &RuntimeCommand) -> Self {
-        Self::JobStarted {
-            job_id: job_id.into(),
-            command: command.name().to_string(),
-            tool_name: command.tool_name().map(str::to_string),
-        }
-    }
-
-    #[must_use]
-    pub fn job_progress(
-        job_id: impl Into<String>,
-        stage: impl Into<String>,
-        message: impl Into<String>,
-        current: Option<u64>,
-        total: Option<u64>,
-    ) -> Self {
-        Self::JobProgress {
-            job_id: job_id.into(),
-            stage: stage.into(),
-            message: message.into(),
-            current,
-            total,
-        }
-    }
-
-    #[must_use]
-    pub fn job_cancel_requested(job_id: impl Into<String>) -> Self {
-        Self::JobCancelRequested {
-            job_id: job_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn job_completed(job_id: impl Into<String>) -> Self {
-        Self::JobCompleted {
-            job_id: job_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn job_failed(job_id: impl Into<String>, error: RuntimeJobError) -> Self {
-        Self::JobFailed {
-            job_id: job_id.into(),
-            error,
-        }
-    }
-
-    #[must_use]
-    pub fn job_cancelled(job_id: impl Into<String>) -> Self {
-        Self::JobCancelled {
-            job_id: job_id.into(),
-        }
-    }
-
-    /// The session this event belongs to, if it is session-scoped. Job- and
-    /// auth-scoped events return `None`. Transports use this to fan a frame out
-    /// only to subscribers watching that session (a session subscriber sees its
-    /// own session-scoped events plus all unscoped ones). Accessor only — the
-    /// wire shape (the `type`-tagged enum) is unchanged.
-    #[must_use]
-    pub fn session_id(&self) -> Option<&str> {
-        match self {
-            Self::SessionStarted { session_id }
-            | Self::TurnStarted { session_id }
-            | Self::SessionIdle { session_id }
-            | Self::SessionClosed { session_id }
-            | Self::SessionAgent { session_id, .. }
-            | Self::ApprovalRequested { session_id, .. } => Some(session_id.as_str()),
-            // A flow is just another id stream: returning `flow_id` here routes the
-            // per-id event fan-out and the existing TUI approval modal to a flow
-            // with zero client change (design §4). The `flow_id` IS the flow job id.
-            Self::FlowStarted { flow_id, .. }
-            | Self::FlowNodeStarted { flow_id, .. }
-            | Self::FlowNodeFinished { flow_id, .. }
-            | Self::FlowEdge { flow_id, .. }
-            | Self::FlowNodeAgent { flow_id, .. }
-            | Self::FlowCompleted { flow_id, .. }
-            | Self::FlowFailed { flow_id, .. } => Some(flow_id.as_str()),
-            Self::JobStarted { .. }
-            | Self::JobProgress { .. }
-            | Self::JobCancelRequested { .. }
-            | Self::JobCompleted { .. }
-            | Self::JobFailed { .. }
-            | Self::JobCancelled { .. }
-            | Self::Agent { .. }
-            | Self::ToolCallDelta { .. }
-            | Self::DelegateProgress { .. }
-            | Self::Auth { .. } => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -636,5 +406,67 @@ mod tests {
         let global = RuntimeEvent::flow_failed("flow-1", None, "budget exhausted");
         let value = serde_json::to_value(&global).expect("global failed json");
         assert!(value.get("node_id").is_none());
+    }
+
+    #[test]
+    fn budget_update_and_warning_round_trip_and_are_flow_scoped() {
+        let update = RuntimeEvent::budget_update("flow-1", 0.42, 1234);
+        let value = serde_json::to_value(&update).expect("budget_update json");
+        assert_eq!(value["type"], "budget_update");
+        assert_eq!(value["spent_usd"], 0.42);
+        assert_eq!(value["tokens"], 1234);
+        // Budget events route through the per-id fan-out (so a flow client sees them).
+        assert_eq!(update.session_id(), Some("flow-1"));
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, update);
+
+        let warning = RuntimeEvent::budget_warning("flow-1", 0.8, 1.0);
+        let value = serde_json::to_value(&warning).expect("budget_warning json");
+        assert_eq!(value["type"], "budget_warning");
+        assert_eq!(value["limit_usd"], 1.0);
+        assert_eq!(warning.session_id(), Some("flow-1"));
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, warning);
+    }
+
+    #[test]
+    fn flow_decision_round_trips_each_kind() {
+        let exhausted =
+            RuntimeEvent::flow_decision("flow-1", "flow", FlowDecisionKind::BudgetExhausted);
+        let value = serde_json::to_value(&exhausted).expect("decision json");
+        assert_eq!(value["type"], "flow_decision");
+        assert_eq!(value["node_id"], "flow");
+        assert_eq!(value["kind"]["kind"], "budget_exhausted");
+        assert_eq!(exhausted.session_id(), Some("flow-1"));
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, exhausted);
+
+        let depth = RuntimeEvent::flow_decision(
+            "flow-1",
+            "branch-3",
+            FlowDecisionKind::DepthCeiling {
+                depth: 2,
+                max_depth: 2,
+            },
+        );
+        let value = serde_json::to_value(&depth).expect("depth json");
+        assert_eq!(value["kind"]["kind"], "depth_ceiling");
+        assert_eq!(value["kind"]["depth"], 2);
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, depth);
+
+        let workers = RuntimeEvent::flow_decision(
+            "flow-1",
+            "branch-4",
+            FlowDecisionKind::WorkerCeiling {
+                live_workers: 4,
+                max_workers: 4,
+            },
+        );
+        let value = serde_json::to_value(&workers).expect("workers json");
+        assert_eq!(value["kind"]["kind"], "worker_ceiling");
+        assert_eq!(value["kind"]["max_workers"], 4);
+        let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, workers);
     }
 }

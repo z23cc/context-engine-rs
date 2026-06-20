@@ -97,6 +97,31 @@ fn response_with_id(output: &[Value], id: Value) -> &Value {
         .expect("response id")
 }
 
+/// Wait until `job_id` reaches ANY terminal state (`job_completed` /
+/// `job_cancelled` / `job_failed`), returning the terminal event. Used where the
+/// exact terminal kind depends on a runtime decision (e.g. a budget-cancelled flow
+/// may complete not-ok or cancel).
+fn wait_for_job_terminal(output: &Arc<Mutex<Vec<Value>>>, job_id: &str) -> Value {
+    for _ in 0..600 {
+        let found = output
+            .lock()
+            .expect("output lock")
+            .iter()
+            .find_map(|value| {
+                let params = value.get("params")?;
+                let ty = params.get("type")?.as_str()?;
+                let terminal = matches!(ty, "job_completed" | "job_cancelled" | "job_failed");
+                let matches_job = params.get("job_id") == Some(&json!(job_id));
+                (terminal && matches_job).then(|| value.clone())
+            });
+        if let Some(value) = found {
+            return value;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for a terminal event on {job_id}");
+}
+
 fn wait_for_job_event(output: &Arc<Mutex<Vec<Value>>>, event_type: &str, job_id: &str) -> Value {
     // Generous budget: several delegate-session tests spawn real subprocesses in
     // parallel, so a tight poll window flakes under load. The loop returns as soon

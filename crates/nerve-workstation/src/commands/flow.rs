@@ -12,11 +12,14 @@
 //! experimental: the shape of `WorkflowDef` and the engine are not yet a stable
 //! contract.
 
-use crate::flow::{Driver, FactoryResolver, FlowProgress};
+use crate::flow::{Driver, FactoryResolver, FlowObserver, FlowProgress};
 use crate::providers::ProviderRegistry;
 use crate::subagent::DEFAULT_MAX_DEPTH;
 use crate::tools;
-use crate::worker::WorkerFactory;
+use crate::worker::{
+    BudgetDecision, BudgetLedger, BudgetSnapshot, FleetBudget, SpawnRefusal, TurnResult,
+    WorkerFactory,
+};
 use crate::workspace::{self, ServeArgs};
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
@@ -63,10 +66,24 @@ pub(crate) fn run(args: FlowArgs) -> Result<()> {
         Arc::new(FlowApprover::new(args.allow_all));
     let root = args.serve.roots.first().cloned();
 
+    // Per-flow budget governance (C3b, design §6/§8): the WorkflowDef's budget +
+    // max_depth carve the BudgetLedger + root FleetBudget, so the experimental run
+    // also self-terminates on a USD/token/worker overrun and refuses past the depth
+    // ceiling. A default (all-None) budget caps nothing — the C1 behaviour.
+    let budget = Arc::new(BudgetLedger::new(def.budget));
+    let fleet = FleetBudget::root(
+        def.max_depth,
+        def.budget.max_workers,
+        budget.remaining_usd(),
+        budget.remaining_tokens(),
+    );
     let on_progress = |progress: FlowProgress| print_progress(&progress);
+    let observer = StdoutBudgetObserver;
     let driver = {
-        let mut driver =
-            Driver::new(&resolver, Arc::clone(&ledger), approver, root).with_progress(&on_progress);
+        let mut driver = Driver::new(&resolver, Arc::clone(&ledger), approver, root)
+            .with_progress(&on_progress)
+            .with_observer(&observer)
+            .with_budget(Arc::clone(&budget), fleet);
         if let Some(concurrency) = args.concurrency {
             driver = driver.with_concurrency(concurrency);
         }
@@ -173,6 +190,56 @@ fn truncate(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max).collect();
     out.push('\u{2026}');
     out
+}
+
+/// A [`FlowObserver`] for the experimental CLI that surfaces budget telemetry to
+/// stdout (the daemon path emits protocol events instead): a running spend line
+/// per debit, a warning, an exhaustion notice, and any spawn refusal. The node
+/// lifecycle callbacks are no-ops (the progress sink already prints node output).
+struct StdoutBudgetObserver;
+
+impl FlowObserver for StdoutBudgetObserver {
+    fn node_started(&self, _node: &str, _worker: &nerve_runtime::WorkerRef) {}
+    fn node_finished(&self, _node: &str, _result: &TurnResult) {}
+
+    fn budget_debited(&self, snapshot: BudgetSnapshot, decision: BudgetDecision) {
+        match decision {
+            BudgetDecision::Within => {}
+            BudgetDecision::Warn { limit_usd } => {
+                println!(
+                    "\u{26a0}  budget warning: ${:.4} spent of ${limit_usd:.4}",
+                    snapshot.spent_usd
+                );
+            }
+            BudgetDecision::Exhausted => {
+                println!(
+                    "\u{26d4} budget exhausted (${:.4}, {} tokens) \u{2014} cancelling the flow",
+                    snapshot.spent_usd, snapshot.spent_tokens
+                );
+            }
+        }
+    }
+
+    fn spawn_refused(&self, node: &str, refusal: SpawnRefusal) {
+        println!(
+            "\u{26d4} spawn refused for `{node}`: {}",
+            refusal_text(refusal)
+        );
+    }
+}
+
+/// A one-line description of a spawn refusal for the experimental CLI.
+fn refusal_text(refusal: SpawnRefusal) -> String {
+    match refusal {
+        SpawnRefusal::Depth { depth, max_depth } => {
+            format!("depth ceiling ({depth}/{max_depth})")
+        }
+        SpawnRefusal::Workers {
+            live_workers,
+            max_workers,
+        } => format!("worker ceiling ({live_workers}/{max_workers})"),
+        SpawnRefusal::Budget => "fleet budget exhausted".to_string(),
+    }
 }
 
 /// The experimental driver's approver: with `--allow-all`, approve every worker

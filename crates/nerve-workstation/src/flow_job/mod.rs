@@ -15,7 +15,9 @@
 //! boundary that mints workers, streams events, and tracks live flows. It adds
 //! NOTHING to `nerve-core`.
 
-use crate::flow::{Driver, FactoryResolver, FlowObserver, FlowOutcome};
+mod observer;
+
+use crate::flow::{Driver, FactoryResolver, FlowOutcome};
 use crate::policy::{Policy, ToolGate};
 use crate::providers::ProviderRegistry;
 use crate::sandbox::SandboxLauncher;
@@ -23,18 +25,19 @@ use crate::session_manager::{ApprovalHub, FlowDecisionMemory, FlowProtocolApprov
 use crate::subagent::DEFAULT_MAX_DEPTH;
 use crate::tools::NerveRuntime;
 use crate::worker::{
-    SteerError, SteerRegistry, TurnResult, WorkerEvent, WorkerFactory, WorkerLedger,
+    BudgetLedger, FleetBudget, SteerError, SteerRegistry, WorkerEvent, WorkerFactory, WorkerLedger,
 };
 use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{
-    ApprovalMode, FlowNodeUsage, FlowRunOutcome, FlowSource, FlowWorkerKind, RuntimeError,
-    RuntimeEvent, SessionApprovalDecision, Strategy, WorkerRef, WorkerSelector, WorkflowDef,
+    ApprovalMode, FlowRunOutcome, FlowSource, RuntimeError, RuntimeEvent, SessionApprovalDecision,
+    WorkerSelector, WorkflowDef,
 };
+use observer::{FlowEventObserver, emit_strategy_edges, strategy_label};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
+pub(super) type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 
 /// The shared deps a flow needs to build its [`WorkerFactory`] + gate + approver.
 /// Cloned from the [`JobManager`](crate::jobs)'s own deps so the flow engine reaches
@@ -237,13 +240,27 @@ pub(crate) fn run_flow_start(
         .ok()
         .and_then(|ws| ws.roots().first().map(|r| r.path.clone()));
 
+    // Per-flow budget governance (C3b, design §6/§8): the BudgetLedger is a pure
+    // fold over each node's recorded usage (so it is replayable); the FleetBudget
+    // carves the spawn-control envelope from the WorkflowDef's budget + max_depth.
+    // A default (all-None) BudgetSpec caps nothing — the C2/C3a behaviour.
+    let budget = Arc::new(BudgetLedger::new(def.budget));
+    let fleet = FleetBudget::root(
+        def.max_depth,
+        def.budget.max_workers,
+        budget.remaining_usd(),
+        budget.remaining_tokens(),
+    );
+
     // The progress sink maps each worker `Step` onto a node-scoped `FlowNodeAgent`;
-    // the observer maps node start/finish onto `FlowNodeStarted`/`FlowNodeFinished`.
+    // the observer maps node start/finish onto `FlowNodeStarted`/`FlowNodeFinished`
+    // and budget debits/refusals onto `BudgetUpdate`/`BudgetWarning`/`FlowDecision`.
     let on_progress = |progress: crate::flow::FlowProgress| observer.on_progress(&progress);
     let driver = Driver::new(&resolver, Arc::clone(&ledger), approver, root)
         .with_observer(&observer)
         .with_progress(&on_progress)
-        .with_steer_registry(&steer);
+        .with_steer_registry(&steer)
+        .with_budget(Arc::clone(&budget), fleet);
     let outcome = driver.run(&def, &run_cancel);
 
     finish_flow(
@@ -432,134 +449,6 @@ fn finish_flow(
         "summary": outcome.summary,
         "final_text": run_outcome.final_text,
     }))
-}
-
-/// Emit the DAG edges implied by `strategy` (design §4, `FlowEdge`). C2's two
-/// strategies have a structural fan-out from the flow root to each node; a richer
-/// strategy (pipeline) emits node→node edges from the engine in C3. The root is the
-/// synthetic id `"flow"` so a client can anchor the graph.
-fn emit_strategy_edges(flow_id: &str, strategy: &Strategy, emit: &Arc<EventEmitter>) {
-    match strategy {
-        Strategy::Single { .. } => {
-            emit(RuntimeEvent::flow_edge(flow_id, "flow", "node-0"));
-        }
-        Strategy::Parallel { branches, .. } => {
-            for index in 0..branches.len() {
-                emit(RuntimeEvent::flow_edge(
-                    flow_id,
-                    "flow",
-                    format!("branch-{index}"),
-                ));
-            }
-        }
-        Strategy::Pipeline { stages } => emit_pipeline_edges(flow_id, stages.len(), emit),
-        // The remaining defined-ahead strategies emit their edges from the engine
-        // in C5.
-        _ => {}
-    }
-}
-
-/// Emit a `Pipeline`'s chain edges (C3a): `flow → stage-0 → stage-1 → …`, so a
-/// client renders the sequential DAG. The structure is static (declared stages),
-/// so the edges are known at `flow.start`.
-fn emit_pipeline_edges(flow_id: &str, stages: usize, emit: &Arc<EventEmitter>) {
-    let mut from = "flow".to_string();
-    for index in 0..stages {
-        let to = format!("stage-{index}");
-        emit(RuntimeEvent::flow_edge(flow_id, from.clone(), to.clone()));
-        from = to;
-    }
-}
-
-/// The node-lifecycle observer that maps the C1 driver's callbacks onto the
-/// `flow_*` protocol events: `node_started` → [`RuntimeEvent::FlowNodeStarted`],
-/// each worker `Step` → [`RuntimeEvent::FlowNodeAgent`], `node_finished` →
-/// [`RuntimeEvent::FlowNodeFinished`]. The progress sink (per worker event) is
-/// installed alongside so a `Step` becomes a `FlowNodeAgent` keyed by node id.
-struct FlowEventObserver {
-    flow_id: String,
-    emit: Arc<EventEmitter>,
-}
-
-impl FlowEventObserver {
-    fn new(flow_id: String, emit: Arc<EventEmitter>) -> Self {
-        Self { flow_id, emit }
-    }
-}
-
-impl FlowObserver for FlowEventObserver {
-    fn node_started(&self, node: &str, worker: &WorkerRef) {
-        let (label, kind) = worker_label(worker);
-        (self.emit)(RuntimeEvent::flow_node_started(
-            self.flow_id.clone(),
-            node.to_string(),
-            label,
-            kind,
-        ));
-    }
-
-    fn node_finished(&self, node: &str, result: &TurnResult) {
-        (self.emit)(RuntimeEvent::flow_node_finished(
-            self.flow_id.clone(),
-            node.to_string(),
-            result.ok,
-            usage_to_flow(&result.usage),
-        ));
-    }
-}
-
-impl FlowEventObserver {
-    /// Map one worker [`WorkerEvent`](crate::worker::WorkerEvent) onto a node-scoped
-    /// `FlowNodeAgent` (reusing `AgentEventKind` verbatim) or drop it (a raw CLI
-    /// `Progress` line / re-projected approval has no structured node-agent step).
-    fn on_progress(&self, progress: &crate::flow::FlowProgress) {
-        if let crate::worker::WorkerEvent::Step(kind) = &progress.event {
-            (self.emit)(RuntimeEvent::flow_node_agent(
-                self.flow_id.clone(),
-                progress.node.clone(),
-                kind.clone(),
-            ));
-        }
-    }
-}
-
-/// A human-readable worker label + its [`FlowWorkerKind`] family for
-/// `FlowNodeStarted`.
-fn worker_label(worker: &WorkerRef) -> (String, FlowWorkerKind) {
-    match worker {
-        WorkerRef::Cli { name } => (name.clone(), FlowWorkerKind::Cli),
-        WorkerRef::Provider { provider, model } => {
-            (format!("{provider}/{model}"), FlowWorkerKind::Provider)
-        }
-        WorkerRef::Named { name } => (name.clone(), FlowWorkerKind::Provider),
-    }
-}
-
-/// Map a [`nerve_agent::Usage`] onto the protocol [`FlowNodeUsage`], omitting zero
-/// cache counts (matching the agent-event discipline).
-fn usage_to_flow(usage: &nerve_agent::Usage) -> FlowNodeUsage {
-    FlowNodeUsage {
-        input_tokens: u64::from(usage.input_tokens),
-        output_tokens: u64::from(usage.output_tokens),
-        cache_read_tokens: (usage.cache_read_tokens > 0)
-            .then(|| u64::from(usage.cache_read_tokens)),
-        cache_creation_tokens: (usage.cache_creation_tokens > 0)
-            .then(|| u64::from(usage.cache_creation_tokens)),
-    }
-}
-
-/// A stable label for a strategy (registry status + edge derivation).
-fn strategy_label(strategy: &Strategy) -> &'static str {
-    match strategy {
-        Strategy::Single { .. } => "single",
-        Strategy::Parallel { .. } => "parallel",
-        Strategy::Pipeline { .. } => "pipeline",
-        Strategy::MapReduce { .. } => "map_reduce",
-        Strategy::VoteJudge { .. } => "vote_judge",
-        Strategy::Debate { .. } => "debate",
-        Strategy::Hierarchical { .. } => "hierarchical",
-        _ => "unknown",
-    }
 }
 
 /// Combine the job's own cancel token and the registry's flow-close token into one

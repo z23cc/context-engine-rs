@@ -1,0 +1,162 @@
+//! Worker resolution + small pure helpers for the [`Driver`](super::driver::Driver).
+//!
+//! Split out of `driver.rs` for the file-size convention: this module holds the
+//! [`WorkerResolver`] seam (how a declarative [`WorkerRef`] becomes a runnable
+//! [`AgentWorker`]) and the strategy/result helper functions the driver folds
+//! with. All pure — no engine state, no nondeterminism.
+
+use crate::worker::{
+    AgentWorker, SpawnRefusal, TurnResult, WorkerError, WorkerFactory, WorkerKind,
+};
+use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
+
+use super::FlowOutcome;
+
+/// How the driver resolves a [`WorkerRef`] into a runnable [`AgentWorker`]. The
+/// production driver uses the C0 [`WorkerFactory`]; tests inject a closure that
+/// hands back scripted `FakeWorker`s / `ReplayWorker`s, so the loop is testable
+/// without a real LLM/subprocess.
+pub(crate) trait WorkerResolver: Sync {
+    /// Mint the worker for `worker_ref` (or fail before any spawn).
+    fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError>;
+}
+
+/// The production resolver: maps a [`WorkerRef`] onto a [`WorkerKind`] and mints
+/// it through the C0 [`WorkerFactory`].
+pub(crate) struct FactoryResolver {
+    factory: WorkerFactory,
+}
+
+impl FactoryResolver {
+    pub(crate) fn new(factory: WorkerFactory) -> Self {
+        Self { factory }
+    }
+}
+
+impl WorkerResolver for FactoryResolver {
+    fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError> {
+        let kind = worker_kind(worker_ref)?;
+        self.factory.create(kind)
+    }
+}
+
+/// Translate a declarative [`WorkerRef`] into the C0 [`WorkerKind`] the factory
+/// mints. `Named` is defined-ahead (design §6, C6) and refused here — C1 does not
+/// resolve named worker defs yet.
+fn worker_kind(worker_ref: &WorkerRef) -> Result<WorkerKind, WorkerError> {
+    match worker_ref {
+        WorkerRef::Cli { name } => {
+            // The factory's `Cli` kind takes a `&'static str` catalog name; map
+            // the data string onto the known catalog (an unknown name is refused
+            // before any spawn, mirroring the factory's own check).
+            let catalog = match name.as_str() {
+                "codex" => "codex",
+                "claude" => "claude",
+                "gemini" => "gemini",
+                other => {
+                    return Err(WorkerError::Start(format!(
+                        "unknown CLI worker `{other}` (expected codex|claude|gemini)"
+                    )));
+                }
+            };
+            Ok(WorkerKind::Cli(catalog))
+        }
+        WorkerRef::Provider { provider, model } => Ok(WorkerKind::Provider {
+            provider: provider.clone(),
+            model: model.clone(),
+        }),
+        WorkerRef::Named { name } => Err(WorkerError::Start(format!(
+            "named worker `{name}` is not resolvable in C1 (WorkerDef loading lands in C6)"
+        ))),
+    }
+}
+
+/// Look up the declared [`Step`] for a flat `step_index` across the wired
+/// strategies (`Single` / `Parallel` / `Pipeline`).
+pub(super) fn step_for(def: &WorkflowDef, step_index: usize) -> Option<&Step> {
+    match &def.strategy {
+        Strategy::Single { step } if step_index == 0 => Some(step),
+        Strategy::Parallel { branches, .. } => branches.get(step_index),
+        Strategy::Pipeline { stages } => stages.get(step_index),
+        _ => None,
+    }
+}
+
+/// Whether `def`'s strategy interpolates a `{{prev}}` alias (only a `Pipeline` has
+/// an ordered upstream "previous stage"). For a `Single`/`Parallel` node `prev`
+/// has no meaning and is left as an unresolved placeholder.
+pub(super) fn is_pipeline(def: &WorkflowDef) -> bool {
+    matches!(def.strategy, Strategy::Pipeline { .. })
+}
+
+/// Whether a strategy runs a single live frontier at a time (so that frontier is
+/// `flow.steer`-able, C3a). `Single` and `Pipeline` advance one node at a time; a
+/// `Parallel` wave has no single live frontier and is not steerable here.
+pub(super) fn is_steerable_strategy(strategy: &Strategy) -> bool {
+    matches!(
+        strategy,
+        Strategy::Single { .. } | Strategy::Pipeline { .. }
+    )
+}
+
+/// A provider worker's model override comes from the `WorkerRef`; a CLI worker
+/// takes its model from config, so `None` here.
+pub(super) fn provider_model(worker_ref: &WorkerRef) -> Option<String> {
+    match worker_ref {
+        WorkerRef::Provider { model, .. } => Some(model.clone()),
+        WorkerRef::Cli { .. } | WorkerRef::Named { .. } => None,
+    }
+}
+
+/// A failed turn result (a resolve/start error or a panicked thread).
+pub(super) fn failed_result(reason: &str) -> TurnResult {
+    TurnResult {
+        ok: false,
+        text: format!("worker failed: {reason}"),
+        usage: nerve_agent::Usage::default(),
+        cost_usd: None,
+        timed_out: false,
+    }
+}
+
+/// The recorded result for a node refused at a budget ceiling (design §8): a
+/// not-ok result with zero usage (the node never ran), describing the refusal so
+/// the audit trail + outcome are explicit. Folds like any other failure.
+pub(super) fn refused_result(refusal: SpawnRefusal) -> TurnResult {
+    let reason = match refusal {
+        SpawnRefusal::Depth { depth, max_depth } => {
+            format!("spawn refused at depth ceiling ({depth}/{max_depth})")
+        }
+        SpawnRefusal::Workers {
+            live_workers,
+            max_workers,
+        } => format!("spawn refused at worker ceiling ({live_workers}/{max_workers})"),
+        SpawnRefusal::Budget => "spawn refused: fleet budget exhausted".to_string(),
+    };
+    TurnResult {
+        ok: false,
+        text: reason,
+        usage: nerve_agent::Usage::default(),
+        cost_usd: None,
+        timed_out: false,
+    }
+}
+
+/// The terminal outcome for a cancelled flow (the cancel token fired).
+pub(super) fn cancelled_outcome() -> FlowOutcome {
+    FlowOutcome {
+        ok: false,
+        results: Vec::new(),
+        summary: "flow cancelled".to_string(),
+    }
+}
+
+/// The terminal outcome for a flow that stopped without emitting one (a defensive
+/// fallback against an interpreter bug).
+pub(super) fn terminated_without_emit() -> FlowOutcome {
+    FlowOutcome {
+        ok: false,
+        results: Vec::new(),
+        summary: "flow terminated without emitting an outcome".to_string(),
+    }
+}

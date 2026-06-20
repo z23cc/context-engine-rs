@@ -20,6 +20,7 @@
 //! this whole directory is under `/tests/`, so it is excluded from the file-size
 //! gate (pure test code).
 
+mod budget;
 mod replay;
 
 use super::{Driver, FlowOutcome, WorkerResolver};
