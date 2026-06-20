@@ -1,0 +1,10 @@
+---
+source: crates/nerve-workstation/src/flow/tests.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=join=all: 3/3 branches ok
+results:
+  [0] ok=true text="answer A"
+  [1] ok=true text="answer B"
+  [2] ok=true text="answer C"

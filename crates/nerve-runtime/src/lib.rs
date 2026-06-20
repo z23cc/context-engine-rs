@@ -9,6 +9,7 @@ pub mod adapter;
 pub mod command;
 pub mod error;
 pub mod event;
+pub mod flow;
 pub mod job;
 pub mod protocol;
 #[doc(hidden)]
@@ -23,6 +24,10 @@ pub use command::{
 };
 pub use error::RuntimeError;
 pub use event::{AgentEventKind, AuthEventKind, RuntimeEvent};
+pub use flow::{
+    BudgetSpec, ContextSplit, FailPolicy, Join, Step, Strategy, TaskTemplate, WorkerRef,
+    WorkflowDef,
+};
 pub use job::{
     RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
     RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,

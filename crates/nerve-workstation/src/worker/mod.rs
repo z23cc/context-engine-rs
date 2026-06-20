@@ -54,18 +54,20 @@ mod provider;
 
 pub(crate) use cli::CliWorker;
 pub(crate) use factory::WorkerFactory;
-pub(crate) use ledger::{LedgerEntry, WorkerLedger};
+pub(crate) use ledger::{LedgerEntry, LedgerPayload, WorkerLedger};
 pub(crate) use provider::ProviderWorker;
 
 use nerve_core::CancelToken;
 use nerve_runtime::{AgentEventKind, DelegateAutonomy, RiskTier};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 /// What a worker is, and the only place the CLI-vs-provider distinction is visible
 /// to the engine (design §2). `Cli` names a delegate agent (`codex`/`claude`/
 /// `gemini`); `Provider` names an in-process `LlmProvider` + model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum WorkerKind {
     /// An external agentic CLI driven over the delegate substrate.
     Cli(&'static str),
@@ -77,7 +79,7 @@ pub(crate) enum WorkerKind {
 /// in C0 — the fields are recorded and threaded through, but the debit/cancel loop
 /// lands in C3 (`FleetBudget`). Kept here so the [`WorkerTask`] shape is stable for
 /// the engine that C1 builds.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BudgetGrant {
     /// Cost ceiling for this worker in USD, when the fleet caps it. `None` = no cap.
     pub(crate) max_cost_usd: Option<f64>,
@@ -101,7 +103,8 @@ pub(crate) struct WorkerTask {
 /// The streamed unit. Reuses the existing [`AgentEventKind`] plus a raw `Progress`
 /// line for opaque CLIs (so NO new step vocabulary is minted), and an `Approval`
 /// projection of a routed permission ask.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum WorkerEvent {
     /// A structured agent-loop step (TurnStarted / Message / Reasoning / Tool* /
     /// Interrupted / Usage), identical to what sessions and `agent.run` emit.
@@ -123,7 +126,7 @@ pub(crate) enum WorkerEvent {
 /// The union of the shipped `DelegateOutcome` and the agent `RunOutcome`: the last
 /// turn's structured result, with usage/cost. `usage` reuses [`nerve_agent::Usage`]
 /// (input/output/cache tokens), which both substrates can produce.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TurnResult {
     pub(crate) ok: bool,
     pub(crate) text: String,

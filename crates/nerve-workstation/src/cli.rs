@@ -36,6 +36,22 @@ enum CommandKind {
     Install(commands::install::InstallArgs),
     /// Interactive terminal chat client (forwards to the bundled `nerve-tui`).
     Chat(commands::chat::ChatArgs),
+    /// EXPERIMENTAL: run a declarative agent-orchestration workflow (C1). Hidden
+    /// from help; off-protocol, the WorkflowDef shape is not yet a stable contract.
+    #[command(hide = true)]
+    Flow(FlowArgs),
+}
+
+#[derive(Debug, Args)]
+struct FlowArgs {
+    #[command(subcommand)]
+    command: FlowCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FlowCommand {
+    /// Run a `WorkflowDef` (read from `--file`) through the orchestration engine.
+    Run(commands::flow::FlowArgs),
 }
 
 #[derive(Debug, Args)]
@@ -93,6 +109,9 @@ pub(crate) fn run() -> Result<()> {
         },
         CommandKind::Install(args) => commands::install::install(args),
         CommandKind::Chat(args) => commands::chat::chat(args),
+        CommandKind::Flow(args) => match args.command {
+            FlowCommand::Run(flow_args) => commands::flow::run(flow_args),
+        },
     }
 }
 
@@ -184,6 +203,28 @@ mod tests {
         assert!(matches!(parsed.command, CommandKind::Chat(_)));
         let bare = Cli::try_parse_from(["nerve", "chat"]).expect("bare chat parse");
         assert!(matches!(bare.command, CommandKind::Chat(_)));
+    }
+
+    #[test]
+    fn cli_parses_hidden_flow_run() {
+        // The experimental engine driver is hidden from help but still parses.
+        let parsed =
+            Cli::try_parse_from(["nerve", "flow", "run", "--file", "plan.json", "--root", "."])
+                .expect("flow run parse");
+        assert!(matches!(parsed.command, CommandKind::Flow(_)));
+        // The allow-all alias and concurrency override are accepted.
+        let with_flags = Cli::try_parse_from([
+            "nerve",
+            "flow",
+            "run",
+            "--file",
+            "plan.json",
+            "--concurrency",
+            "2",
+            "-y",
+        ])
+        .expect("flow run flags parse");
+        assert!(matches!(with_flags.command, CommandKind::Flow(_)));
     }
 
     #[test]

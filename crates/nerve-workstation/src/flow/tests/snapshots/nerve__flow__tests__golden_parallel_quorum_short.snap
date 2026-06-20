@@ -1,0 +1,8 @@
+---
+source: crates/nerve-workstation/src/flow/tests.rs
+expression: render_outcome(&outcome)
+---
+ok=false
+summary=join=quorum(n=3): 1 ok, short
+results:
+  [0] ok=true text="answer B"

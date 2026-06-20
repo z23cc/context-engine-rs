@@ -204,14 +204,21 @@ impl SubAgentSpawner {
         concurrency: usize,
         cancel: &CancelToken,
     ) -> Vec<FanOutResult> {
-        bounded_fan_out(tasks, concurrency, cancel, |args| {
-            let label = task_label(&args);
-            let outcome = self.run_spawn(depth + 1, parent, args, cancel);
-            FanOutResult {
-                task: label,
-                outcome,
-            }
-        })
+        bounded_fan_out(
+            tasks,
+            concurrency,
+            cancel,
+            |args| {
+                let label = task_label(&args);
+                let outcome = self.run_spawn(depth + 1, parent, args, cancel);
+                FanOutResult {
+                    task: label,
+                    outcome,
+                }
+            },
+            |args| FanOutResult::cancelled(task_label(args)),
+            FanOutResult::panicked,
+        )
     }
 
     /// Assemble the agent's toolbox for one run. The P4 gate stays the
@@ -503,24 +510,30 @@ fn task_label(args: &SpawnAgentArgs) -> String {
 
 /// Run `work` over `inputs` with at most `concurrency` in flight at once,
 /// preserving input order in the output. Bounded via std scoped threads in waves
-/// of `cap` — no extra semaphore. A pre-cancelled run short-circuits to a
-/// `cancelled` result per remaining input. A worker panic degrades to a
-/// `panicked` result rather than poisoning the join. Generic over the work item
-/// and worker so the threading/cap policy is unit-testable without a real
-/// sub-agent.
+/// of `cap` — no extra semaphore. A pre-cancelled wave short-circuits to
+/// `on_cancelled(&item)` per remaining input; a worker panic degrades to
+/// `on_panic()` rather than poisoning the join. Generic over the work item AND
+/// the result type so both the sub-agent fan-out (`R = FanOutResult`) and the
+/// flow engine's parallel wave (`R = NodeResult`) share one threading/cap/order
+/// implementation — the determinism invariant (input order preserved) lives here.
 #[cfg_attr(not(test), allow(dead_code))]
-fn bounded_fan_out<I, W>(
+pub(crate) fn bounded_fan_out<I, R, W, C, P>(
     inputs: Vec<I>,
     concurrency: usize,
     cancel: &CancelToken,
     work: W,
-) -> Vec<FanOutResult>
+    on_cancelled: C,
+    on_panic: P,
+) -> Vec<R>
 where
     I: Send,
-    W: Fn(I) -> FanOutResult + Sync,
+    R: Send,
+    W: Fn(I) -> R + Sync,
+    C: Fn(&I) -> R + Sync,
+    P: Fn() -> R + Sync,
 {
     let cap = concurrency.max(1);
-    let mut results: Vec<FanOutResult> = Vec::with_capacity(inputs.len());
+    let mut results: Vec<R> = Vec::with_capacity(inputs.len());
     let mut remaining = inputs.into_iter();
     loop {
         let wave: Vec<I> = remaining.by_ref().take(cap).collect();
@@ -528,21 +541,19 @@ where
             break;
         }
         if cancel.is_cancelled() {
-            results.extend(
-                wave.into_iter()
-                    .map(|_| FanOutResult::cancelled(String::new())),
-            );
+            results.extend(wave.iter().map(&on_cancelled));
             continue;
         }
         let work = &work;
-        let done: Vec<FanOutResult> = std::thread::scope(|scope| {
+        let on_panic = &on_panic;
+        let done: Vec<R> = std::thread::scope(|scope| {
             let handles: Vec<_> = wave
                 .into_iter()
                 .map(|item| scope.spawn(move || work(item)))
                 .collect();
             handles
                 .into_iter()
-                .map(|handle| handle.join().unwrap_or_else(|_| FanOutResult::panicked()))
+                .map(|handle| handle.join().unwrap_or_else(|_| on_panic()))
                 .collect()
         });
         results.extend(done);
@@ -816,7 +827,14 @@ mod tests {
     #[test]
     fn bounded_fan_out_preserves_order_and_runs_all() {
         let inputs = vec!["a", "b", "c", "d", "e"];
-        let results = bounded_fan_out(inputs, 2, &CancelToken::never(), ok_result);
+        let results = bounded_fan_out(
+            inputs,
+            2,
+            &CancelToken::never(),
+            ok_result,
+            |label| FanOutResult::cancelled(label.to_string()),
+            FanOutResult::panicked,
+        );
         let labels: Vec<&str> = results.iter().map(|r| r.task.as_str()).collect();
         // Order matches input order even though waves run concurrently.
         assert_eq!(labels, vec!["a", "b", "c", "d", "e"]);
@@ -831,14 +849,21 @@ mod tests {
         let inputs: Vec<u32> = (0..12).collect();
         let in_flight_w = Arc::clone(&in_flight);
         let peak_w = Arc::clone(&peak);
-        let results = bounded_fan_out(inputs, 3, &CancelToken::never(), move |n| {
-            let now = in_flight_w.fetch_add(1, Ordering::SeqCst) + 1;
-            peak_w.fetch_max(now, Ordering::SeqCst);
-            // Hold the slot briefly so concurrent workers overlap within a wave.
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            in_flight_w.fetch_sub(1, Ordering::SeqCst);
-            ok_result(&n.to_string())
-        });
+        let results = bounded_fan_out(
+            inputs,
+            3,
+            &CancelToken::never(),
+            move |n| {
+                let now = in_flight_w.fetch_add(1, Ordering::SeqCst) + 1;
+                peak_w.fetch_max(now, Ordering::SeqCst);
+                // Hold the slot briefly so concurrent workers overlap within a wave.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                in_flight_w.fetch_sub(1, Ordering::SeqCst);
+                ok_result(&n.to_string())
+            },
+            |_| FanOutResult::cancelled(String::new()),
+            FanOutResult::panicked,
+        );
         assert_eq!(results.len(), 12);
         // Never more than the cap concurrently in flight.
         assert!(
@@ -854,10 +879,17 @@ mod tests {
         cancel.cancel();
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let ran_w = Arc::clone(&ran);
-        let results = bounded_fan_out(vec![1, 2, 3], 2, &cancel, move |_| {
-            ran_w.fetch_add(1, Ordering::SeqCst);
-            ok_result("x")
-        });
+        let results = bounded_fan_out(
+            vec![1, 2, 3],
+            2,
+            &cancel,
+            move |_| {
+                ran_w.fetch_add(1, Ordering::SeqCst);
+                ok_result("x")
+            },
+            |_| FanOutResult::cancelled(String::new()),
+            FanOutResult::panicked,
+        );
         assert_eq!(results.len(), 3);
         assert!(
             results
@@ -870,12 +902,19 @@ mod tests {
 
     #[test]
     fn bounded_fan_out_captures_worker_panic_without_aborting() {
-        let results = bounded_fan_out(vec![1, 2, 3], 3, &CancelToken::never(), |n| {
-            if n == 2 {
-                panic!("boom");
-            }
-            ok_result(&n.to_string())
-        });
+        let results = bounded_fan_out(
+            vec![1, 2, 3],
+            3,
+            &CancelToken::never(),
+            |n| {
+                if n == 2 {
+                    panic!("boom");
+                }
+                ok_result(&n.to_string())
+            },
+            |_| FanOutResult::cancelled(String::new()),
+            FanOutResult::panicked,
+        );
         assert_eq!(results.len(), 3);
         // The panicking task degrades to an error; its siblings still succeed.
         let oks = results.iter().filter(|r| r.outcome.is_ok()).count();

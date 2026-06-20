@@ -1,0 +1,8 @@
+---
+source: crates/nerve-workstation/src/flow/tests.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=join=first_ok: branch 1 (declared order)
+results:
+  [0] ok=true text="answer B"

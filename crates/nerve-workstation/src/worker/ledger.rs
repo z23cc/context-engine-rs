@@ -1,31 +1,42 @@
-//! C0: a MINIMAL append-only, seq-numbered worker tape.
+//! The `WorkerLedger` — one append-only structure serving THREE jobs at once.
 //!
 //! The orchestration design (`docs/designs/agent-orchestration.md` §5) specifies
-//! ONE `WorkerLedger` serving four jobs at once — the replay tape, the cross-worker
-//! blackboard, the persistence record, and the resume source. C0 builds only the
-//! first slice: an append-only, seq-numbered record of every [`WorkerEvent`] and
-//! [`TurnResult`], keyed by `node_id`, behind a [`Mutex`]. C1 extends it to the
-//! full content-addressed tape + blackboard + `FlowStore` persistence; until then
-//! this is just enough to prove the engine writes are serialized and ordered.
+//! ONE `WorkerLedger` that is simultaneously:
+//!
+//! 1. the **replay tape** — every [`WorkerEvent`] and [`TurnResult`] with a
+//!    monotonically-increasing `seq`, so a recorded run can be re-emitted
+//!    byte-identically (the determinism moat, design §3);
+//! 2. the **cross-worker blackboard** — `node_id → output text`, the upstream
+//!    results a downstream step interpolates into its task (design §3/§5);
+//! 3. the **(persistence) record** — the whole tape serializes to JSONL, the
+//!    on-disk shape `FlowStore` will persist (C4) and `flow.replay` will read.
+//!
+//! C1 builds all three in-memory; the fourth design job (cross-restart *resume*
+//! from the persisted record) is C4. Only the engine writes, and every write is
+//! serialized through one [`Mutex`] so the tape order is deterministic and
+//! replayable.
 #![allow(
     dead_code,
-    reason = "C0 worker port awaits its C1 engine caller (mirrors subagent::bounded_fan_out)"
+    reason = "C1 engine is the first caller; some ledger surface lands for C4 persistence/resume"
 )]
 
 use super::{TurnResult, WorkerEvent};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// One recorded tape entry: a monotonically-increasing `seq`, the `node_id` that
 /// produced it, and the payload (an event or a turn result).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LedgerEntry {
     pub(crate) seq: u64,
     pub(crate) node_id: String,
     pub(crate) payload: LedgerPayload,
 }
 
-/// What a [`LedgerEntry`] records. C1 adds artifacts / blackboard outputs here.
-#[derive(Debug, Clone, PartialEq)]
+/// What a [`LedgerEntry`] records.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "payload", rename_all = "snake_case")]
 pub(crate) enum LedgerPayload {
     /// A streamed [`WorkerEvent`] from a worker.
     Event(WorkerEvent),
@@ -33,11 +44,23 @@ pub(crate) enum LedgerPayload {
     Result(TurnResult),
 }
 
-/// The append-only worker tape. Only the engine writes; writes are serialized
-/// through the [`Mutex`] so the tape order is deterministic and replayable.
-#[derive(Default)]
+/// The append-only worker tape + blackboard. Only the engine writes; writes are
+/// serialized through the [`Mutex`] so the tape order is deterministic and
+/// replayable. The blackboard is derived from `Result` entries (a node's final
+/// text), kept as an index for O(1) downstream lookup.
+#[derive(Default, Debug)]
 pub(crate) struct WorkerLedger {
-    entries: Mutex<Vec<LedgerEntry>>,
+    inner: Mutex<LedgerInner>,
+}
+
+#[derive(Default, Debug)]
+struct LedgerInner {
+    /// Job 1: the replay tape (every event + result, in seq order).
+    entries: Vec<LedgerEntry>,
+    /// Job 2: the blackboard (node_id -> last recorded result text). A node that
+    /// records multiple results keeps the latest, matching last-write-wins for a
+    /// re-dispatched node.
+    blackboard: BTreeMap<String, String>,
 }
 
 impl WorkerLedger {
@@ -52,29 +75,95 @@ impl WorkerLedger {
         self.append(node_id, LedgerPayload::Event(event))
     }
 
-    /// Append a node's final result, returning its assigned seq number.
+    /// Append a node's final result, returning its assigned seq number. The
+    /// result's text is also indexed into the blackboard under `node_id` for
+    /// downstream interpolation (job 2).
     pub(crate) fn record_result(&self, node_id: &str, result: &TurnResult) -> u64 {
-        self.append(node_id, LedgerPayload::Result(result.clone()))
+        let mut inner = crate::sync::lock_recover(&self.inner);
+        inner
+            .blackboard
+            .insert(node_id.to_string(), result.text.clone());
+        Self::push(&mut inner, node_id, LedgerPayload::Result(result.clone()))
     }
 
-    /// The current tape (a cloned snapshot), in seq order. For tests + the future
-    /// engine's fold; cheap because C0 tapes are short.
+    /// Job 2 (blackboard): the recorded output text of `node_id`, if it finished.
+    /// This is what a downstream step's [`TaskTemplate`](nerve_runtime::TaskTemplate)
+    /// interpolates an upstream `{{node_id}}` placeholder from.
+    #[must_use]
+    pub(crate) fn output(&self, node_id: &str) -> Option<String> {
+        crate::sync::lock_recover(&self.inner)
+            .blackboard
+            .get(node_id)
+            .cloned()
+    }
+
+    /// The current tape (a cloned snapshot), in seq order. For tests, the
+    /// engine's fold, and JSONL serialization.
     #[must_use]
     pub(crate) fn snapshot(&self) -> Vec<LedgerEntry> {
-        crate::sync::lock_recover(&self.entries).clone()
+        crate::sync::lock_recover(&self.inner).entries.clone()
+    }
+
+    /// Job 3 (record): serialize the whole tape as JSONL (one entry per line) —
+    /// the on-disk shape `FlowStore` persists (C4) and `flow.replay` reads. A
+    /// trailing newline keeps the file append-friendly.
+    #[must_use]
+    pub(crate) fn to_jsonl(&self) -> String {
+        let entries = self.snapshot();
+        let mut out = String::new();
+        for entry in &entries {
+            // Entries are plain serde types, so serialization cannot fail; fall
+            // back to an empty object rather than panicking on the off chance.
+            let line = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Job 3 (record): reconstruct a ledger from JSONL (the inverse of
+    /// [`Self::to_jsonl`]). Blank lines are skipped; a malformed line aborts with
+    /// the parse error so a corrupt tape never silently replays wrong. The
+    /// blackboard is rebuilt deterministically by re-folding the `Result` entries.
+    pub(crate) fn from_jsonl(jsonl: &str) -> Result<Self, serde_json::Error> {
+        let ledger = Self::new();
+        let mut inner = crate::sync::lock_recover(&ledger.inner);
+        for line in jsonl.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let entry: LedgerEntry = serde_json::from_str(line)?;
+            if let LedgerPayload::Result(result) = &entry.payload {
+                inner
+                    .blackboard
+                    .insert(entry.node_id.clone(), result.text.clone());
+            }
+            inner.entries.push(entry);
+        }
+        drop(inner);
+        Ok(ledger)
     }
 
     /// The number of entries recorded so far.
     #[must_use]
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        crate::sync::lock_recover(&self.entries).len()
+        crate::sync::lock_recover(&self.inner).entries.len()
+    }
+
+    /// Whether the tape is empty.
+    #[must_use]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     fn append(&self, node_id: &str, payload: LedgerPayload) -> u64 {
-        let mut entries = crate::sync::lock_recover(&self.entries);
-        let seq = entries.len() as u64;
-        entries.push(LedgerEntry {
+        let mut inner = crate::sync::lock_recover(&self.inner);
+        Self::push(&mut inner, node_id, payload)
+    }
+
+    fn push(inner: &mut LedgerInner, node_id: &str, payload: LedgerPayload) -> u64 {
+        let seq = inner.entries.len() as u64;
+        inner.entries.push(LedgerEntry {
             seq,
             node_id: node_id.to_string(),
             payload,
@@ -92,19 +181,22 @@ mod tests {
         WorkerEvent::Step(AgentEventKind::Message { text: text.into() })
     }
 
+    fn result(text: &str) -> TurnResult {
+        TurnResult {
+            ok: true,
+            text: text.into(),
+            usage: nerve_agent::Usage::default(),
+            cost_usd: None,
+            timed_out: false,
+        }
+    }
+
     #[test]
     fn records_events_and_results_with_monotonic_seq() {
         let ledger = WorkerLedger::new();
         assert_eq!(ledger.record_event("n1", step("a")), 0);
         assert_eq!(ledger.record_event("n1", step("b")), 1);
-        let result = TurnResult {
-            ok: true,
-            text: "done".into(),
-            usage: nerve_agent::Usage::default(),
-            cost_usd: None,
-            timed_out: false,
-        };
-        assert_eq!(ledger.record_result("n1", &result), 2);
+        assert_eq!(ledger.record_result("n1", &result("done")), 2);
         assert_eq!(ledger.len(), 3);
 
         let tape = ledger.snapshot();
@@ -122,5 +214,52 @@ mod tests {
         let tape = ledger.snapshot();
         assert_eq!(tape[0].node_id, "alpha");
         assert_eq!(tape[1].node_id, "beta");
+    }
+
+    #[test]
+    fn blackboard_indexes_node_result_text() {
+        // Job 2: a downstream step reads an upstream node's output by node_id.
+        let ledger = WorkerLedger::new();
+        ledger.record_result("upstream", &result("the answer"));
+        assert_eq!(ledger.output("upstream"), Some("the answer".to_string()));
+        assert_eq!(ledger.output("missing"), None);
+        // Last-write-wins for a re-dispatched node.
+        ledger.record_result("upstream", &result("the better answer"));
+        assert_eq!(
+            ledger.output("upstream"),
+            Some("the better answer".to_string())
+        );
+    }
+
+    #[test]
+    fn jsonl_round_trips_tape_and_rebuilds_blackboard() {
+        // Job 3: serialize -> reconstruct yields the identical tape AND the
+        // blackboard is re-folded deterministically.
+        let ledger = WorkerLedger::new();
+        ledger.record_event("n1", step("hello"));
+        ledger.record_result("n1", &result("done"));
+        ledger.record_result("n2", &result("also done"));
+
+        let jsonl = ledger.to_jsonl();
+        assert_eq!(jsonl.lines().count(), 3, "one line per entry");
+
+        let restored = WorkerLedger::from_jsonl(&jsonl).expect("reconstruct from jsonl");
+        assert_eq!(restored.snapshot(), ledger.snapshot(), "tape is identical");
+        assert_eq!(restored.output("n1"), Some("done".to_string()));
+        assert_eq!(restored.output("n2"), Some("also done".to_string()));
+        // And serializing the reconstruction is byte-identical (stable form).
+        assert_eq!(restored.to_jsonl(), jsonl);
+    }
+
+    #[test]
+    fn from_jsonl_skips_blank_lines_and_errors_on_garbage() {
+        let ledger = WorkerLedger::new();
+        ledger.record_event("n1", step("x"));
+        let mut jsonl = ledger.to_jsonl();
+        jsonl.push('\n'); // a trailing blank line is tolerated
+        let restored = WorkerLedger::from_jsonl(&jsonl).expect("blank lines skipped");
+        assert_eq!(restored.len(), 1);
+
+        WorkerLedger::from_jsonl("not json\n").expect_err("garbage aborts");
     }
 }

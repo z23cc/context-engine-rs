@@ -1,0 +1,8 @@
+---
+source: crates/nerve-workstation/src/flow/tests.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=single: node ok=true (17 chars)
+results:
+  [0] ok=true text="the single answer"
