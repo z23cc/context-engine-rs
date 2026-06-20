@@ -15,10 +15,12 @@
 //! boundary that mints workers, streams events, and tracks live flows. It adds
 //! NOTHING to `nerve-core`.
 
+mod live;
 mod observer;
 mod persist;
 mod replay;
 
+pub(crate) use live::LiveFlows;
 pub(crate) use replay::run_flow_replay;
 
 use crate::flow::{Driver, FactoryResolver, FlowOutcome};
@@ -37,7 +39,7 @@ use nerve_runtime::{
     ApprovalMode, FlowRunOutcome, FlowSource, RuntimeError, RuntimeEvent, SessionApprovalDecision,
     WorkerSelector, WorkflowDef,
 };
-use observer::{FlowEventObserver, emit_strategy_edges, strategy_label};
+use observer::{FlowEventObserver, emit_strategy_edges};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -65,145 +67,6 @@ pub(crate) struct FlowDeps {
     pub(crate) store: Option<FlowStore>,
 }
 
-/// One live flow's registry entry: its cancel token (so `flow.close` can interrupt
-/// the engine loop), the live-flow worker registry + shared ledger that
-/// `flow.steer` reaches the current frontier through (C3a), plus a lightweight
-/// status snapshot for `flow.get` / `flow.list`.
-struct FlowEntry {
-    cancel: CancelToken,
-    strategy_label: &'static str,
-    name: String,
-    created_seq: u64,
-    /// The live-flow worker registry the driver registers each steerable frontier
-    /// into; `flow.steer` looks up the live worker here. Shared (`Arc`) with the
-    /// run thread's [`Driver`].
-    steer: Arc<SteerRegistry>,
-    /// The flow's shared append-only ledger — a steered turn records into the SAME
-    /// tape as the original turn (recorded nondeterminism, design §5).
-    ledger: Arc<WorkerLedger>,
-    /// Set once the flow finishes (the run thread records its terminal outcome).
-    outcome: Option<FlowRunOutcome>,
-}
-
-/// The registry of flows the daemon knows about, keyed by `flow_id`. Live flows
-/// carry an uncancelled token; finished flows retain a snapshot for `flow.get`
-/// until pruned. A sibling of [`LiveSessions`](crate::delegate_live::LiveSessions),
-/// but a flow runs synchronously in its job thread (no parking), so the registry
-/// only needs the cancel handle + status, not a live driver.
-#[derive(Default)]
-pub(crate) struct LiveFlows {
-    flows: Mutex<HashMap<String, FlowEntry>>,
-    next_seq: Mutex<u64>,
-}
-
-impl LiveFlows {
-    /// Register a starting flow under `flow_id`, returning the cancel token the run
-    /// thread drives the engine under (and `flow.close` fires). The `steer` registry
-    /// and `ledger` are shared with the run thread's driver so a concurrent
-    /// `flow.steer` reaches the live frontier + records into the same tape (C3a).
-    fn register(
-        &self,
-        flow_id: &str,
-        def: &WorkflowDef,
-        steer: Arc<SteerRegistry>,
-        ledger: Arc<WorkerLedger>,
-    ) -> CancelToken {
-        let cancel = CancelToken::new();
-        let created_seq = {
-            let mut seq = crate::sync::lock_recover(&self.next_seq);
-            *seq += 1;
-            *seq
-        };
-        crate::sync::lock_recover(&self.flows).insert(
-            flow_id.to_string(),
-            FlowEntry {
-                cancel: cancel.clone(),
-                strategy_label: strategy_label(&def.strategy),
-                name: def.name.clone(),
-                created_seq,
-                steer,
-                ledger,
-                outcome: None,
-            },
-        );
-        cancel
-    }
-
-    /// Look up a live flow's `(steer registry, ledger)` for a `flow.steer`. Errors
-    /// on an unknown id, or on a flow that has already finished (no live frontier).
-    fn steer_target(
-        &self,
-        flow_id: &str,
-    ) -> Result<(Arc<SteerRegistry>, Arc<WorkerLedger>), RuntimeError> {
-        let flows = crate::sync::lock_recover(&self.flows);
-        let entry = flows
-            .get(flow_id)
-            .ok_or_else(|| RuntimeError::adapter(format!("no flow `{flow_id}`")))?;
-        if entry.outcome.is_some() {
-            return Err(RuntimeError::adapter(format!(
-                "flow `{flow_id}` has finished; nothing to steer"
-            )));
-        }
-        Ok((Arc::clone(&entry.steer), Arc::clone(&entry.ledger)))
-    }
-
-    /// Record a flow's terminal outcome (the run thread calls this when the driver
-    /// returns), so a later `flow.get` reflects the result.
-    fn record_outcome(&self, flow_id: &str, outcome: FlowRunOutcome) {
-        if let Some(entry) = crate::sync::lock_recover(&self.flows).get_mut(flow_id) {
-            entry.outcome = Some(outcome);
-        }
-    }
-
-    /// Snapshot one flow as JSON for `flow.get` (running vs. finished + its outcome).
-    fn get(&self, flow_id: &str) -> Result<Value, RuntimeError> {
-        crate::sync::lock_recover(&self.flows)
-            .get(flow_id)
-            .map(|entry| entry.snapshot(flow_id))
-            .ok_or_else(|| RuntimeError::adapter(format!("no flow `{flow_id}`")))
-    }
-
-    /// List all known flows as JSON, in registration order, for `flow.list`.
-    fn list(&self) -> Value {
-        let flows = crate::sync::lock_recover(&self.flows);
-        let mut entries: Vec<(&String, &FlowEntry)> = flows.iter().collect();
-        entries.sort_by_key(|(_, entry)| entry.created_seq);
-        let flows: Vec<Value> = entries
-            .into_iter()
-            .map(|(id, entry)| entry.snapshot(id))
-            .collect();
-        json!({ "flows": flows })
-    }
-
-    /// Request close of a live flow: fire its cancel token (the engine loop checks
-    /// it each step and returns a cancelled outcome). Errors on an unknown id.
-    fn close(&self, flow_id: &str) -> Result<Value, RuntimeError> {
-        let flows = crate::sync::lock_recover(&self.flows);
-        let entry = flows
-            .get(flow_id)
-            .ok_or_else(|| RuntimeError::adapter(format!("no flow `{flow_id}`")))?;
-        entry.cancel.cancel();
-        Ok(json!({ "flow_id": flow_id, "closed": true }))
-    }
-}
-
-impl FlowEntry {
-    fn snapshot(&self, flow_id: &str) -> Value {
-        let status = if self.outcome.is_some() {
-            "finished"
-        } else {
-            "running"
-        };
-        json!({
-            "flow_id": flow_id,
-            "name": self.name,
-            "strategy": self.strategy_label,
-            "status": status,
-            "outcome": self.outcome,
-        })
-    }
-}
-
 /// Execute a `flow.start`: register the flow, emit `flow_started`, run the C1
 /// engine to completion mapping its lifecycle onto `flow_*` events, then emit
 /// `flow_completed` (or `flow_failed`) and return turn-summary JSON as the job
@@ -219,7 +82,14 @@ pub(crate) fn run_flow_start(
     allow_delegate: bool,
     cancel: &CancelToken,
 ) -> Result<Value, RuntimeError> {
-    let def = resolve_workflow(workflow)?;
+    let root = deps.workspace_root();
+    // C6: worker-as-data + named-workflow discovery, scoped to the resolved project
+    // root (`.nerve/{workers,workflows}` > global > built-in). A `workflow_ref`
+    // resolves through the workflow registry; named workers resolve through the worker
+    // registry the factory consults. The static cycle check walks resolved Named refs.
+    let workers = crate::worker::WorkerRegistry::discover(root.as_deref());
+    let workflows = crate::flow::WorkflowRegistry::discover(root.as_deref());
+    let def = resolve_workflow(workflow, &workflows, &workers)?;
     // The shared ledger + live-flow worker registry: both are held by the registry
     // entry so a concurrent `flow.steer` reaches this flow's live frontier and
     // records its follow-up into the same tape (C3a).
@@ -233,7 +103,7 @@ pub(crate) fn run_flow_start(
     // this flow id (so a gated tool raises ONE ApprovalRequested answered by
     // flow.respond), under the run token so a close aborts a pending approval.
     let gate = deps.gate_for_flow(flow_id, &run_cancel);
-    let factory = build_factory(deps, gate, allow_delegate);
+    let factory = build_factory(deps, gate, allow_delegate, workers);
 
     emit(RuntimeEvent::flow_started(flow_id, def.strategy.clone()));
     emit_strategy_edges(flow_id, &def.strategy, emit);
@@ -254,12 +124,6 @@ pub(crate) fn run_flow_start(
             None => observer,
         }
     };
-    let root = deps
-        .runtime
-        .resolver()
-        .resolve_workspace(None)
-        .ok()
-        .and_then(|ws| ws.roots().first().map(|r| r.path.clone()));
 
     // Per-flow budget governance (C3b, design §6/§8): the BudgetLedger is a pure
     // fold over each node's recorded usage (so it is replayable); the FleetBudget
@@ -310,46 +174,76 @@ pub(crate) fn run_flow_start(
 }
 
 /// Resolve the additive [`FlowSource`] into a concrete [`WorkflowDef`], then run the
-/// static safety checks (design §8): the inline form is wired; a named ref is the P3
-/// workflow-def loader surface (defined-ahead), refused with a clear message. A
-/// workflow that fails [`validate_workflow`] (a zero-depth hierarchy, an unresolvable
-/// named worker, or a planner fork-loop) is REJECTED at `flow.start`, before any worker
-/// spawns — the bounded-recursion model's front door.
-fn resolve_workflow(workflow: FlowSource) -> Result<WorkflowDef, RuntimeError> {
+/// static safety checks (design §8). The inline form is used verbatim; a `workflow_ref`
+/// is resolved through the C6 named-workflow [`WorkflowRegistry`](crate::flow::WorkflowRegistry)
+/// (project `.nerve/workflows/*.json` > global > built-in). A workflow that fails the
+/// reference-aware [`validate_workflow_refs`](crate::flow::validate_workflow_refs) (a
+/// zero-depth hierarchy, an unresolvable named worker, a planner fork-loop, OR a
+/// reference cycle through named workers / nested named workflow_refs) is REJECTED at
+/// `flow.start`, before any worker spawns — the bounded-recursion model's front door.
+fn resolve_workflow(
+    workflow: FlowSource,
+    workflows: &crate::flow::WorkflowRegistry,
+    workers: &crate::worker::WorkerRegistry,
+) -> Result<WorkflowDef, RuntimeError> {
     let def = match workflow {
         FlowSource::Inline { workflow } => *workflow,
-        FlowSource::Named { workflow_ref } => {
-            return Err(RuntimeError::adapter(format!(
-                "named workflow `{workflow_ref}` is not yet resolvable (inline `workflow` is \
-                 supported; named workflow-def loading lands with the P3 workflow-defs loader)"
-            )));
-        }
+        FlowSource::Named { workflow_ref } => workflows
+            .resolve(&workflow_ref)
+            .map_err(|err| RuntimeError::adapter(format!("workflow `{workflow_ref}`: {err}")))?,
     };
-    crate::flow::validate_workflow(&def)
+    crate::flow::validate_workflow_refs(&def, workflows, workers)
         .map_err(|err| RuntimeError::adapter(format!("invalid workflow: {err}")))?;
     Ok(def)
 }
 
-/// Build the [`WorkerFactory`] over the flow's deps + the flow-scoped `gate`. CLI
-/// workers run under the trust-bound delegate launcher (refusing unless
-/// `--allow-delegate`); provider workers reach tools through the shared runtime
-/// behind `gate` (whose `Ask` routes to the `ApprovalHub` keyed by the flow id).
-fn build_factory(deps: &FlowDeps, gate: ToolGate, allow_delegate: bool) -> WorkerFactory {
+/// Build the [`WorkerFactory`] over the flow's deps + the flow-scoped `gate` + the C6
+/// worker-as-data registry. CLI workers run under the trust-bound delegate launcher
+/// (refusing unless `--allow-delegate`); provider workers reach tools through the
+/// shared runtime behind `gate`. A registry-driven `remote`/`mcp` (exec-tier) worker
+/// is opened only when `--allow-delegate` lifted the fleet (security before openness,
+/// design §9) — and even then its production transport is the documented follow-on.
+fn build_factory(
+    deps: &FlowDeps,
+    gate: ToolGate,
+    allow_delegate: bool,
+    workers: crate::worker::WorkerRegistry,
+) -> WorkerFactory {
     let delegate_launcher = if allow_delegate {
         Arc::clone(&deps.delegate_launcher)
     } else {
         crate::sandbox::refuse_launcher()
     };
-    WorkerFactory::new(
+    let factory = WorkerFactory::new(
         delegate_launcher,
         Arc::clone(&deps.runtime),
         deps.registry.clone(),
         gate,
         DEFAULT_MAX_DEPTH,
     )
+    .with_registry(workers);
+    if allow_delegate {
+        // The fleet is explicitly opened: exec-tier remote/MCP workers may be minted
+        // (the gate is the same lift a CLI worker passes). The production transport is
+        // a documented follow-on — the connector returns a clear not-yet-wired error.
+        factory.with_remote(Arc::new(crate::flow_remote::FollowOnConnector))
+    } else {
+        factory
+    }
 }
 
 impl FlowDeps {
+    /// The workspace root the flow is scoped to (the first registered root), used to
+    /// discover `.nerve/{workers,workflows}` defs (C6) and locate `.nerve/flows`.
+    /// `None` when no root resolves (built-ins still resolve).
+    fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.runtime
+            .resolver()
+            .resolve_workspace(None)
+            .ok()
+            .and_then(|ws| ws.roots().first().map(|r| r.path.clone()))
+    }
+
     /// Build a provider-worker gate whose `Ask` decisions route through the shared
     /// [`ApprovalHub`] keyed by `flow_id`, with per-flow decision memory.
     fn gate_for_flow(&self, flow_id: &str, cancel: &CancelToken) -> ToolGate {

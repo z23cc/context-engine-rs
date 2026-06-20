@@ -36,6 +36,7 @@ mod engine;
 mod resolve;
 mod resume;
 mod safety;
+mod workflow_registry;
 
 #[cfg(test)]
 mod tests;
@@ -45,7 +46,8 @@ pub(crate) use engine::{split_item, split_len};
 pub(crate) use resolve::{
     FactoryResolver, ReplayResolver, WorkerResolver, replay_generation_provider,
 };
-pub(crate) use safety::{WorkflowError, validate_workflow};
+pub(crate) use safety::{WorkflowError, validate_workflow, validate_workflow_refs};
+pub(crate) use workflow_registry::WorkflowRegistry;
 
 use crate::worker::TurnResult;
 use nerve_runtime::Join;

@@ -53,6 +53,8 @@ mod ledger;
 #[cfg(test)]
 mod parity;
 mod provider;
+mod registry;
+mod remote;
 mod replay;
 mod steer;
 
@@ -61,10 +63,12 @@ pub(crate) use budget::{
     intersect_autonomy,
 };
 pub(crate) use cli::CliWorker;
-pub(crate) use factory::WorkerFactory;
+pub(crate) use factory::{RemoteConnector, WorkerFactory};
 pub(crate) use lease::{PathLeases, is_writer};
 pub(crate) use ledger::{LedgerEntry, LedgerPayload, WorkerLedger};
 pub(crate) use provider::ProviderWorker;
+pub(crate) use registry::{DiscoveredWorker, WorkerDef, WorkerDefKind, WorkerRegistry};
+pub(crate) use remote::{McpEndpoint, McpWorker, RemoteEndpoint, RemoteWorker};
 pub(crate) use replay::ReplayWorker;
 pub(crate) use steer::{SteerError, SteerRegistry};
 

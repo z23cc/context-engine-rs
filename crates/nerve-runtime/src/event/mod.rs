@@ -235,6 +235,10 @@ pub enum FlowWorkerKind {
     Cli,
     /// An in-process provider loop over the Nerve tool surface.
     Provider,
+    /// A worker resolved from a named `WorkerDef` data file (C6, worker-as-data):
+    /// the concrete family is decided by the loaded def, so the declarative ref only
+    /// knows it is `named` (the node-agent stream carries the resolved behavior).
+    Named,
 }
 
 /// A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`].

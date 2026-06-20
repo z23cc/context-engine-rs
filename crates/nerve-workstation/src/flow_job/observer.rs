@@ -264,7 +264,10 @@ fn worker_label(worker: &WorkerRef) -> (String, FlowWorkerKind) {
         WorkerRef::Provider { provider, model } => {
             (format!("{provider}/{model}"), FlowWorkerKind::Provider)
         }
-        WorkerRef::Named { name } => (name.clone(), FlowWorkerKind::Provider),
+        // C6: a named worker's concrete family is decided by the loaded def; the
+        // declarative ref only knows it is `named` (the resolved behavior flows through
+        // the node-agent stream regardless).
+        WorkerRef::Named { name } => (name.clone(), FlowWorkerKind::Named),
     }
 }
 

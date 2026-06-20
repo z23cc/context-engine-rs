@@ -10,8 +10,9 @@
 //! `--version`, no network, no side effects), mirroring a `which` lookup. This
 //! keeps discovery cheap, deterministic, and side-effect-free.
 
+use crate::worker::{WorkerDefKind, WorkerRegistry};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One entry in the hardcoded external-agent catalog: the catalog `name` (also
 /// the value passed as `delegate.start`'s `agent`) and the binary to resolve on
@@ -55,8 +56,9 @@ pub(crate) fn tool_specs() -> Vec<Value> {
     vec![json!({
         "name": "list_agents",
         "description": "List external coding agents Nerve can delegate to (codex / claude / \
-            gemini), probing each binary on PATH for availability. Read-only; does not spawn \
-            the agents.",
+            gemini), probing each binary on PATH for availability, plus the worker-as-data \
+            catalog (`.nerve/workers/*.json`, project > global > built-in) the orchestrator's \
+            named workers resolve through. Read-only; does not spawn the agents.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -72,15 +74,46 @@ pub(crate) fn tool_specs() -> Vec<Value> {
 }
 
 /// Handle a `tools/call` for `list_agents`. Returns `Ok(None)` for any other tool
-/// so runtime dispatch continues to the next adapter / core.
+/// so runtime dispatch continues to the next adapter / core. `root` is the resolved
+/// workspace root used to discover the C6 worker-as-data catalog (`None` → built-ins
+/// only).
 #[must_use]
-pub(crate) fn handle_tool_call(params: &Value) -> Option<Value> {
+pub(crate) fn handle_tool_call(params: &Value, root: Option<&Path>) -> Option<Value> {
     let name = params.get("name").and_then(Value::as_str);
     if name != Some("list_agents") {
         return None;
     }
     let agents: Vec<Value> = AGENT_CATALOG.iter().map(probe_agent).collect();
-    Some(json!({ "agents": agents }))
+    Some(json!({ "agents": agents, "workers": worker_catalog(root) }))
+}
+
+/// The C6 worker-as-data catalog for `list_agents`: every discovered [`WorkerDef`]
+/// with its winning source (built-in / global / project), so the catalog reflects
+/// "add any worker is a data change". Sorted by name (the registry sorts) for
+/// deterministic output; the built-in cli{codex|claude|gemini} are always present.
+fn worker_catalog(root: Option<&Path>) -> Vec<Value> {
+    WorkerRegistry::discover(root)
+        .catalog()
+        .into_iter()
+        .map(|worker| {
+            json!({
+                "name": worker.name,
+                "kind": worker_kind_label(&worker.def.kind),
+                "source": worker.source.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// A stable one-word label for a [`WorkerDefKind`] (the worker-as-data shape), shown
+/// in the `list_agents` worker catalog.
+fn worker_kind_label(kind: &WorkerDefKind) -> &'static str {
+    match kind {
+        WorkerDefKind::Cli { .. } => "cli",
+        WorkerDefKind::Provider { .. } => "provider",
+        WorkerDefKind::Remote { .. } => "remote",
+        WorkerDefKind::Mcp { .. } => "mcp",
+    }
 }
 
 /// Resolve one catalog agent's availability by a PATH lookup (no spawn) and
@@ -174,13 +207,13 @@ mod tests {
 
     #[test]
     fn non_list_agents_call_is_not_claimed() {
-        assert!(handle_tool_call(&json!({ "name": "read_file" })).is_none());
-        assert!(handle_tool_call(&json!({ "arguments": {} })).is_none());
+        assert!(handle_tool_call(&json!({ "name": "read_file" }), None).is_none());
+        assert!(handle_tool_call(&json!({ "arguments": {} }), None).is_none());
     }
 
     #[test]
     fn list_agents_returns_the_full_catalog_shape() {
-        let result = handle_tool_call(&json!({ "name": "list_agents" })).expect("claimed");
+        let result = handle_tool_call(&json!({ "name": "list_agents" }), None).expect("claimed");
         let agents = result["agents"].as_array().expect("agents array");
         assert_eq!(agents.len(), AGENT_CATALOG.len());
         let names: Vec<_> = agents.iter().filter_map(|a| a["name"].as_str()).collect();
@@ -202,6 +235,51 @@ mod tests {
     }
 
     #[test]
+    fn list_agents_surfaces_the_worker_catalog_with_sources() {
+        // The C6 worker-as-data catalog appears under `workers`, each with its source.
+        // The built-in cli{codex,claude,gemini} are always present (and are cli kind).
+        let result = handle_tool_call(&json!({ "name": "list_agents" }), None).expect("claimed");
+        let workers = result["workers"].as_array().expect("workers array");
+        let by_name: std::collections::BTreeMap<&str, &str> = workers
+            .iter()
+            .map(|w| (w["name"].as_str().unwrap(), w["kind"].as_str().unwrap()))
+            .collect();
+        for name in ["codex", "claude", "gemini"] {
+            // Present as a cli worker (don't assume the host's global dir is empty, so
+            // assert the entry exists + is a cli kind rather than its exact source).
+            assert_eq!(by_name.get(name), Some(&"cli"), "built-in {name} missing");
+        }
+        for worker in workers {
+            assert!(worker["source"].is_string(), "every worker has a source");
+        }
+    }
+
+    #[test]
+    fn worker_catalog_reports_a_project_def_with_its_source() {
+        // Hermetic: a project `.nerve/workers/reviewer.json` shows up as `project`.
+        // `worker_catalog` calls `WorkerRegistry::discover`, which joins `<root>/.nerve`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir
+            .path()
+            .join(".nerve")
+            .join("workers")
+            .join("reviewer.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{ "kind": { "type": "provider", "provider": "xai", "model": "grok" } }"#,
+        )
+        .unwrap();
+        let catalog = worker_catalog(Some(dir.path()));
+        let reviewer = catalog
+            .iter()
+            .find(|w| w["name"] == "reviewer")
+            .expect("reviewer in catalog");
+        assert_eq!(reviewer["kind"], "provider");
+        assert_eq!(reviewer["source"], "project");
+    }
+
+    #[test]
     fn list_agents_codex_entry_carries_mcp_servers_view() {
         // DA-6: the codex entry surfaces an `mcp_servers` allowlist view; the other
         // agents do not. Discovery is pinned to {chrome-devtools, xcodebuildmcp} and
@@ -211,7 +289,7 @@ mod tests {
             &["chrome-devtools", "xcodebuildmcp"],
             || {
                 crate::runconfig::codex_allowlist_override::with(&["chrome-devtools"], || {
-                    handle_tool_call(&json!({ "name": "list_agents" })).expect("claimed")
+                    handle_tool_call(&json!({ "name": "list_agents" }), None).expect("claimed")
                 })
             },
         );

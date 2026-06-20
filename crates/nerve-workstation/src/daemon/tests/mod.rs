@@ -38,6 +38,17 @@ fn runtime_with_file() -> RuntimeFixture {
     }
 }
 
+/// Build a runtime scoped to an explicit `root` (which the caller pre-populates with
+/// `.nerve/{workers,workflows}` defs), so the C6 worker-as-data / named-workflow
+/// discovery resolves project defs. The temp dir is OWNED by the caller (kept alive
+/// for the test's duration).
+fn runtime_over_root(root: &std::path::Path) -> Arc<tools::NerveRuntime> {
+    let runtime = tools::runtime(
+        registry(&args_with(vec![root.to_path_buf()], Vec::new())).expect("registry"),
+    );
+    Arc::new(runtime)
+}
+
 fn rpc(id: impl Into<Option<Value>>, method: &str, params: Value) -> RpcMessage {
     RpcMessage {
         id: id.into(),

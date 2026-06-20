@@ -25,10 +25,16 @@
 //!
 //! Composition happens here, at the binary (the composition root); the
 //! orchestrator stays unaware of skills/agents.
+//!
+//! The precedence walk + source labelling are shared with the C6
+//! [`WorkerRegistry`](crate::worker::WorkerRegistry) /
+//! [`WorkflowRegistry`](crate::flow::WorkflowRegistry) through
+//! [`crate::discovery::DiscoveryBases`] (the one "loaded, not compiled" loader).
 
+use crate::discovery::{CapabilitySource, DiscoveryBases};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Built-in agent definitions, embedded so a fresh install has a working
 /// `--agent`. Each entry is `(name, raw-json)`; consulted only after the project
@@ -90,16 +96,13 @@ pub(crate) struct ResolvedAgent {
 /// Resolves named agents and skills from a precedence-ordered set of base
 /// directories, falling back to embedded built-ins.
 ///
-/// Each base directory holds `agents/` and `skills/` subdirectories. Bases are
-/// stored highest-precedence first (project before global); the first match
-/// wins, and built-ins are consulted last.
+/// Each base directory holds `agents/` and `skills/` subdirectories. The
+/// precedence walk + source labelling are shared with the C6 worker/workflow
+/// registries through [`DiscoveryBases`]: agents are JSON (loaded via
+/// [`DiscoveryBases::load_json`]), skills are markdown (resolved here, since the
+/// shared loader is JSON-only).
 pub(crate) struct Capabilities {
-    /// Discovery bases, highest precedence first, each paired with the source it
-    /// actually represents. The source is tracked alongside the path (not inferred
-    /// from the array index) because `discover` only pushes the project base when a
-    /// project root exists — so with no project root, `bases[0]` is the *global*
-    /// config home and must be labelled as such.
-    bases: Vec<(SkillSource, PathBuf)>,
+    bases: DiscoveryBases,
 }
 
 impl Capabilities {
@@ -107,28 +110,21 @@ impl Capabilities {
     /// (`config_home()`). A missing config home is skipped rather than failing —
     /// built-ins still resolve.
     pub(crate) fn discover(project_dir: Option<&Path>) -> Self {
-        let mut bases = Vec::new();
-        if let Some(root) = project_dir {
-            bases.push((SkillSource::Project, root.join(".nerve")));
+        Self {
+            bases: DiscoveryBases::discover(project_dir),
         }
-        if let Ok(home) = nerve_agent::auth::config_home() {
-            bases.push((SkillSource::Global, home));
-        }
-        Self { bases }
     }
 
     /// Construct from explicit project/global base directories (each optional),
     /// bypassing environment-derived discovery. Test-only.
     #[cfg(test)]
-    fn from_sources(project: Option<PathBuf>, global: Option<PathBuf>) -> Self {
-        let mut bases = Vec::new();
-        if let Some(project) = project {
-            bases.push((SkillSource::Project, project));
+    fn from_sources(
+        project: Option<std::path::PathBuf>,
+        global: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            bases: DiscoveryBases::from_sources(project, global),
         }
-        if let Some(global) = global {
-            bases.push((SkillSource::Global, global));
-        }
-        Self { bases }
     }
 
     /// Resolve `name` to a [`ResolvedAgent`], composing its skills into the
@@ -188,32 +184,26 @@ impl Capabilities {
         Ok(Some(lines.join("\n")))
     }
 
-    /// Load and parse the agent definition `name`, honoring precedence.
+    /// Load and parse the agent definition `name`, honoring precedence — via the
+    /// shared JSON loader (agents are JSON, like worker/workflow defs).
     fn load_agent_def(&self, name: &str) -> Result<AgentDefFile> {
-        validate_name(name)?;
-        for (_source, base) in &self.bases {
-            let path = base.join("agents").join(format!("{name}.json"));
-            if path.is_file() {
-                let raw = std::fs::read_to_string(&path)
-                    .with_context(|| format!("failed to read agent def: {}", path.display()))?;
-                return parse_agent_def(&raw, &path.display().to_string());
-            }
-        }
-        if let Some(raw) = builtin(BUILTIN_AGENTS, name) {
-            return parse_agent_def(raw, &format!("<built-in agent {name}>"));
-        }
-        bail!("unknown agent '{name}': not found in project (.nerve/agents), global, or built-ins");
+        let (def, _source) =
+            self.bases
+                .load_json::<AgentDefFile>("agents", name, BUILTIN_AGENTS)?;
+        Ok(def)
     }
 
     /// Resolve skill `name` to its disclosure metadata (name, one-line
     /// description, winning source), honoring precedence. Reads the body only to
     /// extract the description — the body itself is not retained for the prompt.
+    /// Skills are markdown (not JSON), so this walks the bases directly rather than
+    /// through the shared JSON loader.
     fn load_skill_meta(&self, name: &str) -> Result<SkillMeta> {
-        validate_name(name)?;
+        crate::discovery::validate_name(name)?;
         // Each base carries its real source (project / global), so labelling
         // reflects what the base *is*, not its array position — important when no
         // project root exists and the only base is the global config home.
-        for (source, base) in &self.bases {
+        for (source, base) in self.bases.bases() {
             let path = base.join("skills").join(format!("{name}.md"));
             if path.is_file() {
                 let body = std::fs::read_to_string(&path)
@@ -222,28 +212,9 @@ impl Capabilities {
             }
         }
         if let Some(raw) = builtin(BUILTIN_SKILLS, name) {
-            return Ok(SkillMeta::from_body(name, raw, SkillSource::BuiltIn));
+            return Ok(SkillMeta::from_body(name, raw, CapabilitySource::BuiltIn));
         }
         bail!("skill '{name}' not found in project (.nerve/skills), global, or built-ins");
-    }
-}
-
-/// Where a resolved skill came from, surfaced in the disclosure footer so the
-/// model (and a human reading the prompt) can see which source won.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkillSource {
-    Project,
-    Global,
-    BuiltIn,
-}
-
-impl std::fmt::Display for SkillSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Project => "project",
-            Self::Global => "global",
-            Self::BuiltIn => "built-in",
-        })
     }
 }
 
@@ -253,14 +224,14 @@ impl std::fmt::Display for SkillSource {
 struct SkillMeta {
     name: String,
     description: String,
-    source: SkillSource,
+    source: CapabilitySource,
 }
 
 impl SkillMeta {
     /// Derive metadata from a skill's markdown body: the description is the first
     /// non-empty line, with a leading markdown heading marker stripped, truncated
     /// to a single compact line. Empty bodies yield a placeholder description.
-    fn from_body(name: &str, body: &str, source: SkillSource) -> Self {
+    fn from_body(name: &str, body: &str, source: CapabilitySource) -> Self {
         let description = skill_description(body);
         Self {
             name: name.to_string(),
@@ -282,12 +253,8 @@ fn skill_description(body: &str) -> String {
         .unwrap_or_else(|| "(no description)".to_string())
 }
 
-/// Parse an agent definition from raw JSON, tagging errors with `source`.
-fn parse_agent_def(raw: &str, source: &str) -> Result<AgentDefFile> {
-    serde_json::from_str(raw).with_context(|| format!("failed to parse agent def: {source}"))
-}
-
-/// Look up an embedded built-in by name.
+/// Look up an embedded built-in skill by name (skills are markdown, resolved here
+/// rather than through the shared JSON loader).
 fn builtin(table: &[(&'static str, &'static str)], name: &str) -> Option<&'static str> {
     table
         .iter()
@@ -295,24 +262,11 @@ fn builtin(table: &[(&'static str, &'static str)], name: &str) -> Option<&'stati
         .map(|(_, raw)| *raw)
 }
 
-/// Reject names that could escape the discovery directories or are empty. Names
-/// are simple identifiers — ASCII alphanumerics plus `-` and `_` (no path
-/// separators or dots) — so `<name>.json` / `<name>.md` always stays in-dir.
-fn validate_name(name: &str) -> Result<()> {
-    let valid = !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if !valid {
-        bail!("invalid capability name '{name}': use only letters, digits, '-' and '_'");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn write(path: PathBuf, contents: &str) {

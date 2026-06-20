@@ -1,27 +1,36 @@
 //! Flow-safety static checks (design §8) — the bounded-recursion model's front door.
 //!
 //! Wave C5 lands the `Hierarchical` strategy, which is the only strategy that spawns a
-//! CHILD flow. Two checks keep its recursion safe, complementing the runtime
+//! CHILD flow. Several checks keep recursion safe, complementing the runtime
 //! `FleetBudget` depth gate (absence-at-floor) and monotone de-escalation:
 //!
 //! 1. **Static workflow validation ([`validate_workflow`])** — run ONCE at
 //!    `flow.start`, before any worker spawns. It walks the (closed, finite) strategy
 //!    tree and rejects a def that can never run safely: `max_depth == 0` under a
 //!    `Hierarchical` strategy (the child could never spawn — a structural mistake,
-//!    surfaced at start rather than silently absent-at-floor), or a `Named` worker ref
-//!    (unresolvable until the C6 loader — fail at start, not mid-flight). A future
-//!    named-`WorkflowDef` loader (C6) would extend this with the genuine reference-cycle
-//!    check; the inline `Strategy` enum is a finite tree, so it cannot cycle
-//!    structurally — the meaningful C5 guards are the two above.
+//!    surfaced at start rather than silently absent-at-floor).
 //!
 //! 2. **Ancestor-instruction-hash ([`InstructionTrail`])** — the dynamic fork-loop
 //!    guard for `Hierarchical`: a child flow whose planner instruction repeats an
 //!    ancestor's would loop forever. The trail records each ancestor planner's rendered
 //!    instruction hash; a repeat is refused (absence-at-floor) rather than spawned.
 //!
-//! Both are PURE + deterministic, so they replay identically.
+//! 3. **Reference-cycle check ([`validate_workflow_refs`], Wave C6)** — now that named
+//!    workers + named workflows are *loaded* (`WorkerRegistry` / `WorkflowRegistry`)
+//!    and can reference each other, a genuine graph-cycle is possible: a workflow whose
+//!    `Named` reference resolves (transitively) back to the same named workflow. C6
+//!    adds a real DFS over the resolved references that rejects such a cycle at
+//!    `flow.start`. (C5 only had the finite-inline-tree note + the planner fork-loop
+//!    hash; this is the named-reference cycle.) An unresolvable `Named` worker is also
+//!    rejected here (it now RESOLVES through the registry, or errors — replacing C5's
+//!    blanket "reject Named").
+//!
+//! All are PURE + deterministic, so they replay identically.
 
-use nerve_runtime::{Strategy, WorkflowDef};
+use super::workflow_registry::{WorkflowRegistry, reachable_named_workers};
+use crate::worker::WorkerRegistry;
+use nerve_runtime::{Strategy, WorkerRef, WorkflowDef};
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -31,12 +40,16 @@ use std::hash::{Hash, Hasher};
 pub(crate) enum WorkflowError {
     /// A `Hierarchical` strategy with `max_depth == 0` — its child could never spawn.
     ZeroDepthHierarchy,
-    /// A `Named` worker ref (unresolvable until the C6 WorkerDef loader).
-    NamedWorkerUnresolvable(String),
+    /// A `Named` worker ref that does not resolve through the worker registry (C6):
+    /// no `<name>.json` def in project/global/built-in. Carries the registry's reason.
+    NamedWorkerUnresolvable { name: String, reason: String },
     /// A nested `Hierarchical` planner repeats an ANCESTOR planner's instruction — a
     /// declared fork-loop (design §8, the ancestor-instruction-hash guard). `depth` is
     /// the nesting level the repeat was found at.
     PlannerForkLoop { depth: u32 },
+    /// A genuine reference cycle (C6): a named workflow whose `Named` references
+    /// resolve (transitively) back to itself. `cycle` is the workflow-name chain.
+    ReferenceCycle { cycle: Vec<String> },
 }
 
 impl std::fmt::Display for WorkflowError {
@@ -47,22 +60,29 @@ impl std::fmt::Display for WorkflowError {
                 "hierarchical workflow has max_depth=0, so its child flow could never \
                  spawn (raise max_depth or use a non-hierarchical strategy)"
             ),
-            Self::NamedWorkerUnresolvable(name) => write!(
-                f,
-                "named worker `{name}` is not resolvable yet (the WorkerDef loader lands \
-                 in C6; use an inline cli/provider worker)"
-            ),
+            Self::NamedWorkerUnresolvable { name, reason } => {
+                write!(f, "named worker `{name}` does not resolve: {reason}")
+            }
             Self::PlannerForkLoop { depth } => write!(
                 f,
                 "hierarchical planner at depth {depth} repeats an ancestor planner's \
                  instruction (a fork-loop); each nesting level needs a distinct plan"
             ),
+            Self::ReferenceCycle { cycle } => write!(
+                f,
+                "named-workflow reference cycle: {} (a workflow cannot reference itself, \
+                 directly or transitively)",
+                cycle.join(" -> ")
+            ),
         }
     }
 }
 
-/// Validate a [`WorkflowDef`] before it runs (design §8). A pure walk over the strategy
-/// tree; returns the first problem found, or `Ok(())` for a runnable workflow.
+/// Validate a [`WorkflowDef`]'s STRUCTURE before it runs (design §8): a pure walk over
+/// the strategy tree rejecting a zero-depth hierarchy or a planner fork-loop. It does
+/// NOT resolve named refs (that needs the registries — see [`validate_workflow_refs`]);
+/// the hidden `nerve flow run` CLI uses this structural check + the registry one
+/// together. Returns the first problem found, or `Ok(())`.
 pub(crate) fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> {
     if matches!(def.strategy, Strategy::Hierarchical { .. }) && def.max_depth == 0 {
         return Err(WorkflowError::ZeroDepthHierarchy);
@@ -70,19 +90,88 @@ pub(crate) fn validate_workflow(def: &WorkflowDef) -> Result<(), WorkflowError> 
     validate_strategy(&def.strategy, &InstructionTrail::new(), 0)
 }
 
-/// Walk a strategy tree, rejecting an unresolvable `Named` worker anywhere in it and a
-/// `Hierarchical` planner that repeats an ancestor's instruction (the fork-loop guard).
-/// `trail` carries the ancestor planner instruction hashes; `depth` the nesting level.
+/// The full `flow.start` validation (C6): the structural [`validate_workflow`] checks,
+/// PLUS — now that named workers + named workflows are loaded and can reference each
+/// other — every `Named` worker must resolve through the [`WorkerRegistry`], and the
+/// reference graph must be acyclic. Run before any worker spawns; pure + deterministic.
+pub(crate) fn validate_workflow_refs(
+    def: &WorkflowDef,
+    workflows: &WorkflowRegistry,
+    workers: &WorkerRegistry,
+) -> Result<(), WorkflowError> {
+    validate_workflow(def)?;
+    resolve_named_workers(def, workers)?;
+    // The reference-cycle DFS: the entry workflow may be anonymous (inline) — seed the
+    // visited set with its own name so a Named ref BACK to it (when it is also a named
+    // workflow) is caught, then follow each named ref that is itself a named workflow.
+    let mut on_stack = vec![def.name.clone()];
+    let mut seen = HashSet::new();
+    seen.insert(def.name.clone());
+    detect_reference_cycle(def, workflows, &mut on_stack, &mut seen)
+}
+
+/// Every `Named` worker in `def` must resolve through the registry (C6 turns C5's
+/// blanket "reject Named" into "resolve, else error with the registry's reason").
+fn resolve_named_workers(def: &WorkflowDef, workers: &WorkerRegistry) -> Result<(), WorkflowError> {
+    for name in reachable_named_workers(def) {
+        workers
+            .resolve(&WorkerRef::Named { name: name.clone() })
+            .map_err(|err| WorkflowError::NamedWorkerUnresolvable {
+                name,
+                reason: err.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+/// DFS the named-workflow reference graph from `def`, detecting a cycle. An edge is a
+/// `Named` reference in `def` that is ALSO a registered named workflow (a worker and a
+/// workflow can share a name; following it could recurse). `on_stack` is the current
+/// DFS path (for the cycle report); `seen` prunes already-cleared subtrees. A repeat of
+/// a name already on the stack is a genuine cycle.
+fn detect_reference_cycle(
+    def: &WorkflowDef,
+    workflows: &WorkflowRegistry,
+    on_stack: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) -> Result<(), WorkflowError> {
+    for name in reachable_named_workers(def) {
+        // Only a Named reference that resolves to a WORKFLOW can recurse; a plain
+        // worker def is a leaf (workers do not reference other workflows).
+        if !workflows.contains(&name) {
+            continue;
+        }
+        if on_stack.contains(&name) {
+            let mut cycle = on_stack.clone();
+            cycle.push(name);
+            return Err(WorkflowError::ReferenceCycle { cycle });
+        }
+        if !seen.insert(name.clone()) {
+            continue; // already cleared this subtree on another path
+        }
+        let child =
+            workflows
+                .resolve(&name)
+                .map_err(|err| WorkflowError::NamedWorkerUnresolvable {
+                    name: name.clone(),
+                    reason: err.to_string(),
+                })?;
+        on_stack.push(name);
+        detect_reference_cycle(&child, workflows, on_stack, seen)?;
+        on_stack.pop();
+    }
+    Ok(())
+}
+
+/// Walk a strategy tree, rejecting a `Hierarchical` planner that repeats an ancestor's
+/// instruction (the fork-loop guard). `trail` carries the ancestor planner instruction
+/// hashes; `depth` the nesting level. (Named-worker resolution is handled separately by
+/// [`validate_workflow_refs`], so this no longer rejects `Named` refs.)
 fn validate_strategy(
     strategy: &Strategy,
     trail: &InstructionTrail,
     depth: u32,
 ) -> Result<(), WorkflowError> {
-    for step in strategy_steps(strategy) {
-        if let nerve_runtime::WorkerRef::Named { name } = &step.worker {
-            return Err(WorkflowError::NamedWorkerUnresolvable(name.clone()));
-        }
-    }
     // Recurse into a Hierarchical child (the only nested strategy), threading the
     // planner-instruction trail so a repeat anywhere down the chain is a fork-loop.
     if let Strategy::Hierarchical { planner, child } = strategy {
@@ -217,23 +306,113 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_named_worker_anywhere_in_the_tree() {
-        // A Named ref nested inside a Hierarchical child is still caught (recursion).
+    fn structural_validate_no_longer_rejects_a_named_worker() {
+        // C6: `validate_workflow` is STRUCTURAL only; named-worker resolution moved to
+        // `validate_workflow_refs`. A bare Named ref passes the structural check.
         let d = def(
-            Strategy::Hierarchical {
-                planner: step(cli()),
-                child: Box::new(Strategy::Single {
-                    step: step(WorkerRef::Named {
-                        name: "reviewer".into(),
-                    }),
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "reviewer".into(),
                 }),
             },
             2,
         );
-        assert_eq!(
-            validate_workflow(&d),
-            Err(WorkflowError::NamedWorkerUnresolvable("reviewer".into()))
+        assert_eq!(validate_workflow(&d), Ok(()));
+    }
+
+    #[test]
+    fn refs_validation_resolves_a_builtin_named_worker() {
+        // A Named ref to a built-in worker (`claude`) resolves through the registry.
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "claude".into(),
+                }),
+            },
+            2,
         );
+        let workers = WorkerRegistry::from_sources(None, None);
+        let workflows = WorkflowRegistry::from_sources(None, None);
+        assert_eq!(validate_workflow_refs(&d, &workflows, &workers), Ok(()));
+    }
+
+    #[test]
+    fn refs_validation_rejects_an_unresolvable_named_worker() {
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "ghost".into(),
+                }),
+            },
+            2,
+        );
+        let workers = WorkerRegistry::from_sources(None, None);
+        let workflows = WorkflowRegistry::from_sources(None, None);
+        match validate_workflow_refs(&d, &workflows, &workers) {
+            Err(WorkflowError::NamedWorkerUnresolvable { name, .. }) => assert_eq!(name, "ghost"),
+            other => panic!("expected unresolvable named worker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refs_validation_detects_a_self_referential_workflow_cycle() {
+        // A named workflow `loop` whose strategy references a Named worker `loop` that
+        // is ALSO a named workflow → a genuine self-reference cycle, rejected at start.
+        let dir = tempfile::tempdir().unwrap();
+        // `loop` is BOTH a worker (so the Named ref resolves) AND a workflow (so the
+        // cycle DFS follows it back to itself).
+        write(
+            dir.path().join("workers").join("loop.json"),
+            r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+        );
+        write(
+            dir.path().join("workflows").join("loop.json"),
+            r#"{ "schema_version": 1, "name": "loop", "strategy": { "type": "single", "step": { "worker": { "kind": "named", "name": "loop" }, "task": "go" } } }"#,
+        );
+        let workers = WorkerRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let workflows = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let entry = workflows.resolve("loop").expect("entry workflow");
+        match validate_workflow_refs(&entry, &workflows, &workers) {
+            Err(WorkflowError::ReferenceCycle { cycle }) => {
+                assert!(
+                    cycle.first().map(String::as_str) == Some("loop"),
+                    "{cycle:?}"
+                );
+                assert!(
+                    cycle.last().map(String::as_str) == Some("loop"),
+                    "{cycle:?}"
+                );
+            }
+            other => panic!("expected a reference cycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refs_validation_accepts_a_named_worker_that_is_not_a_workflow() {
+        // A Named ref that resolves to a plain WORKER def (not a workflow) is a leaf —
+        // no cycle, accepted.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path().join("workers").join("reviewer.json"),
+            r#"{ "kind": { "type": "provider", "provider": "xai", "model": "grok" } }"#,
+        );
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "reviewer".into(),
+                }),
+            },
+            2,
+        );
+        let workers = WorkerRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let workflows = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        assert_eq!(validate_workflow_refs(&d, &workflows, &workers), Ok(()));
+    }
+
+    /// Write a file, creating parent dirs (test helper).
+    fn write(path: std::path::PathBuf, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::{delegate, openai, xai};
-use nerve_core::WorkspaceRegistry;
+use nerve_core::{WorkspaceRegistry, WorkspaceResolver};
 use nerve_runtime::{Runtime, RuntimeError, RuntimeToolAdapter};
 use serde_json::Value;
 
@@ -50,10 +50,16 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for DelegateToolAdapter {
 
     fn handle_tool_call(
         &self,
-        _registry: &WorkspaceRegistry,
+        registry: &WorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
-        Ok(delegate::handle_tool_call(params))
+        // Resolve the workspace root so `list_agents` discovers the C6 worker-as-data
+        // catalog under `.nerve/workers` (built-ins still resolve when no root does).
+        let root = registry
+            .resolve_workspace(None)
+            .ok()
+            .and_then(|ws| ws.roots().first().map(|r| r.path.clone()));
+        Ok(delegate::handle_tool_call(params, root.as_deref()))
     }
 }
 

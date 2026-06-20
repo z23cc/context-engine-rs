@@ -15,7 +15,7 @@
 
 use super::super::router::RuntimeDaemonRouter;
 use super::{
-    Arc, Mutex, Value, dispatch, json, response_with_id, rpc, runtime_with_file,
+    Arc, Mutex, Value, dispatch, json, response_with_id, rpc, runtime_over_root, runtime_with_file,
     wait_for_job_event, wait_for_job_terminal,
 };
 use crate::providers::ProviderRegistry;
@@ -810,4 +810,199 @@ fn flow_start_rejects_a_zero_depth_hierarchy_at_start() {
     );
     let job = &response_with_id(&observed, json!(2))["result"]["job"];
     assert_eq!(job["status"], "failed", "a zero-depth hierarchy is refused");
+}
+
+// ---- C6: worker-as-data + named workflows (end-to-end through the daemon) -------
+
+/// Write a project capability def under `<root>/.nerve/<kind>/<name>.json`.
+fn write_capability(root: &std::path::Path, kind: &str, name: &str, json: &str) {
+    let dir = root.join(".nerve").join(kind);
+    std::fs::create_dir_all(&dir).expect("mkdir .nerve cap dir");
+    std::fs::write(dir.join(format!("{name}.json")), json).expect("write cap def");
+}
+
+#[test]
+fn flow_start_resolves_a_project_named_worker() {
+    // C6: a project `.nerve/workers/foo.json` def → a `WorkerRef::Named("foo")`
+    // resolves through the WorkerRegistry to a CLI claude worker, end-to-end. The flow
+    // runs over the real (fake) claude — proving worker-as-data reaches the engine.
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::write(root.path().join("notes.txt"), "x\n").expect("notes");
+    write_capability(
+        root.path(),
+        "workers",
+        "foo",
+        r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+    );
+    let runtime = runtime_over_root(root.path());
+    let (router, output) = flow_router(runtime, FakeClaudeLauncher::new());
+
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "named-1",
+                "command": {
+                    "kind": "flow.start",
+                    "workflow": {
+                        "schema_version": 1,
+                        "name": "uses-named",
+                        "strategy": {
+                            "type": "single",
+                            "step": { "worker": { "kind": "named", "name": "foo" }, "task": "go" }
+                        }
+                    }
+                }
+            }),
+        ),
+    );
+    wait_for_job_event(&output, "job_completed", "named-1");
+    // The node ran: the declarative ref is `named` (the def resolved to a CLI claude
+    // worker behind it; the resolved behavior flows through the node-agent stream).
+    let events = flow_events(&output, "named-1");
+    let node_started = events
+        .iter()
+        .find(|e| e["type"] == "flow_node_started")
+        .expect("a node_started event");
+    assert_eq!(node_started["kind"], "named");
+    assert_eq!(node_started["worker"], "foo");
+    // The named worker actually ran (resolved to the fake claude): the node finished ok.
+    let node_finished = events
+        .iter()
+        .find(|e| e["type"] == "flow_node_finished")
+        .expect("a node_finished event");
+    assert_eq!(node_finished["ok"], true);
+}
+
+#[test]
+fn flow_start_runs_a_named_workflow_ref() {
+    // C6: a project `.nerve/workflows/bar.json` → `flow.start{workflow_ref:"bar"}`
+    // resolves + runs the named workflow end-to-end (the C2 deferred surface, landed).
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::write(root.path().join("notes.txt"), "x\n").expect("notes");
+    write_capability(
+        root.path(),
+        "workflows",
+        "bar",
+        r#"{
+            "schema_version": 1,
+            "name": "bar",
+            "strategy": {
+                "type": "single",
+                "step": { "worker": { "kind": "cli", "name": "claude" }, "task": "do bar" }
+            }
+        }"#,
+    );
+    let runtime = runtime_over_root(root.path());
+    let (router, output) = flow_router(runtime, FakeClaudeLauncher::new());
+
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "wfref-1",
+                "command": { "kind": "flow.start", "workflow_ref": "bar" }
+            }),
+        ),
+    );
+    wait_for_job_event(&output, "job_completed", "wfref-1");
+    let types = flow_event_types(&output, "wfref-1");
+    assert_eq!(types.first().map(String::as_str), Some("flow_started"));
+    assert_eq!(types.last().map(String::as_str), Some("flow_completed"));
+    // The job result reports the resolved workflow's name.
+    let observed = dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(2),
+            "runtime/jobs/get",
+            json!({ "job_id": "wfref-1", "include_result": true }),
+        ),
+    );
+    let job = &response_with_id(&observed, json!(2))["result"]["job"];
+    assert_eq!(job["status"], "completed");
+    assert_eq!(job["result"]["name"], "bar");
+}
+
+#[test]
+fn flow_start_unknown_workflow_ref_errors() {
+    // An unknown `workflow_ref` fails the job cleanly (no built-in workflows exist).
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "wfref-missing",
+                "command": { "kind": "flow.start", "workflow_ref": "ghost" }
+            }),
+        ),
+    );
+    let failed = wait_for_job_event(&output, "job_failed", "wfref-missing");
+    assert!(
+        failed["params"]["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("ghost")
+    );
+}
+
+#[test]
+fn flow_start_rejects_a_cyclic_named_workflow() {
+    // C6 reference-cycle check: a named workflow `loop` whose Named ref resolves
+    // (the worker `loop`) AND is itself a named workflow `loop` → a self-reference
+    // cycle, REJECTED at flow.start before any worker spawns.
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::write(root.path().join("notes.txt"), "x\n").expect("notes");
+    // `loop` is both a worker (so the Named ref resolves) and a workflow that
+    // references the `loop` worker — closing the cycle.
+    write_capability(
+        root.path(),
+        "workers",
+        "loop",
+        r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+    );
+    write_capability(
+        root.path(),
+        "workflows",
+        "loop",
+        r#"{
+            "schema_version": 1,
+            "name": "loop",
+            "strategy": {
+                "type": "single",
+                "step": { "worker": { "kind": "named", "name": "loop" }, "task": "go" }
+            }
+        }"#,
+    );
+    let runtime = runtime_over_root(root.path());
+    let (router, output) = flow_router(runtime, FakeClaudeLauncher::new());
+
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "cycle-1",
+                "command": { "kind": "flow.start", "workflow_ref": "loop" }
+            }),
+        ),
+    );
+    let failed = wait_for_job_event(&output, "job_failed", "cycle-1");
+    let msg = failed["params"]["error"]["message"].as_str().expect("msg");
+    assert!(
+        msg.contains("cycle"),
+        "a cyclic named workflow is refused at start: {msg}"
+    );
 }

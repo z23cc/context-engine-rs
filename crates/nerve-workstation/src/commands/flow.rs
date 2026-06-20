@@ -56,14 +56,19 @@ pub(crate) fn run(args: FlowArgs) -> Result<()> {
         "\u{26a0}  nerve flow run is EXPERIMENTAL: the WorkflowDef shape and engine are not a stable contract (C1)."
     );
     let def = load_workflow(&args.file)?;
-    // Static safety checks (design §8): reject a zero-depth hierarchy, an unresolvable
-    // named worker, or a planner fork-loop before any worker spawns.
-    crate::flow::validate_workflow(&def)
+    // C6: discover workers + named workflows scoped to the project root, so a Named
+    // worker ref / nested workflow_ref resolves here too (worker-as-data, design §6).
+    let root = args.serve.roots.first().map(std::path::PathBuf::as_path);
+    let workers = crate::worker::WorkerRegistry::discover(root);
+    let workflows = crate::flow::WorkflowRegistry::discover(root);
+    // Static safety checks (design §8): reject a zero-depth hierarchy, a planner
+    // fork-loop, an unresolvable named worker, or a reference cycle before any spawn.
+    crate::flow::validate_workflow_refs(&def, &workflows, &workers)
         .map_err(|err| anyhow::anyhow!("invalid workflow: {err}"))?;
     let cancel = CancelToken::new();
     crate::agent::install_interrupt_handler(&cancel);
 
-    let factory = build_factory(&args)?;
+    let factory = build_factory(&args, workers)?;
     let resolver = FactoryResolver::new(factory);
     let ledger = Arc::new(crate::worker::WorkerLedger::new());
     let approver: Arc<dyn crate::delegate_proxy::DelegateApprover> =
@@ -122,8 +127,10 @@ fn load_workflow(path: &std::path::Path) -> Result<WorkflowDef> {
 
 /// Build the C0 [`WorkerFactory`] over the shared deps: a delegate launcher (real
 /// only when `--allow-delegate`), the runtime (the shared snapshot), the provider
-/// registry, the permission gate, and the recursion depth ceiling.
-fn build_factory(args: &FlowArgs) -> Result<WorkerFactory> {
+/// registry, the permission gate, the recursion depth ceiling, and the C6
+/// worker-as-data [`WorkerRegistry`]. Registry-driven exec-tier remote/MCP workers
+/// are opened only when `--allow-delegate` lifted the fleet (security before openness).
+fn build_factory(args: &FlowArgs, workers: crate::worker::WorkerRegistry) -> Result<WorkerFactory> {
     let registry = ProviderRegistry::from_args(&args.serve)?;
     let runtime = Arc::new(crate::mcp::attach(
         tools::runtime(workspace::registry(&args.serve)?),
@@ -138,13 +145,19 @@ fn build_factory(args: &FlowArgs) -> Result<WorkerFactory> {
     } else {
         crate::sandbox::refuse_launcher()
     };
-    Ok(WorkerFactory::new(
+    let factory = WorkerFactory::new(
         delegate_launcher,
         runtime,
         registry,
         gate,
         DEFAULT_MAX_DEPTH,
-    ))
+    )
+    .with_registry(workers);
+    Ok(if args.allow_delegate {
+        factory.with_remote(Arc::new(crate::flow_remote::FollowOnConnector))
+    } else {
+        factory
+    })
 }
 
 /// Stream one node's progress line to stdout. Only the structured `Message` /

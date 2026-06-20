@@ -7,7 +7,7 @@
 
 use crate::worker::{
     AgentWorker, LedgerEntry, ReplayWorker, SpawnRefusal, TurnResult, WorkerError, WorkerFactory,
-    WorkerKind, WorkerLedger,
+    WorkerLedger,
 };
 use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
 use std::collections::BTreeMap;
@@ -24,8 +24,8 @@ pub(crate) trait WorkerResolver: Sync {
     fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError>;
 }
 
-/// The production resolver: maps a [`WorkerRef`] onto a [`WorkerKind`] and mints
-/// it through the C0 [`WorkerFactory`].
+/// The production resolver: resolves a [`WorkerRef`] (including a `Named` ref via the
+/// C6 worker-as-data registry) and mints it through the C0 [`WorkerFactory`].
 pub(crate) struct FactoryResolver {
     factory: WorkerFactory,
 }
@@ -38,8 +38,10 @@ impl FactoryResolver {
 
 impl WorkerResolver for FactoryResolver {
     fn resolve(&self, worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError> {
-        let kind = worker_kind(worker_ref)?;
-        self.factory.create(kind)
+        // C6: a `Named` ref resolves through the factory's `WorkerRegistry` (worker-
+        // as-data); an inline `Cli`/`Provider` ref passes through. The engine only
+        // ever sees the resulting `AgentWorker`.
+        self.factory.create_ref(worker_ref)
     }
 }
 
@@ -86,37 +88,6 @@ pub(crate) fn replay_generation_provider(
 ) -> impl Fn(&WorkflowDef, &str) -> u64 + Sync + use<> {
     let generations = recorded.node_generations();
     move |_def: &WorkflowDef, node: &str| generations.get(node).copied().unwrap_or(0)
-}
-
-/// Translate a declarative [`WorkerRef`] into the C0 [`WorkerKind`] the factory
-/// mints. `Named` is defined-ahead (design §6, C6) and refused here — C1 does not
-/// resolve named worker defs yet.
-fn worker_kind(worker_ref: &WorkerRef) -> Result<WorkerKind, WorkerError> {
-    match worker_ref {
-        WorkerRef::Cli { name } => {
-            // The factory's `Cli` kind takes a `&'static str` catalog name; map
-            // the data string onto the known catalog (an unknown name is refused
-            // before any spawn, mirroring the factory's own check).
-            let catalog = match name.as_str() {
-                "codex" => "codex",
-                "claude" => "claude",
-                "gemini" => "gemini",
-                other => {
-                    return Err(WorkerError::Start(format!(
-                        "unknown CLI worker `{other}` (expected codex|claude|gemini)"
-                    )));
-                }
-            };
-            Ok(WorkerKind::Cli(catalog))
-        }
-        WorkerRef::Provider { provider, model } => Ok(WorkerKind::Provider {
-            provider: provider.clone(),
-            model: model.clone(),
-        }),
-        WorkerRef::Named { name } => Err(WorkerError::Start(format!(
-            "named worker `{name}` is not resolvable in C1 (WorkerDef loading lands in C6)"
-        ))),
-    }
 }
 
 /// Look up the declared [`Step`] for a `node` by decoding its id against `def`'s
