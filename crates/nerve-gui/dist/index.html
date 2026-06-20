@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nerve Console (Leptos)</title>
+    <!-- data-wasm-opt="0": trunk's bundled wasm-opt fails in this env; the
+         release rustc build already shrinks the wasm well below the debug size. -->
     
 <script type="module">
 import init, * as bindings from '/app/nerve-gui.js';
@@ -17,6 +19,6 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
     <link rel="stylesheet" href="/app/styles.css" integrity="sha384-mM0kR/Bvf3FST7YRcluiTI/i2J0qSau9XosjFgs0pwVK8JivgjHzaLILAUYJE82+"/>
-  <link rel="modulepreload" href="/app/nerve-gui.js" crossorigin="anonymous" integrity="sha384-wXThbs6HX7R5/XdhdU0UvVYxprDjWlqGS3B/TxRsN97M1wPpdEi/AK6zPWF5QpVX"><link rel="preload" href="/app/nerve-gui_bg.wasm" crossorigin="anonymous" integrity="sha384-ZL/LED4JpyaJKjtHLpSs5g6tU3c0w7ROl1cFqWUz2uFh11SwVfZenQGP7yhArU4I" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/app/nerve-gui.js" crossorigin="anonymous" integrity="sha384-CPUhUpH2sg7tO3/4Yu6l4IxypbiAOFAseMAWTNn+H3YYOBl0be6wtfo6TcwyKdvP"><link rel="preload" href="/app/nerve-gui_bg.wasm" crossorigin="anonymous" integrity="sha384-WEej1CkWEhTMRtvnBX95FCP2NhX+65C2kuSfTGjAsrdP23G9MEa62vN8i05gBxpV" as="fetch" type="application/wasm"></head>
   <body></body>
 </html>

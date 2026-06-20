@@ -52,6 +52,19 @@ pub(super) fn is_app_path(path: &str) -> bool {
             .is_some_and(|asset| !asset.is_empty())
 }
 
+/// Serve the Leptos app index (the token-injected `index.html`). Used for both
+/// `GET /` (the primary GUI since the G4 flip) and `/app` (kept for compat). The
+/// index references its assets at absolute `/app/…` paths (trunk `public_url`),
+/// which [`serve_asset`] owns, so serving the index at `/` resolves correctly.
+pub(super) fn serve_index(
+    embed_token: Option<&str>,
+    request: Request,
+    cors: Option<&str>,
+) -> Result<()> {
+    let html = render_app(embed_token, APP_INDEX_HTML);
+    respond_html(request, &html, cors)
+}
+
 /// Serve a `/app` route: the index for `/app` + `/app/`, else the named asset.
 /// `embed_token` is the per-run bearer token to bake into the index on a
 /// loopback bind (the caller passes `HttpSecurity::embed_token()`), or `None`

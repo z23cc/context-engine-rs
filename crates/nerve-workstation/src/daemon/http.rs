@@ -202,14 +202,19 @@ fn handle_request(ctx: &HttpContext, request: Request) -> Result<()> {
             handle_events(&ctx.hub, req, cors)
         }),
         (Method::Options, _) => respond_preflight(request, cors.as_deref()),
+        // The Leptos WASM frontend is the primary GUI at `/` (G4 flip). It is a
+        // client of this same Protocol v4 transport (POST /rpc + GET /events),
+        // never a new protocol.
         (Method::Get, "/") => {
-            let html = ctx.security.render_gui(GUI_HTML);
-            respond_html(request, &html, cors.as_deref())
+            super::app::serve_index(ctx.security.embed_token(), request, cors.as_deref())
         }
-        // The Leptos WASM frontend (G1b): a second client of this same Protocol
-        // v4 transport. The legacy GUI at `/` is untouched.
         (Method::Get, p) if super::app::is_app_path(p) => {
             super::app::serve_app(ctx.security.embed_token(), request, p, cors.as_deref())
+        }
+        // The legacy single-file `gui.html` stays available as a fallback.
+        (Method::Get, "/legacy") => {
+            let html = ctx.security.render_gui(GUI_HTML);
+            respond_html(request, &html, cors.as_deref())
         }
         _ => respond_text(request, 404, "not found", cors.as_deref()),
     }
