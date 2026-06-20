@@ -152,3 +152,303 @@ body {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ── G2 chat surface ──────────────────────────────────────────────────────
+ * Original dark chat styling (functional; the full Codex polish is G4). */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+}
+
+.newchat {
+  margin-top: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.newchat:hover {
+  border-color: var(--accent);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.busy {
+  background: var(--warn);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.dot.idle {
+  background: var(--border);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* The chat main is a column: scrolling transcript + pinned composer. */
+.main.chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px max(24px, calc((100% - 760px) / 2));
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.empty {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty-spark {
+  font-size: 34px;
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-top: 8px;
+}
+
+.empty-sub {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+}
+
+.turn.user {
+  align-items: flex-end;
+}
+
+.turn.user .bubble {
+  background: var(--accent);
+  color: #07101f;
+  padding: 9px 13px;
+  border-radius: 14px 14px 4px 14px;
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.turn.assistant {
+  align-items: stretch;
+}
+
+.md {
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.md :first-child { margin-top: 0; }
+.md :last-child { margin-bottom: 0; }
+
+.md pre {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+.md code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.md :not(pre) > code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.md a { color: var(--accent); }
+
+.md blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.reasoning {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reasoning summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.reasoning pre {
+  white-space: pre-wrap;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.tool {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.tool-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+.tool-name {
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--fg);
+}
+
+.tool-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.tool.ok .tool-badge { color: var(--ok); }
+.tool.err .tool-badge { color: var(--err); }
+.tool.run .tool-badge { color: var(--warn); }
+
+.tool-out {
+  margin: 0;
+  padding: 8px 11px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--muted);
+}
+
+.cursor {
+  color: var(--accent);
+  animation: pulse 1s steps(2) infinite;
+}
+
+.turn-error {
+  color: var(--err);
+  border: 1px solid var(--err);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.composer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 14px max(24px, calc((100% - 760px) / 2));
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.composer .input {
+  flex: 1;
+  resize: none;
+  min-height: 44px;
+  max-height: 200px;
+  padding: 11px 14px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font: inherit;
+  line-height: 1.4;
+  outline: none;
+}
+
+.composer .input:focus {
+  border-color: var(--accent);
+}
+
+.send {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #07101f;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.send:hover { filter: brightness(1.08); }
+
+.send.stop {
+  background: var(--err);
+  color: #fff;
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  #nerve-shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}
