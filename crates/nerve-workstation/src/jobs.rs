@@ -462,8 +462,19 @@ impl JobManager {
                 target,
                 message,
             } => self.run_flow_steer(&flow_id, &target, &message, token),
-            RuntimeCommand::FlowGet { flow_id } => flow_job::run_flow_get(&flow_id, &self.flows),
-            RuntimeCommand::FlowList => flow_job::run_flow_list(&self.flows),
+            RuntimeCommand::FlowReplay { ledger_ref, .. } => {
+                self.run_flow_replay(job_id, ledger_ref, token)
+            }
+            RuntimeCommand::FlowGet { flow_id } => {
+                let store =
+                    crate::flow_store::FlowStore::for_scope(self.workspace_root().as_deref()).ok();
+                flow_job::run_flow_get(&flow_id, &self.flows, store.as_ref())
+            }
+            RuntimeCommand::FlowList => {
+                let store =
+                    crate::flow_store::FlowStore::for_scope(self.workspace_root().as_deref()).ok();
+                flow_job::run_flow_list(&self.flows, store.as_ref())
+            }
             RuntimeCommand::FlowClose { flow_id } => {
                 flow_job::run_flow_close(&flow_id, &self.flows)
             }
@@ -528,14 +539,44 @@ impl JobManager {
     /// Assemble the [`FlowDeps`] the flow engine needs, all cloned from the daemon's
     /// own deps so a flow reaches tools through the SAME runtime, is gated by the
     /// SAME policy, and routes approvals through the SAME hub as sessions/delegation.
+    /// The [`FlowStore`] is resolved per-call from the workspace root so a flow's tape
+    /// persists under that project's `.nerve/flows` (C4); a rootless/unresolvable
+    /// scope falls back to the global flows dir, and a resolve error disables
+    /// persistence rather than failing the flow.
     fn flow_deps(&self) -> FlowDeps {
+        let root = self.workspace_root();
         FlowDeps {
             runtime: Arc::clone(&self.runtime),
             registry: self.registry.clone(),
             policy: self.policy.clone(),
             delegate_launcher: Arc::clone(&self.delegate_launcher),
             approvals: self.sessions.approvals(),
+            store: crate::flow_store::FlowStore::for_scope(root.as_deref()).ok(),
         }
+    }
+
+    /// The workspace root the daemon is scoped to (the first registered root), used
+    /// to locate `.nerve/flows`. `None` when no root resolves.
+    fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.runtime
+            .resolver()
+            .resolve_workspace(None)
+            .ok()
+            .and_then(|ws| ws.roots().first().map(|r| r.path.clone()))
+    }
+
+    /// Run a `flow.replay` as a job (C4, design §3/§4): load the recorded ledger +
+    /// def from the [`FlowStore`] and re-run the engine in REPLAY mode, re-emitting the
+    /// `flow_*` event stream byte-identically at zero cost. The `job_id` is the
+    /// replayed `flow_id`.
+    fn run_flow_replay(
+        &self,
+        job_id: &str,
+        ledger_ref: nerve_runtime::LedgerRef,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let deps = self.flow_deps();
+        flow_job::run_flow_replay(job_id, ledger_ref, &deps, &self.flows, &self.emit, token)
     }
 
     /// Start a delegated run: a `claude` (DA-5a) or `codex` (DA-5c) agent becomes a
@@ -1052,6 +1093,7 @@ fn executor_for(command: &RuntimeCommand) -> Executor {
         | RuntimeCommand::AuthLogout { .. } => Executor::Auth,
         RuntimeCommand::FlowStart { .. }
         | RuntimeCommand::FlowSteer { .. }
+        | RuntimeCommand::FlowReplay { .. }
         | RuntimeCommand::FlowGet { .. }
         | RuntimeCommand::FlowList
         | RuntimeCommand::FlowClose { .. }
@@ -1137,6 +1179,7 @@ mod command_executor_partition {
                 }
             }),
             "flow.steer" => json!({ "flow_id": "f", "message": "m" }),
+            "flow.replay" => json!({ "flow_id": "f" }),
             "flow.get" | "flow.close" => json!({ "flow_id": "f" }),
             "flow.respond" => json!({ "flow_id": "f", "request_id": "r", "decision": "allow" }),
             other => panic!(
@@ -1214,6 +1257,7 @@ mod command_executor_partition {
         for name in [
             "flow.start",
             "flow.steer",
+            "flow.replay",
             "flow.get",
             "flow.list",
             "flow.close",

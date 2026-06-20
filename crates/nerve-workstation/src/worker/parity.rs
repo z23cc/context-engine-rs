@@ -63,7 +63,7 @@ fn step_shapes(events: &[WorkerEvent]) -> Vec<StepShape> {
         .iter()
         .filter_map(|event| match event {
             WorkerEvent::Step(kind) => Some(shape_of(kind)),
-            WorkerEvent::Progress(_) | WorkerEvent::Approval { .. } => None,
+            WorkerEvent::Progress { .. } | WorkerEvent::Approval { .. } => None,
         })
         .collect()
 }
@@ -285,14 +285,14 @@ fn cli_worker_streams_raw_progress_before_the_synthesized_steps() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, WorkerEvent::Progress(t) if t.contains(CANNED_ANSWER))),
+            .any(|e| matches!(e, WorkerEvent::Progress { text } if text.contains(CANNED_ANSWER))),
         "expected a raw Progress line carrying the assistant text: {events:?}"
     );
     // The provider path never emits a raw Progress line (it is fully structured).
     assert!(
         !provider_worker_events()
             .iter()
-            .any(|e| matches!(e, WorkerEvent::Progress(_)))
+            .any(|e| matches!(e, WorkerEvent::Progress { .. }))
     );
 }
 

@@ -581,11 +581,24 @@ freeze a protocol shape we regret ("versioned or dead", north-star §9).
     edges (`flow → stage-0 → stage-1 → …`) emit at `flow.start`. **Deferred to C3b:** the
     `BudgetLedger` + `FleetBudget` governance.
 
-- **Wave C4 — replay verb + audit gate (lock the moat).** Ship `flow.replay` + the byte-identical
-  REPLAY CI gate, `FlowDecision` audit events, the declared-order-fold contract test, the
-  capability-de-escalation contract test, and the process-global worker semaphore. Add the `FlowStore`
-  (versioned `FlowRecord` under `.nerve/flows`) for post-hoc inspection + replay-then-continue resume,
-  with per-node snapshot pinning + writer-node path-leases.
+- **Wave C4 — replay verb + audit gate (lock the moat). [SHIPPED]** Added `flow.replay
+  { ledger_ref }` (additive, v4 unchanged; `LedgerRef` is `{ flow_id }` | `{ ledger_path }`, claimed by
+  the `executor_for` totality gate) + the byte-identical REPLAY CI gate (named
+  `replay_is_byte_identical_*` over `Single`/`Parallel`-out-of-order/`Pipeline`/interpolating-pipeline,
+  driven by the PRODUCTION `ReplayResolver` over a recorded `WorkerLedger`). The `FlowDecision` audit
+  events + declared-order-fold + capability-de-escalation contract tests + the process-global worker
+  semaphore landed in C3b; C4 adds the writer-node path-lease + per-node snapshot-generation pinning
+  contract tests. The `WorkerLedger` now records a `Start { prompt, snapshot_generation }` per node so
+  replay is SELF-CONTAINED from the persisted tape (the rendered-prompt→node map + per-node generation
+  are recovered from it) — which also caught + fixed a latent bug: a `WorkerEvent::Progress(String)`
+  newtype can't carry the internally-tagged `event` field, so a CLI-worker ledger never round-tripped
+  (now `Progress { text }`, pinned by `every_worker_event_variant_round_trips_through_jsonl`). Added the
+  `FlowStore` (versioned `FlowRecord` under `.nerve/flows/<flow_id>/{def.json, ledger.jsonl,
+  record.json, artifacts/}`, atomic temp+rename writes at node boundaries) for post-hoc inspection
+  (`flow.get`/`flow.list` fall back to it for finished flows) + replay. **Resume:** the deterministic
+  half — `replay_to_boundary` (fold the recorded tape through the replay path) + `pending_nodes` (a pure
+  `WorkflowDef`+finished-set computation) — ships with tests; LIVE re-dispatch of the pending nodes is
+  the documented follow-on (design open question 1).
 
 - **Wave C5 — richer strategies.** `Strategy::VoteJudge` + `Strategy::MapReduce` (judge/reduce are
   `ProviderWorker` leaves), then `Strategy::Debate` + `Strategy::Hierarchical` (the bounded-recursion

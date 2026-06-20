@@ -21,6 +21,7 @@ mod delegate_tool;
 mod exec_tool;
 mod flow;
 mod flow_job;
+mod flow_store;
 mod hooks;
 mod jobs;
 mod mcp;

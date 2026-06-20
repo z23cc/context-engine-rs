@@ -48,10 +48,12 @@
 mod budget;
 mod cli;
 mod factory;
+mod lease;
 mod ledger;
 #[cfg(test)]
 mod parity;
 mod provider;
+mod replay;
 mod steer;
 
 pub(crate) use budget::{
@@ -60,8 +62,10 @@ pub(crate) use budget::{
 };
 pub(crate) use cli::CliWorker;
 pub(crate) use factory::WorkerFactory;
+pub(crate) use lease::{PathLeases, is_writer};
 pub(crate) use ledger::{LedgerEntry, LedgerPayload, WorkerLedger};
 pub(crate) use provider::ProviderWorker;
+pub(crate) use replay::ReplayWorker;
 pub(crate) use steer::{SteerError, SteerRegistry};
 
 use nerve_core::CancelToken;
@@ -116,8 +120,11 @@ pub(crate) enum WorkerEvent {
     /// A structured agent-loop step (TurnStarted / Message / Reasoning / Tool* /
     /// Interrupted / Usage), identical to what sessions and `agent.run` emit.
     Step(AgentEventKind),
-    /// A raw stdout chunk from an opaque CLI (no structured projection).
-    Progress(String),
+    /// A raw stdout chunk from an opaque CLI (no structured projection). A struct
+    /// variant (not a newtype) so the internally-tagged enum serializes — a newtype
+    /// `Progress(String)` cannot carry the `event` tag, which silently broke the
+    /// ledger JSONL round-trip for CLI workers (caught by the C4 replay path).
+    Progress { text: String },
     /// A permission ask routed through the ONE approval hub — re-projected so the
     /// engine/clients can render it kind-agnostically. Emitted alongside the
     /// existing hub round-trip, which still drives the operator decision.

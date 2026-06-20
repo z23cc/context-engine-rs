@@ -116,7 +116,11 @@ impl CliWorker {
     ) -> Result<Box<dyn WorkerSession>, WorkerError> {
         let proxy = self.build_proxy(ctx);
         let model = task.model.clone();
-        let mut on_progress = |text: &str| on_event(WorkerEvent::Progress(text.to_string()));
+        let mut on_progress = |text: &str| {
+            on_event(WorkerEvent::Progress {
+                text: text.to_string(),
+            })
+        };
         let (driver, turn) = self
             .spawn_live_driver(
                 cwd,
@@ -217,7 +221,7 @@ impl CliWorker {
         let mut parser = DelegateParser::new(DelegateAgent::Gemini);
         let mut on_line = |line: &str| {
             if let Some(text) = parser.ingest(line) {
-                on_event(WorkerEvent::Progress(text));
+                on_event(WorkerEvent::Progress { text });
             }
         };
         let output = self
@@ -338,7 +342,11 @@ impl WorkerSession for LiveCliSession {
         if cancel.is_cancelled() || self.session_cancel.is_cancelled() {
             return Err(WorkerError::Cancelled);
         }
-        let mut on_progress = |text: &str| on_event(WorkerEvent::Progress(text.to_string()));
+        let mut on_progress = |text: &str| {
+            on_event(WorkerEvent::Progress {
+                text: text.to_string(),
+            })
+        };
         // Match the `LiveDriver` enum here and call each session's `pub(crate)`
         // `steer` directly, rather than the private `LiveDriver::steer`, so this
         // reuse touches nothing in `delegate_live`.

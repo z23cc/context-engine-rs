@@ -28,6 +28,7 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "delegate.close",
     "flow.start",
     "flow.steer",
+    "flow.replay",
     "flow.get",
     "flow.list",
     "flow.close",
@@ -225,6 +226,22 @@ pub enum RuntimeCommand {
         target: WorkerSelector,
         message: String,
     },
+    /// Deterministically REPLAY a recorded flow offline (the audit verb, design §3/§4).
+    /// The host loads the recorded [`WorkerLedger`] from the `FlowStore` by
+    /// [`LedgerRef`], runs the SAME deterministic engine in REPLAY mode — a
+    /// `ReplayWorker` re-emits the recorded `WorkerEvent`s/`TurnResult`s instead of
+    /// calling any LLM/subprocess — and re-emits the `flow_*` event stream. Runs as
+    /// one cancellable **job** (the `job_id` IS the replayed `flow_id`); the replay is
+    /// byte-identical to the recorded run (the CI gate), at zero cost. `workspace`
+    /// scopes which project's `.nerve/flows` the ledger is loaded from when more than
+    /// one is registered.
+    #[serde(rename = "flow.replay")]
+    FlowReplay {
+        #[serde(flatten)]
+        ledger_ref: LedgerRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
     /// Fetch one live or recently-finished flow by id. Mirrors `session.get`.
     #[serde(rename = "flow.get")]
     FlowGet { flow_id: String },
@@ -261,6 +278,20 @@ pub enum FlowSource {
     Inline { workflow: Box<WorkflowDef> },
     /// A named workflow resolved from a loaded data file (loaded, not compiled).
     Named { workflow_ref: String },
+}
+
+/// Which recorded ledger a [`RuntimeCommand::FlowReplay`] replays (design §4/§5).
+/// Untagged so a client sends either `{ "flow_id": "job-7" }` (resolve the ledger
+/// from the `FlowStore` by flow id — the common case) or `{ "ledger_path": "…" }`
+/// (an explicit `.nerve/flows/<id>/ledger.jsonl`-shaped path), without an extra
+/// discriminant. Deliberately MINIMAL — a closed two-arm enum, not a query language.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum LedgerRef {
+    /// Resolve the recorded ledger from the `FlowStore` by its `flow_id`.
+    FlowId { flow_id: String },
+    /// Replay a ledger at an explicit filesystem path (e.g. a copied tape).
+    Path { ledger_path: String },
 }
 
 /// Which live branch a [`RuntimeCommand::FlowSteer`] targets (design §4, the
@@ -400,6 +431,7 @@ impl RuntimeCommand {
             Self::DelegateClose { .. } => "delegate.close",
             Self::FlowStart { .. } => "flow.start",
             Self::FlowSteer { .. } => "flow.steer",
+            Self::FlowReplay { .. } => "flow.replay",
             Self::FlowGet { .. } => "flow.get",
             Self::FlowList => "flow.list",
             Self::FlowClose { .. } => "flow.close",
@@ -432,6 +464,7 @@ impl RuntimeCommand {
             | Self::DelegateClose { .. }
             | Self::FlowStart { .. }
             | Self::FlowSteer { .. }
+            | Self::FlowReplay { .. }
             | Self::FlowGet { .. }
             | Self::FlowList
             | Self::FlowClose { .. }
@@ -732,6 +765,50 @@ mod tests {
             "default target is skipped: {json}"
         );
         assert!(RUNTIME_COMMAND_NAMES.contains(&"flow.steer"));
+    }
+
+    #[test]
+    fn flow_replay_round_trips_by_flow_id_and_by_path() {
+        // The common case: replay a recorded flow by id (untagged → FlowId arm).
+        let value = serde_json::json!({
+            "kind": "flow.replay",
+            "flow_id": "job-7",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse flow.replay id");
+        assert_eq!(command.name(), "flow.replay");
+        assert_eq!(command.tool_name(), None);
+        match &command {
+            RuntimeCommand::FlowReplay {
+                ledger_ref,
+                workspace,
+            } => {
+                assert_eq!(
+                    ledger_ref,
+                    &LedgerRef::FlowId {
+                        flow_id: "job-7".into()
+                    }
+                );
+                assert_eq!(workspace, &None);
+            }
+            other => panic!("unexpected: {}", other.name()),
+        }
+
+        // The explicit-path arm round-trips too.
+        let by_path: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "flow.replay",
+            "ledger_path": "/p/.nerve/flows/job-7/ledger.jsonl",
+        }))
+        .expect("parse flow.replay path");
+        match by_path {
+            RuntimeCommand::FlowReplay { ledger_ref, .. } => assert_eq!(
+                ledger_ref,
+                LedgerRef::Path {
+                    ledger_path: "/p/.nerve/flows/job-7/ledger.jsonl".into()
+                }
+            ),
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"flow.replay"));
     }
 
     #[test]

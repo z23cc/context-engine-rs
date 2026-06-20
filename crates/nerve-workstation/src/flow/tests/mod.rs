@@ -21,6 +21,7 @@
 //! gate (pure test code).
 
 mod budget;
+mod contract;
 mod replay;
 
 use super::{Driver, FlowOutcome, WorkerResolver};
@@ -197,68 +198,13 @@ impl WorkerResolver for FakeResolver {
 }
 
 // ---- Replay worker substrate --------------------------------------------------
-
-/// A worker that re-emits a RECORDED node's events instead of calling an
-/// LLM/subprocess (design §3, REPLAY). It is keyed by the rendered prompt → node
-/// id captured at RECORD time, so each replayed node re-emits exactly its own
-/// recorded events and returns its recorded result.
-struct ReplayWorker {
-    /// The recorded tape (immutable; shared across all replay workers).
-    recorded: Arc<Vec<crate::worker::LedgerEntry>>,
-    /// prompt -> node_id, captured during the recorded run.
-    prompt_to_node: Arc<BTreeMap<String, String>>,
-}
-
-impl AgentWorker for ReplayWorker {
-    fn kind(&self) -> WorkerKind {
-        WorkerKind::Cli("claude")
-    }
-    fn capability(&self) -> RiskTier {
-        RiskTier::ReadOnly
-    }
-
-    fn start(
-        &self,
-        task: &WorkerTask,
-        _ctx: &WorkerContext,
-        _cancel: &CancelToken,
-        on_event: &mut dyn FnMut(WorkerEvent),
-    ) -> Result<Box<dyn WorkerSession>, WorkerError> {
-        let node = self
-            .prompt_to_node
-            .get(&task.prompt)
-            .cloned()
-            .ok_or_else(|| WorkerError::Start(format!("no recorded node for `{}`", task.prompt)))?;
-        // Re-emit this node's recorded events, in recorded seq order, and recover
-        // its recorded final result — never touching an LLM/process.
-        let mut last = fail("replay: node had no recorded result");
-        for entry in self.recorded.iter().filter(|e| e.node_id == node) {
-            match &entry.payload {
-                LedgerPayload::Event(event) => on_event(event.clone()),
-                LedgerPayload::Result(result) => last = result.clone(),
-            }
-        }
-        Ok(Box::new(ScriptedSession {
-            last,
-            steerable: false,
-        }))
-    }
-}
-
-/// A resolver handing out [`ReplayWorker`]s over a recorded tape.
-struct ReplayResolver {
-    recorded: Arc<Vec<crate::worker::LedgerEntry>>,
-    prompt_to_node: Arc<BTreeMap<String, String>>,
-}
-
-impl WorkerResolver for ReplayResolver {
-    fn resolve(&self, _worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError> {
-        Ok(Box::new(ReplayWorker {
-            recorded: Arc::clone(&self.recorded),
-            prompt_to_node: Arc::clone(&self.prompt_to_node),
-        }))
-    }
-}
+//
+// REPLAY uses the PRODUCTION [`ReplayResolver`](crate::flow::ReplayResolver) +
+// [`replay_generation_provider`](crate::flow::replay_generation_provider) over a
+// recorded ledger, so the byte-identical gate exercises the real `flow.replay`
+// path — not a test-only re-emitter. The recorded ledger is SELF-CONTAINED: its
+// `Start` entries carry the rendered prompt + pinned generation, so replay needs no
+// out-of-band prompt→node map.
 
 // ---- Shared harness -----------------------------------------------------------
 
@@ -340,40 +286,22 @@ fn record_capturing(
     (outcome, ledger, captured)
 }
 
-/// Build the prompt -> node_id map from a recorded tape (each node's first entry
-/// names it; the prompt is recovered from the def in declared order).
-fn prompt_to_node(
-    def: &WorkflowDef,
-    recorded: &[crate::worker::LedgerEntry],
-) -> BTreeMap<String, String> {
-    let prompts = declared_prompts(def);
-    let mut node_ids: Vec<String> = Vec::new();
-    for entry in recorded {
-        if !node_ids.contains(&entry.node_id) {
-            node_ids.push(entry.node_id.clone());
-        }
-    }
-    node_ids.sort(); // deterministic: branch-0, branch-1, ... or node-0
-    let mut map = BTreeMap::new();
-    for (prompt, node) in prompts.into_iter().zip(node_ids) {
-        map.insert(prompt, node);
-    }
-    map
-}
-
-/// The declared prompts in step order (so each maps to its deterministic node id).
-/// For a `Pipeline` these are the RAW (un-interpolated) stage prompts, so the
-/// replay fixture uses non-interpolated stage prompts (declared == rendered); the
-/// interpolation property is pinned separately by a prompt-capturing test.
-fn declared_prompts(def: &WorkflowDef) -> Vec<String> {
-    match &def.strategy {
-        Strategy::Single { step } => vec![step.task.prompt.clone()],
-        Strategy::Parallel { branches, .. } => {
-            branches.iter().map(|s| s.task.prompt.clone()).collect()
-        }
-        Strategy::Pipeline { stages } => stages.iter().map(|s| s.task.prompt.clone()).collect(),
-        _ => Vec::new(),
-    }
+/// Record a fully-run pipeline `def` through scripted workers, returning its recorded
+/// ledger — the resume-module tests use this to drive `replay_to_boundary` /
+/// `pending_nodes` over a real recorded tape. Each declared stage prompt is scripted
+/// with a canned ok result (non-interpolated, so declared == rendered).
+pub(super) fn record_for_resume(def: &WorkflowDef) -> Arc<WorkerLedger> {
+    let stages = match &def.strategy {
+        Strategy::Pipeline { stages } => stages.clone(),
+        other => panic!("record_for_resume expects a Pipeline, got {other:?}"),
+    };
+    let scripts: BTreeMap<String, Script> = stages
+        .iter()
+        .enumerate()
+        .map(|(i, step)| (step.task.prompt.clone(), script(ok(&format!("out{i}")))))
+        .collect();
+    let (_, ledger) = record(def, scripts);
+    ledger
 }
 
 /// A compact, golden-friendly rendering of an outcome (ok + summary + the kept
@@ -672,16 +600,14 @@ fn replay_pipeline_is_byte_identical() {
     ]);
     let (recorded_outcome, recorded_ledger) = record(&workflow, scripts);
     let recorded_jsonl = recorded_ledger.to_jsonl();
-    let recorded_tape = Arc::new(recorded_ledger.snapshot());
 
-    let map = Arc::new(prompt_to_node(&workflow, &recorded_tape));
-    let resolver = ReplayResolver {
-        recorded: Arc::clone(&recorded_tape),
-        prompt_to_node: Arc::clone(&map),
-    };
+    // REPLAY through the PRODUCTION resolver (self-contained from the recorded tape).
+    let resolver = crate::flow::ReplayResolver::from_ledger(&recorded_ledger);
+    let generation = crate::flow::replay_generation_provider(&recorded_ledger);
     let replay_ledger = Arc::new(WorkerLedger::new());
     let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
-    let driver = Driver::new(&resolver, Arc::clone(&replay_ledger), approver, None);
+    let driver = Driver::new(&resolver, Arc::clone(&replay_ledger), approver, None)
+        .with_generation(&generation);
     let replay_outcome = driver.run(&workflow, &CancelToken::never());
 
     assert_eq!(
@@ -693,6 +619,38 @@ fn replay_pipeline_is_byte_identical() {
         replay_ledger.to_jsonl(),
         recorded_jsonl,
         "replayed pipeline ledger must be byte-identical to the recorded ledger"
+    );
+}
+
+#[test]
+fn replay_interpolating_pipeline_is_byte_identical() {
+    // The stronger pipeline gate: a pipeline whose downstream stages INTERPOLATE
+    // upstream outputs (`{{prev}}` / `{{stage-0}}`). Replay re-renders the same
+    // templates against the same recorded blackboard, so the rendered prompts — and
+    // thus the prompt→node map recovered from the recorded `Start` entries — match
+    // exactly, and the replayed tape is byte-identical. (Recording the rendered
+    // prompt is what makes interpolated replay self-contained, design §5.)
+    let (workflow, scripts) = interpolating_pipeline();
+    let (recorded_outcome, recorded_ledger) = record(&workflow, scripts);
+    let recorded_jsonl = recorded_ledger.to_jsonl();
+
+    let resolver = crate::flow::ReplayResolver::from_ledger(&recorded_ledger);
+    let generation = crate::flow::replay_generation_provider(&recorded_ledger);
+    let replay_ledger = Arc::new(WorkerLedger::new());
+    let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
+    let replay_outcome = Driver::new(&resolver, Arc::clone(&replay_ledger), approver, None)
+        .with_generation(&generation)
+        .run(&workflow, &CancelToken::never());
+
+    assert_eq!(
+        render_outcome(&replay_outcome),
+        render_outcome(&recorded_outcome),
+        "interpolating-pipeline replay reproduces the recorded outcome"
+    );
+    assert_eq!(
+        replay_ledger.to_jsonl(),
+        recorded_jsonl,
+        "interpolating-pipeline replay is byte-identical (rendered prompts recovered from the tape)"
     );
 }
 

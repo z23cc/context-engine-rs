@@ -16,8 +16,13 @@
 //! NOTHING to `nerve-core`.
 
 mod observer;
+mod persist;
+mod replay;
+
+pub(crate) use replay::run_flow_replay;
 
 use crate::flow::{Driver, FactoryResolver, FlowOutcome};
+use crate::flow_store::{FlowRecord, FlowStore};
 use crate::policy::{Policy, ToolGate};
 use crate::providers::ProviderRegistry;
 use crate::sandbox::SandboxLauncher;
@@ -53,6 +58,11 @@ pub(crate) struct FlowDeps {
     /// The shared approval hub `flow.respond` resolves against (the same hub
     /// `session.respond` / delegate proxying use).
     pub(crate) approvals: Arc<ApprovalHub>,
+    /// Durable flow persistence under `.nerve/flows` (C4, design §5): a `flow.start`
+    /// persists its def + ledger at node boundaries here, and `flow.replay` loads the
+    /// recorded ledger from it. `None` disables persistence (no resolvable scope), so
+    /// a flow still runs in-memory exactly as in C2/C3.
+    pub(crate) store: Option<FlowStore>,
 }
 
 /// One live flow's registry entry: its cancel token (so `flow.close` can interrupt
@@ -228,11 +238,22 @@ pub(crate) fn run_flow_start(
     emit(RuntimeEvent::flow_started(flow_id, def.strategy.clone()));
     emit_strategy_edges(flow_id, &def.strategy, emit);
 
+    // Durable persistence (C4, design §5): persist the def + an initial record at
+    // start, then the observer persists the ledger at each node boundary. A store
+    // error never fails the flow (persistence is durability, not correctness).
+    let mut record = persist::persist_flow_start(deps.store.as_ref(), flow_id, &def);
+
     // CLI workers raise approvals through the same hub via `WorkerContext.approver`.
     let approver: Arc<dyn crate::delegate_proxy::DelegateApprover> =
         Arc::clone(&deps.approvals) as Arc<dyn crate::delegate_proxy::DelegateApprover>;
     let resolver = FactoryResolver::new(factory);
-    let observer = FlowEventObserver::new(flow_id.to_string(), Arc::clone(emit));
+    let observer = {
+        let observer = FlowEventObserver::new(flow_id.to_string(), Arc::clone(emit));
+        match &deps.store {
+            Some(store) => observer.with_persistence(store.clone(), Arc::clone(&ledger)),
+            None => observer,
+        }
+    };
     let root = deps
         .runtime
         .resolver()
@@ -252,6 +273,15 @@ pub(crate) fn run_flow_start(
         budget.remaining_tokens(),
     );
 
+    // Per-node snapshot generation (C4, design §5): pin the live workspace snapshot
+    // generation at each node-start and record it in the ledger, so a node that
+    // mutated files makes a LATER node observe a different generation — replayed
+    // honestly. Backed by the shared runtime's resolver; `0` when no snapshot resolves.
+    let generation = persist::live_generation_provider(Arc::clone(&deps.runtime));
+    // Writer-node path-leases (C4, design §6): a per-flow registry so two writer-nodes
+    // on overlapping path scope SERIALIZE — safety + replay-fidelity precondition.
+    let leases = crate::worker::PathLeases::new();
+
     // The progress sink maps each worker `Step` onto a node-scoped `FlowNodeAgent`;
     // the observer maps node start/finish onto `FlowNodeStarted`/`FlowNodeFinished`
     // and budget debits/refusals onto `BudgetUpdate`/`BudgetWarning`/`FlowDecision`.
@@ -260,9 +290,14 @@ pub(crate) fn run_flow_start(
         .with_observer(&observer)
         .with_progress(&on_progress)
         .with_steer_registry(&steer)
-        .with_budget(Arc::clone(&budget), fleet);
+        .with_budget(Arc::clone(&budget), fleet)
+        .with_generation(&generation)
+        .with_leases(&leases);
     let outcome = driver.run(&def, &run_cancel);
 
+    // Persist the terminal record + final tape (C4 node-boundary persistence's last
+    // checkpoint), then emit the terminal protocol event + return the job result.
+    persist::persist_flow_finish(deps.store.as_ref(), &mut record, &outcome, &ledger);
     finish_flow(
         flow_id,
         &def,
@@ -377,14 +412,76 @@ fn steer_error(flow_id: &str, err: SteerError) -> RuntimeError {
     }
 }
 
-/// Resolve a `flow.get`. Mirrors `session.get` / `runtime/jobs/get`.
-pub(crate) fn run_flow_get(flow_id: &str, flows: &LiveFlows) -> Result<Value, RuntimeError> {
-    flows.get(flow_id).map(|flow| json!({ "flow": flow }))
+/// Resolve a `flow.get`. Mirrors `session.get` / `runtime/jobs/get`. Falls back to the
+/// [`FlowStore`] (C4) for a flow that is no longer live in memory but was persisted —
+/// so a flow stays INSPECTABLE after the daemon (re)started.
+pub(crate) fn run_flow_get(
+    flow_id: &str,
+    flows: &LiveFlows,
+    store: Option<&FlowStore>,
+) -> Result<Value, RuntimeError> {
+    if let Ok(flow) = flows.get(flow_id) {
+        return Ok(json!({ "flow": flow }));
+    }
+    let store = store.ok_or_else(|| RuntimeError::adapter(format!("no flow `{flow_id}`")))?;
+    let record = store
+        .load_record(flow_id)
+        .map_err(|err| RuntimeError::adapter(format!("no flow `{flow_id}`: {err}")))?;
+    Ok(json!({ "flow": persisted_flow_snapshot(&record) }))
 }
 
-/// Resolve a `flow.list`. Mirrors `session.list`.
-pub(crate) fn run_flow_list(flows: &LiveFlows) -> Result<Value, RuntimeError> {
-    Ok(flows.list())
+/// Resolve a `flow.list`. Mirrors `session.list`. Merges live flows with persisted
+/// ones from the [`FlowStore`] (C4), de-duplicating by id (a live flow shadows its
+/// persisted record), so a client sees both running and past flows.
+pub(crate) fn run_flow_list(
+    flows: &LiveFlows,
+    store: Option<&FlowStore>,
+) -> Result<Value, RuntimeError> {
+    let live = flows.list();
+    let mut entries: Vec<Value> = live
+        .get("flows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(store) = store
+        && let Ok(records) = store.list()
+    {
+        let live_ids = live_flow_ids(&entries);
+        for record in records {
+            if !live_ids.contains(&record.flow_id) {
+                entries.push(persisted_flow_snapshot(&record));
+            }
+        }
+    }
+    Ok(json!({ "flows": entries }))
+}
+
+/// The set of flow ids already present in the live-flow list (so a persisted record
+/// for a still-live flow is not listed twice).
+fn live_flow_ids(entries: &[Value]) -> std::collections::HashSet<String> {
+    entries
+        .iter()
+        .filter_map(|e| e.get("flow_id").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// Project a persisted [`FlowRecord`] onto the same JSON shape a live flow snapshot
+/// uses (`flow_id` / `name` / `strategy` / `status` / `outcome`), so a client renders
+/// persisted and live flows uniformly. A persisted flow's status is always `finished`
+/// (only finished or last-checkpointed flows survive on disk after a restart).
+fn persisted_flow_snapshot(record: &FlowRecord) -> Value {
+    let outcome = record
+        .outcome
+        .as_ref()
+        .map(|o| json!({ "ok": o.ok, "summary": o.summary, "final_text": o.final_text }));
+    json!({
+        "flow_id": record.flow_id,
+        "name": record.name,
+        "strategy": record.strategy,
+        "status": if record.finished { "finished" } else { "interrupted" },
+        "outcome": outcome,
+        "persisted": true,
+    })
 }
 
 /// Resolve a `flow.close`. Mirrors `session.close` / `delegate.close`.
@@ -409,7 +506,7 @@ pub(crate) fn run_flow_respond(
 /// the registry, and return the job-result JSON. A cancelled flow (the job token or
 /// a `flow.close` fired) maps to a cancelled [`RuntimeError`] so the job finishes
 /// `job_cancelled`, not `job_failed`.
-fn finish_flow(
+pub(super) fn finish_flow(
     flow_id: &str,
     def: &WorkflowDef,
     outcome: &FlowOutcome,
@@ -454,7 +551,7 @@ fn finish_flow(
 /// Combine the job's own cancel token and the registry's flow-close token into one
 /// token the engine polls, so either source stops the flow. A tiny watcher fans
 /// both into the combined token (the engine loop only checks `is_cancelled()`).
-fn combined_cancel(job: &CancelToken, registry: &CancelToken) -> CancelToken {
+pub(super) fn combined_cancel(job: &CancelToken, registry: &CancelToken) -> CancelToken {
     let combined = CancelToken::new();
     if job.is_cancelled() || registry.is_cancelled() {
         combined.cancel();

@@ -38,6 +38,16 @@ pub(crate) struct LedgerEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "payload", rename_all = "snake_case")]
 pub(crate) enum LedgerPayload {
+    /// A node's start: the RENDERED prompt the worker received and the
+    /// `snapshot_generation` pinned for that node (design §5). Recorded as the
+    /// first entry for a node so replay is SELF-CONTAINED from the persisted tape:
+    /// the rendered-prompt → node-id map and the per-node generation are both
+    /// recoverable without re-deriving them. A node that mutated files makes a
+    /// later node's generation differ, recorded honestly here.
+    Start {
+        prompt: String,
+        snapshot_generation: u64,
+    },
     /// A streamed [`WorkerEvent`] from a worker.
     Event(WorkerEvent),
     /// A node's final [`TurnResult`].
@@ -68,6 +78,25 @@ impl WorkerLedger {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Append a node-start entry: the RENDERED `prompt` the worker received and the
+    /// pinned `snapshot_generation` (design §5). Recorded BEFORE the node's events
+    /// so the tape is a self-contained replay source — the prompt→node map and the
+    /// per-node generation are recoverable from the persisted ledger alone.
+    pub(crate) fn record_start(
+        &self,
+        node_id: &str,
+        prompt: &str,
+        snapshot_generation: u64,
+    ) -> u64 {
+        self.append(
+            node_id,
+            LedgerPayload::Start {
+                prompt: prompt.to_string(),
+                snapshot_generation,
+            },
+        )
     }
 
     /// Append a streamed event for `node_id`, returning its assigned seq number.
@@ -142,6 +171,57 @@ impl WorkerLedger {
         }
         drop(inner);
         Ok(ledger)
+    }
+
+    /// Recover the rendered-prompt → node-id map from the recorded `Start` entries
+    /// (design §3, REPLAY): the production [`ReplayWorker`](super::ReplayWorker) keys
+    /// off the rendered prompt a node received, which is deterministic — the engine
+    /// re-renders the same templates against the same recorded blackboard, so the
+    /// replayed prompt equals the recorded one. The LAST `Start` for a node wins
+    /// (a re-dispatched node keeps its latest instruction), so resume-re-dispatch is
+    /// honored. Returns `(prompt → node_id)`.
+    #[must_use]
+    pub(crate) fn prompt_to_node(&self) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+        for entry in &crate::sync::lock_recover(&self.inner).entries {
+            if let LedgerPayload::Start { prompt, .. } = &entry.payload {
+                map.insert(prompt.clone(), entry.node_id.clone());
+            }
+        }
+        map
+    }
+
+    /// Recover the per-node pinned `snapshot_generation` from the recorded `Start`
+    /// entries (design §5, replay fidelity under file mutation). The LAST `Start`
+    /// for a node wins. Returns `(node_id → snapshot_generation)`.
+    #[must_use]
+    pub(crate) fn node_generations(&self) -> BTreeMap<String, u64> {
+        let mut map = BTreeMap::new();
+        for entry in &crate::sync::lock_recover(&self.inner).entries {
+            if let LedgerPayload::Start {
+                snapshot_generation,
+                ..
+            } = &entry.payload
+            {
+                map.insert(entry.node_id.clone(), *snapshot_generation);
+            }
+        }
+        map
+    }
+
+    /// The set of node ids that have a recorded `Result` (a finished node) — the
+    /// resume "last node boundary" computation (design §5): a flow resumes by
+    /// replaying these to rebuild scheduler + blackboard state, then scheduling the
+    /// pending nodes live. Returns node ids in first-seen tape order.
+    #[must_use]
+    pub(crate) fn finished_nodes(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for entry in &crate::sync::lock_recover(&self.inner).entries {
+            if matches!(entry.payload, LedgerPayload::Result(_)) && !seen.contains(&entry.node_id) {
+                seen.push(entry.node_id.clone());
+            }
+        }
+        seen
     }
 
     /// The number of entries recorded so far.
@@ -249,6 +329,57 @@ mod tests {
         assert_eq!(restored.output("n2"), Some("also done".to_string()));
         // And serializing the reconstruction is byte-identical (stable form).
         assert_eq!(restored.to_jsonl(), jsonl);
+    }
+
+    #[test]
+    fn every_worker_event_variant_round_trips_through_jsonl() {
+        // Regression guard (C4): a `WorkerEvent` newtype variant cannot be carried by
+        // the internally-tagged enum, which silently produced an unparseable `{}`
+        // line in the ledger and broke replay. Pin that EVERY variant — a `Step`, a
+        // `Progress`, and an `Approval` — survives the to_jsonl → from_jsonl round
+        // trip byte-identically.
+        let ledger = WorkerLedger::new();
+        ledger.record_start("n1", "the prompt", 3);
+        ledger.record_event(
+            "n1",
+            WorkerEvent::Step(AgentEventKind::TurnStarted { turn: 1 }),
+        );
+        ledger.record_event(
+            "n1",
+            WorkerEvent::Progress {
+                text: "raw stdout line".into(),
+            },
+        );
+        ledger.record_event(
+            "n1",
+            WorkerEvent::Approval {
+                request_id: "req-1".into(),
+                tool: "edit".into(),
+                args: serde_json::json!({ "path": "a.rs" }),
+                tier: nerve_runtime::RiskTier::Edit,
+                preview: "diff".into(),
+            },
+        );
+        ledger.record_result("n1", &result("done"));
+
+        let jsonl = ledger.to_jsonl();
+        // No silently-empty line (the failure mode the newtype Progress produced).
+        assert!(
+            !jsonl.lines().any(|l| l.trim() == "{}"),
+            "a variant failed to serialize and fell back to `{{}}`: {jsonl}"
+        );
+        let restored = WorkerLedger::from_jsonl(&jsonl).expect("every variant round-trips");
+        assert_eq!(restored.snapshot(), ledger.snapshot());
+        assert_eq!(restored.to_jsonl(), jsonl);
+        // The recovered prompt→node + generation maps are intact.
+        assert_eq!(
+            restored
+                .prompt_to_node()
+                .get("the prompt")
+                .map(String::as_str),
+            Some("n1")
+        );
+        assert_eq!(restored.node_generations().get("n1"), Some(&3));
     }
 
     #[test]

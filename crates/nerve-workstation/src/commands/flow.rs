@@ -151,7 +151,7 @@ fn print_progress(progress: &FlowProgress) {
         WorkerEvent::Step(nerve_runtime::AgentEventKind::Message { text }) => {
             println!("[{}] {}", progress.node, truncate(text, 200));
         }
-        WorkerEvent::Progress(text) => {
+        WorkerEvent::Progress { text } => {
             let line = text.trim();
             if !line.is_empty() {
                 println!("[{}] {}", progress.node, truncate(line, 200));

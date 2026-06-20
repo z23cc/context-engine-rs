@@ -125,6 +125,7 @@ where
             )),
             RuntimeCommand::FlowStart { .. }
             | RuntimeCommand::FlowSteer { .. }
+            | RuntimeCommand::FlowReplay { .. }
             | RuntimeCommand::FlowGet { .. }
             | RuntimeCommand::FlowList
             | RuntimeCommand::FlowClose { .. }

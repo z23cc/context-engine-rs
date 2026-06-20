@@ -593,3 +593,99 @@ fn flow_respond_to_unknown_request_is_a_noop_response() {
     assert_eq!(result["responded"], false);
     assert_eq!(result["flow_id"], "ghost");
 }
+
+#[test]
+fn flow_replay_re_emits_the_recorded_flow_offline() {
+    // THE AUDIT VERB end-to-end (C4, design §3/§4): RECORD a parallel flow (persisted
+    // to .nerve/flows by the daemon), then `flow.replay` it BY FLOW ID. The replay
+    // re-runs the engine over the recorded tape with NO live subprocess (a deny-all
+    // approver, no launcher use) and re-emits the same Flow* sequence + outcome.
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+
+    // RECORD.
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({ "job_id": "rec-1", "command": parallel_flow_command() }),
+        ),
+    );
+    wait_for_job_event(&output, "job_completed", "rec-1");
+    let recorded_types: Vec<String> = flow_event_types(&output, "rec-1")
+        .into_iter()
+        .filter(|t| t != "flow_node_agent") // node-agent ordering across branches is timing-y; compare the lifecycle skeleton
+        .collect();
+
+    // REPLAY by flow id (a brand-new launcher proves no subprocess is spawned).
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(2),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "rep-1",
+                "command": { "kind": "flow.replay", "flow_id": "rec-1" }
+            }),
+        ),
+    );
+    wait_for_job_event(&output, "job_completed", "rep-1");
+
+    let replay_types: Vec<String> = flow_event_types(&output, "rep-1")
+        .into_iter()
+        .filter(|t| t != "flow_node_agent")
+        .collect();
+    assert_eq!(
+        replay_types, recorded_types,
+        "replay re-emits the recorded Flow* lifecycle sequence"
+    );
+
+    // The replay's outcome matches the record's (both completed ok).
+    let observed = dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(3),
+            "runtime/jobs/get",
+            json!({ "job_id": "rep-1", "include_result": true }),
+        ),
+    );
+    let job = &response_with_id(&observed, json!(3))["result"]["job"];
+    assert_eq!(job["status"], "completed");
+    assert_eq!(job["result"]["ok"], true);
+    assert_eq!(job["result"]["name"], "fanout");
+}
+
+#[test]
+fn flow_replay_unknown_flow_errors_cleanly() {
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({
+                "job_id": "rep-missing",
+                "command": { "kind": "flow.replay", "flow_id": "never-recorded" }
+            }),
+        ),
+    );
+    // A replay of a flow with no persisted ledger fails the job cleanly (no panic).
+    wait_for_job_terminal(&output, "rep-missing");
+    let observed = dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(2),
+            "runtime/jobs/get",
+            json!({ "job_id": "rep-missing", "include_result": true }),
+        ),
+    );
+    let job = &response_with_id(&observed, json!(2))["result"]["job"];
+    assert_eq!(job["status"], "failed");
+}

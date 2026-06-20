@@ -20,7 +20,7 @@ mod tool_spec;
 
 pub use adapter::{RiskTier, RuntimeToolAdapter, ToolCapability};
 pub use command::{
-    ApprovalMode, DelegateAutonomy, FlowSource, RUNTIME_COMMAND_NAMES, RuntimeCommand,
+    ApprovalMode, DelegateAutonomy, FlowSource, LedgerRef, RUNTIME_COMMAND_NAMES, RuntimeCommand,
     SessionApprovalDecision, WorkerSelector,
 };
 pub use error::RuntimeError;

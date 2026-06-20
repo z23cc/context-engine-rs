@@ -8,20 +8,22 @@
 //! dispatched through the **already-built** [`bounded_fan_out`], REUSED verbatim
 //! (it preserves INPUT ORDER, the invariant behind the declared-order fold).
 
+mod node;
+
 use super::engine::{FlowState, step};
 use super::resolve::{
-    WorkerResolver, cancelled_outcome, failed_result, is_pipeline, is_steerable_strategy,
-    provider_model, refused_result, step_for, terminated_without_emit,
+    WorkerResolver, cancelled_outcome, is_steerable_strategy, refused_result,
+    terminated_without_emit,
 };
 use super::{Action, FlowOutcome, NodeId};
 use crate::subagent::bounded_fan_out;
 use crate::worker::{
-    BudgetDecision, BudgetGrant, BudgetLedger, BudgetSnapshot, FleetBudget, SpawnRefusal,
-    SteerRegistry, TurnResult, WorkerContext, WorkerError, WorkerEvent, WorkerLedger,
-    WorkerSession, WorkerSlot, WorkerTask,
+    BudgetDecision, BudgetLedger, BudgetSnapshot, FleetBudget, PathLeases, SpawnRefusal,
+    SteerRegistry, TurnResult, WorkerEvent, WorkerLedger, WorkerSession,
 };
 use nerve_core::CancelToken;
-use nerve_runtime::{Step, WorkerRef, WorkflowDef};
+use nerve_runtime::{WorkerRef, WorkflowDef};
+use node::{NodeResult, NodeRun};
 use std::sync::Arc;
 
 /// One `StartWorker` instruction the driver dispatches: the node + its flat step
@@ -31,6 +33,12 @@ type Dispatch = (NodeId, usize);
 /// A budget partition of one wave (design §8): the spawns the [`FleetBudget`]
 /// admits, and the ones it refuses at a ceiling (with the typed [`SpawnRefusal`]).
 type BudgetPartition = (Vec<Dispatch>, Vec<(NodeId, SpawnRefusal)>);
+
+/// A per-node `snapshot_generation` provider (design §5): given the def + node id,
+/// it returns the generation to pin at that node's start. The host backs it with
+/// the live snapshot (so a file mutation bumps a later node's generation); replay
+/// backs it with the node's RECORDED generation, keeping the pin byte-identical.
+pub(crate) type GenerationProvider = dyn Fn(&WorkflowDef, &str) -> u64 + Sync;
 
 /// Default concurrency for a `Parallel` wave — mirrors `subagent`'s
 /// `DEFAULT_FANOUT_CONCURRENCY`. ureq is synchronous, so each in-flight worker
@@ -98,6 +106,16 @@ pub(crate) struct Driver<'a> {
     /// so existing flow tests stay green.
     budget: Option<Arc<BudgetLedger>>,
     fleet: Option<FleetBudget>,
+    /// Optional per-node `snapshot_generation` provider (C4, design §5). The host
+    /// backs it with the live snapshot so file mutations are pinned honestly per
+    /// node-start; replay backs it with each node's recorded generation. Unset = `0`.
+    generation: Option<&'a GenerationProvider>,
+    /// Optional writer-node path-lease registry (C4, design §6): a deterministic
+    /// engine-level lease that forbids two writer-nodes (Edit/Full autonomy) from
+    /// running concurrently on overlapping path scope within one flow — both a safety
+    /// property and the precondition for replay fidelity under mutation. Unset =
+    /// no leasing (the C1/C2/C3 behaviour; a read-only flow needs none).
+    leases: Option<&'a PathLeases>,
 }
 
 impl<'a> Driver<'a> {
@@ -119,6 +137,8 @@ impl<'a> Driver<'a> {
             steer: None,
             budget: None,
             fleet: None,
+            generation: None,
+            leases: None,
         }
     }
 
@@ -161,6 +181,25 @@ impl<'a> Driver<'a> {
     pub(crate) fn with_budget(mut self, budget: Arc<BudgetLedger>, fleet: FleetBudget) -> Self {
         self.budget = Some(budget);
         self.fleet = Some(fleet);
+        self
+    }
+
+    /// Attach a per-node `snapshot_generation` provider (C4, design §5). The host
+    /// backs it with the live snapshot (so a file mutation pins a later node's
+    /// generation honestly); replay backs it with the recorded generation.
+    #[must_use]
+    pub(crate) fn with_generation(mut self, generation: &'a GenerationProvider) -> Self {
+        self.generation = Some(generation);
+        self
+    }
+
+    /// Attach a writer-node path-lease registry (C4, design §6): the engine then
+    /// SERIALIZES writer-nodes (Edit/Full autonomy) that would race overlapping path
+    /// scope within a wave — a deterministic safety property + replay-fidelity
+    /// precondition. A read-only flow needs none (every node is a reader).
+    #[must_use]
+    pub(crate) fn with_leases(mut self, leases: &'a PathLeases) -> Self {
+        self.leases = Some(leases);
         self
     }
 
@@ -287,7 +326,14 @@ impl<'a> Driver<'a> {
                 events,
                 session,
                 slot,
+                start,
             } = run;
+            // Record the node-start FIRST (the rendered prompt + pinned snapshot
+            // generation, design §5) so the tape is a self-contained replay source,
+            // then the buffered events, then the result — all in declared order.
+            if let Some((prompt, generation)) = start {
+                self.ledger.record_start(node.as_str(), &prompt, generation);
+            }
             for event in events {
                 self.ledger.record_event(node.as_str(), event);
             }
@@ -372,210 +418,7 @@ impl<'a> Driver<'a> {
             _ => session.close(),
         }
     }
-
-    /// Run one node's worker turn end-to-end: resolve the worker, render its task
-    /// from the ledger blackboard, start it (turn 1), and return its
-    /// [`TurnResult`] together with the events it emitted (BUFFERED, not written
-    /// to the ledger here — the caller writes them in declared order so the tape
-    /// is deterministic) and the LIVE session (so the caller can register it as a
-    /// steerable frontier or close it). The live progress sink still fires during
-    /// the turn for real-time display. A start/turn error maps to a failed result
-    /// with no live session, so a sibling branch is never aborted (mirrors
-    /// `bounded_fan_out`'s per-task isolation).
-    fn run_node(
-        &self,
-        def: &WorkflowDef,
-        node: &NodeId,
-        step_index: usize,
-        cancel: &CancelToken,
-    ) -> NodeRun {
-        // Acquire a process-global worker slot for this turn's lifetime (C3b, the
-        // semaphore that bounds `max_workers` tree-wide). `partition_by_budget`
-        // already deterministically admitted this node; the atomic acquire here is
-        // the real bound — if a concurrent wave grabbed the last slot first, fold as
-        // a recorded refusal rather than over-spawning.
-        let slot = match &self.fleet {
-            Some(fleet) => match fleet.acquire() {
-                Ok(slot) => Some(slot),
-                Err(refusal) => {
-                    if let Some(observer) = self.observer {
-                        observer.spawn_refused(node.as_str(), refusal);
-                    }
-                    return NodeRun::refused(refusal);
-                }
-            },
-            None => None,
-        };
-        let Some(step_def) = step_for(def, step_index) else {
-            return NodeRun::failed(&format!("no step at index {step_index}"));
-        };
-        let worker = match self.resolver.resolve(&step_def.worker) {
-            Ok(worker) => worker,
-            Err(err) => return NodeRun::failed(&format!("resolve failed: {err}")),
-        };
-        // A node whose worker resolved is genuinely starting: fire the lifecycle
-        // observer (C2 maps this to FlowNodeStarted) with the declared WorkerRef.
-        if let Some(observer) = self.observer {
-            observer.node_started(node.as_str(), &step_def.worker);
-        }
-        let task = self.build_task(step_def, def, step_index);
-        let ctx = self.worker_context();
-        let node_id = node.clone();
-        let on_progress = self.on_progress;
-        let mut events = Vec::new();
-        let mut on_event = |event: WorkerEvent| {
-            // Stream live (out-of-order is fine for display), buffer for the
-            // declared-order ledger write.
-            if let Some(sink) = on_progress {
-                sink(FlowProgress {
-                    node: node_id.to_string(),
-                    event: event.clone(),
-                });
-            }
-            events.push(event);
-        };
-        match worker.start(&task, &ctx, cancel, &mut on_event) {
-            Ok(session) => NodeRun {
-                result: session.result(),
-                events,
-                session: Some(session),
-                slot,
-            },
-            Err(WorkerError::Cancelled) => NodeRun {
-                result: failed_result("cancelled"),
-                events,
-                session: None,
-                slot,
-            },
-            Err(err) => NodeRun {
-                result: failed_result(&err.to_string()),
-                events,
-                session: None,
-                slot,
-            },
-        }
-    }
-
-    /// Render a step's task template (design §3 / §5, the cross-stage blackboard),
-    /// interpolating named-output placeholders from the ledger, then build the
-    /// [`WorkerTask`]. The supported placeholders are deliberately MINIMAL —
-    /// named-output substitution only, NO expression language (design §12, open
-    /// question 3):
-    ///
-    /// - `{{<node-id>}}` — the recorded output text of any finished node, by its
-    ///   deterministic id (`{{node-0}}` for a `Single`, `{{stage-0}}` for a
-    ///   pipeline's first stage, `{{branch-1}}` for a parallel branch).
-    /// - `{{prev}}` — a `Pipeline`-only alias for the immediately-upstream stage's
-    ///   output (`stage-{index-1}`). For a non-pipeline node, or stage 0, `prev`
-    ///   resolves to nothing and is left as a verbatim `{{prev}}` placeholder.
-    ///
-    /// An unknown/unresolved placeholder is left verbatim (the [`TaskTemplate`]
-    /// contract — no silent emptying). Pure and deterministic: the same recorded
-    /// blackboard renders byte-identically, so replay stays faithful.
-    fn build_task(&self, step_def: &Step, def: &WorkflowDef, step_index: usize) -> WorkerTask {
-        let ledger = Arc::clone(&self.ledger);
-        let prev_node = (is_pipeline(def) && step_index > 0).then(|| NodeId::stage(step_index - 1));
-        let prompt = step_def.task.render(&|name| {
-            // `{{prev}}` is the upstream stage's output; everything else is a node
-            // id looked up directly in the blackboard.
-            if name == "prev" {
-                return prev_node
-                    .as_ref()
-                    .and_then(|node| ledger.output(node.as_str()));
-            }
-            ledger.output(name)
-        });
-        WorkerTask {
-            prompt,
-            autonomy: step_def.autonomy,
-            model: provider_model(&step_def.worker),
-            tool_filter: None,
-            // Carve this node's grant from the fleet envelope (C3b, design §6): the
-            // per-node ceiling is the remaining fleet budget, INTERSECTED so a node
-            // can never out-spend the fleet (monotone de-escalation). An unbudgeted
-            // flow yields a default (uncapped) grant — the C1/C2 behaviour.
-            budget: self.node_grant(),
-        }
-    }
-
-    /// Carve a node's [`BudgetGrant`] from the fleet's current remaining headroom
-    /// (design §6): the node may spend at most what the fleet has left, intersected
-    /// with a default (uncapped) ask — so the grant only ever NARROWS the fleet
-    /// envelope. Replayable: the grant is a pure function of the recorded budget
-    /// fold (which is itself replayable).
-    fn node_grant(&self) -> BudgetGrant {
-        match &self.budget {
-            Some(budget) => BudgetGrant {
-                max_cost_usd: budget.remaining_usd(),
-                max_tokens: budget.remaining_tokens(),
-            }
-            .intersect(&BudgetGrant::default()),
-            None => BudgetGrant::default(),
-        }
-    }
-
-    fn worker_context(&self) -> WorkerContext {
-        WorkerContext {
-            root: self.root.clone(),
-            snapshot_generation: 0,
-            ledger: Arc::clone(&self.ledger),
-            approver: Arc::clone(&self.approver),
-        }
-    }
 }
-
-/// A node's produced result + buffered events, paired with its id so a fan-out
-/// wave can fold each back by the right node. `bounded_fan_out` preserves input
-/// order, so the vec of these comes back in declared branch order — the
-/// determinism invariant (the ledger is then written in that order).
-struct NodeResult {
-    node: NodeId,
-    run: NodeRun,
-}
-
-/// What one [`Driver::run_node`] produced: the final [`TurnResult`], the BUFFERED
-/// events (written to the ledger in declared order by the caller), the LIVE
-/// session when the turn started (so the caller registers it as a steerable
-/// frontier or closes it), and the held [`WorkerSlot`] (the process-global
-/// semaphore unit, released when the run is folded). The session is dropped — and
-/// thus implicitly NOT steerable — for any node whose start errored/cancelled.
-struct NodeRun {
-    result: TurnResult,
-    events: Vec<WorkerEvent>,
-    session: Option<Box<dyn WorkerSession>>,
-    /// The held worker slot (`None` for an unbudgeted flow or a refused/cancelled
-    /// run that never acquired one).
-    slot: Option<WorkerSlot>,
-}
-
-impl NodeRun {
-    /// A failed run with no session (a resolve/start error or a panicked thread).
-    fn failed(reason: &str) -> Self {
-        Self {
-            result: failed_result(reason),
-            events: Vec::new(),
-            session: None,
-            slot: None,
-        }
-    }
-
-    /// A cancelled run with no session.
-    fn cancelled() -> Self {
-        Self::failed("cancelled")
-    }
-
-    /// A run refused at a budget ceiling (design §8) — no session, no slot; folds
-    /// as the recorded refusal result.
-    fn refused(refusal: SpawnRefusal) -> Self {
-        Self {
-            result: refused_result(refusal),
-            events: Vec::new(),
-            session: None,
-            slot: None,
-        }
-    }
-}
-
 /// Safety net against an interpreter that never terminates; far above any real
 /// node count for C1's two strategies.
 const MAX_STEPS: usize = 10_000;

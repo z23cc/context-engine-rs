@@ -5,18 +5,36 @@
 //! re-emits byte-identically under replay, and the fold is a function of declared
 //! order, never completion order.
 
-use super::{
-    NeverApprover, ReplayResolver, Script, def, ok, parallel_out_of_order, prompt_to_node, record,
-    render_outcome,
-};
+use super::{NeverApprover, Script, def, ok, parallel_out_of_order, record, render_outcome};
 use crate::delegate_proxy::DelegateApprover;
-use crate::flow::Driver;
+use crate::flow::{Driver, ReplayResolver, replay_generation_provider};
 use crate::worker::WorkerLedger;
 use nerve_core::CancelToken;
 use nerve_runtime::{Join, Strategy};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Replay a recorded ledger through the PRODUCTION [`ReplayResolver`] + recorded-
+/// generation provider, returning the replayed outcome + the replayed ledger's
+/// JSONL. The shared helper behind the byte-identical gate (design §3): the same
+/// engine, the same def, the self-contained recorded tape.
+fn replay(
+    workflow: &nerve_runtime::WorkflowDef,
+    recorded: &WorkerLedger,
+    concurrency: usize,
+) -> (crate::flow::FlowOutcome, String) {
+    let resolver = ReplayResolver::from_ledger(recorded);
+    let generation = replay_generation_provider(recorded);
+    let replay_ledger = Arc::new(WorkerLedger::new());
+    let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
+    let driver = Driver::new(&resolver, Arc::clone(&replay_ledger), approver, None)
+        .with_concurrency(concurrency)
+        .with_generation(&generation);
+    let outcome = driver.run(workflow, &CancelToken::never());
+    let jsonl = replay_ledger.to_jsonl();
+    (outcome, jsonl)
+}
 
 // ---- CONTRACT: declared-order fold (the load-bearing invariant) ---------------
 
@@ -85,45 +103,33 @@ fn contract_declared_order_fold_is_independent_of_completion_order() {
 // ---- REPLAY: byte-identical re-emission ----------------------------------------
 
 #[test]
-fn replay_is_byte_identical_to_the_recorded_run() {
-    // RECORD a parallel run (with out-of-order completion), then REPLAY from the
-    // recorded ledger and assert: (a) the engine's outcome is identical, and
-    // (b) the replayed tape is byte-identical to the recorded tape (the audit
-    // moat — design §3, the byte-identical replay gate that C4 promotes to CI).
+fn replay_is_byte_identical_parallel_out_of_order() {
+    // THE GATE (design §3): RECORD a `Parallel` run whose branches finish OUT OF
+    // ORDER, then REPLAY through the production resolver and assert the replayed
+    // Flow* tape is BYTE-IDENTICAL to the recorded one (and the outcome matches).
+    // Out-of-order completion is the load-bearing case: the declared-order fold must
+    // make the replay identical regardless of which branch finished first.
     let (workflow, scripts) = parallel_out_of_order(Join::All);
     let (recorded_outcome, recorded_ledger) = record(&workflow, scripts);
     let recorded_jsonl = recorded_ledger.to_jsonl();
-    let recorded_tape = Arc::new(recorded_ledger.snapshot());
 
-    let map = Arc::new(prompt_to_node(&workflow, &recorded_tape));
-    let resolver = ReplayResolver {
-        recorded: Arc::clone(&recorded_tape),
-        prompt_to_node: Arc::clone(&map),
-    };
-    let replay_ledger = Arc::new(WorkerLedger::new());
-    let approver: Arc<dyn DelegateApprover> = Arc::new(NeverApprover);
-    let driver =
-        Driver::new(&resolver, Arc::clone(&replay_ledger), approver, None).with_concurrency(8);
-    let replay_outcome = driver.run(&workflow, &CancelToken::never());
+    let (replay_outcome, replay_jsonl) = replay(&workflow, &recorded_ledger, 8);
 
-    // (a) identical engine output.
     assert_eq!(
         render_outcome(&replay_outcome),
         render_outcome(&recorded_outcome),
         "replay must reproduce the recorded outcome exactly"
     );
-    // (b) byte-identical tape (the audit gate).
     assert_eq!(
-        replay_ledger.to_jsonl(),
-        recorded_jsonl,
-        "replayed ledger must be byte-identical to the recorded ledger"
+        replay_jsonl, recorded_jsonl,
+        "replayed ledger must be byte-identical to the recorded ledger (the audit gate)"
     );
 }
 
 #[test]
-fn replay_reconstructed_from_jsonl_matches() {
-    // The ledger reconstructed from its own JSONL replays identically — proving
-    // the on-disk record (job 3) is a faithful resume source (design §5).
+fn replay_is_byte_identical_single() {
+    // The simplest gate case + a reconstruct-from-JSONL round-trip, proving the
+    // on-disk record (FlowStore's ledger.jsonl) is a faithful replay source (§5).
     let workflow = def(
         "single",
         Strategy::Single {
@@ -138,9 +144,24 @@ fn replay_reconstructed_from_jsonl_matches() {
             steerable: false,
         },
     )]);
-    let (_, ledger) = record(&workflow, scripts);
-    let jsonl = ledger.to_jsonl();
-    let restored = WorkerLedger::from_jsonl(&jsonl).expect("reconstruct");
-    assert_eq!(restored.to_jsonl(), jsonl);
+    let (recorded_outcome, recorded_ledger) = record(&workflow, scripts);
+    let recorded_jsonl = recorded_ledger.to_jsonl();
+
+    // Replay directly...
+    let (replay_outcome, replay_jsonl) = replay(&workflow, &recorded_ledger, 1);
+    assert_eq!(
+        render_outcome(&replay_outcome),
+        render_outcome(&recorded_outcome)
+    );
+    assert_eq!(replay_jsonl, recorded_jsonl);
+
+    // ...and from the ledger RECONSTRUCTED from its own JSONL (the resume source).
+    let restored = WorkerLedger::from_jsonl(&recorded_jsonl).expect("reconstruct from jsonl");
+    assert_eq!(restored.to_jsonl(), recorded_jsonl);
     assert_eq!(restored.output("node-0"), Some("done".to_string()));
+    let (_, from_restored_jsonl) = replay(&workflow, &restored, 1);
+    assert_eq!(
+        from_restored_jsonl, recorded_jsonl,
+        "replay from a reconstructed ledger is byte-identical too"
+    );
 }

@@ -9,7 +9,8 @@
 
 use super::EventEmitter;
 use crate::flow::FlowObserver;
-use crate::worker::{BudgetDecision, BudgetSnapshot, SpawnRefusal, TurnResult};
+use crate::flow_store::FlowStore;
+use crate::worker::{BudgetDecision, BudgetSnapshot, SpawnRefusal, TurnResult, WorkerLedger};
 use nerve_runtime::{
     FlowDecisionKind, FlowNodeUsage, FlowWorkerKind, RuntimeEvent, Strategy, WorkerRef,
 };
@@ -60,11 +61,39 @@ fn emit_pipeline_edges(flow_id: &str, stages: usize, emit: &Arc<EventEmitter>) {
 pub(super) struct FlowEventObserver {
     flow_id: String,
     emit: Arc<EventEmitter>,
+    /// Node-boundary persistence (C4, design §5): when a [`FlowStore`] + the live
+    /// `ledger` are attached, `node_finished` ATOMICALLY persists the current tape to
+    /// `.nerve/flows/<flow_id>/ledger.jsonl` — the engine's natural checkpoint, so a
+    /// crash mid-node never tears the record. `None` = in-memory only (C2/C3).
+    persist: Option<(FlowStore, Arc<WorkerLedger>)>,
 }
 
 impl FlowEventObserver {
     pub(super) fn new(flow_id: String, emit: Arc<EventEmitter>) -> Self {
-        Self { flow_id, emit }
+        Self {
+            flow_id,
+            emit,
+            persist: None,
+        }
+    }
+
+    /// Attach node-boundary ledger persistence over `store` + the live `ledger`.
+    pub(super) fn with_persistence(mut self, store: FlowStore, ledger: Arc<WorkerLedger>) -> Self {
+        self.persist = Some((store, ledger));
+        self
+    }
+
+    /// Persist the live ledger to disk at a node boundary (best-effort: a write error
+    /// is logged but never fails the flow — persistence is durability, not correctness).
+    fn persist_ledger(&self) {
+        if let Some((store, ledger)) = &self.persist
+            && let Err(err) = store.write_ledger(&self.flow_id, ledger)
+        {
+            eprintln!(
+                "warning: failed to persist flow `{}` ledger: {err}",
+                self.flow_id
+            );
+        }
     }
 }
 
@@ -86,6 +115,10 @@ impl FlowObserver for FlowEventObserver {
             result.ok,
             usage_to_flow(&result.usage),
         ));
+        // Node boundary: persist the recorded tape so far (C4, design §5). The
+        // driver calls this in DECLARED order from its ledger-write loop, so what is
+        // persisted is exactly the deterministic recorded tape up to this node.
+        self.persist_ledger();
     }
 
     fn budget_debited(&self, snapshot: BudgetSnapshot, decision: BudgetDecision) {

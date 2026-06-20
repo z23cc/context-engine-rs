@@ -6,9 +6,12 @@
 //! with. All pure — no engine state, no nondeterminism.
 
 use crate::worker::{
-    AgentWorker, SpawnRefusal, TurnResult, WorkerError, WorkerFactory, WorkerKind,
+    AgentWorker, LedgerEntry, ReplayWorker, SpawnRefusal, TurnResult, WorkerError, WorkerFactory,
+    WorkerKind, WorkerLedger,
 };
 use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::FlowOutcome;
 
@@ -38,6 +41,51 @@ impl WorkerResolver for FactoryResolver {
         let kind = worker_kind(worker_ref)?;
         self.factory.create(kind)
     }
+}
+
+/// The REPLAY resolver (design §3): hands every node a [`ReplayWorker`] backed by a
+/// recorded tape, so the engine re-runs offline — no LLM/subprocess. Built from a
+/// recorded [`WorkerLedger`] (loaded from the [`FlowStore`](crate::flow_store) for
+/// `flow.replay`), which is SELF-CONTAINED: the prompt→node map is recovered from the
+/// tape's `Start` entries. The companion [`replay_generation_provider`] replays each
+/// node's recorded `snapshot_generation`, so the re-emitted tape is byte-identical
+/// even when the record run mutated files (design §5).
+pub(crate) struct ReplayResolver {
+    recorded: Arc<Vec<LedgerEntry>>,
+    prompt_to_node: Arc<BTreeMap<String, String>>,
+}
+
+impl ReplayResolver {
+    /// Build a replay resolver from a recorded ledger: snapshot its tape and recover
+    /// the rendered-prompt → node-id map from the `Start` entries.
+    #[must_use]
+    pub(crate) fn from_ledger(recorded: &WorkerLedger) -> Self {
+        Self {
+            recorded: Arc::new(recorded.snapshot()),
+            prompt_to_node: Arc::new(recorded.prompt_to_node()),
+        }
+    }
+}
+
+impl WorkerResolver for ReplayResolver {
+    fn resolve(&self, _worker_ref: &WorkerRef) -> Result<Box<dyn AgentWorker>, WorkerError> {
+        Ok(Box::new(ReplayWorker::new(
+            Arc::clone(&self.recorded),
+            Arc::clone(&self.prompt_to_node),
+        )))
+    }
+}
+
+/// Build a per-node `snapshot_generation` provider that replays each node's RECORDED
+/// generation (design §5): the engine pins the recorded value at each node-start, so
+/// a node that observed a mutation-bumped generation during the record run observes
+/// the SAME generation under replay — byte-identical even under file mutation. Falls
+/// back to `0` for a node with no recorded generation (e.g. a node never started).
+pub(crate) fn replay_generation_provider(
+    recorded: &WorkerLedger,
+) -> impl Fn(&WorkflowDef, &str) -> u64 + Sync + use<> {
+    let generations = recorded.node_generations();
+    move |_def: &WorkflowDef, node: &str| generations.get(node).copied().unwrap_or(0)
 }
 
 /// Translate a declarative [`WorkerRef`] into the C0 [`WorkerKind`] the factory
