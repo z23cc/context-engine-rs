@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/nerve-core", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui"]
+members = ["crates/nerve-core", "crates/nerve-proto", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui"]
 exclude = ["fuzz", "apps"]
 resolver = "3"
 
@@ -21,6 +21,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/z23cc/nerve-workstation"
 
 [workspace.dependencies]
+nerve-proto = { path = "crates/nerve-proto" }
 anyhow = "1"
 directories = "6"
 fs4 = "1"

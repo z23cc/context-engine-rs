@@ -1,4 +1,5 @@
 use crate::{RiskTier, WorkflowDef};
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,7 +37,8 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
 ];
 
 /// Transport-neutral command understood by human-facing runtime adapters.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind")]
 pub enum RuntimeCommand {
     /// Lightweight health check used by clients before opening a real session.
@@ -269,7 +271,8 @@ pub enum RuntimeCommand {
 /// (design §4 / §6, the P3 workflow-defs surface). Untagged so a client can send
 /// either `{ "workflow": { ... } }` or `{ "workflow_ref": "name" }` inside the
 /// `flow.start` command without an extra discriminant.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(untagged)]
 pub enum FlowSource {
     /// An inline workflow definition (the whole strategy as data). Boxed so the
@@ -285,7 +288,8 @@ pub enum FlowSource {
 /// from the `FlowStore` by flow id — the common case) or `{ "ledger_path": "…" }`
 /// (an explicit `.nerve/flows/<id>/ledger.jsonl`-shaped path), without an extra
 /// discriminant. Deliberately MINIMAL — a closed two-arm enum, not a query language.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(untagged)]
 pub enum LedgerRef {
     /// Resolve the recorded ledger from the `FlowStore` by its `flow_id`.
@@ -301,7 +305,8 @@ pub enum LedgerRef {
 /// branch at a time). An ambiguous unset selector against a multi-branch live flow
 /// is refused by the host with a clear message; the closed enum keeps the steer
 /// surface from drifting into a query language.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct WorkerSelector {
     /// The deterministic node id of the branch to steer (e.g. `"node-0"` for a
     /// `Single` flow, `"stage-1"` for a pipeline's second stage). `None` targets
@@ -332,7 +337,8 @@ impl WorkerSelector {
 /// gemini `--approval-mode` (read-only | edit | full). Defaults to the most
 /// restricted ([`Self::ReadOnly`]) so an omitted field never grants more than read
 /// access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DelegateAutonomy {
     /// The delegated agent may only read; no edits, no command execution.
@@ -349,7 +355,8 @@ pub enum DelegateAutonomy {
 /// `Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally
 /// signal the host to remember the decision for future calls (P2 wires the
 /// remembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionApprovalDecision {
     /// Allow this call only.
@@ -381,7 +388,8 @@ impl SessionApprovalDecision {
 /// Per-session approval posture controlling how high a [`RiskTier`] the gate may
 /// auto-approve without prompting. Pure protocol data; the host gate (P2) maps
 /// each tool's tier against [`Self::max_auto_tier`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalMode {
     /// Prompt for everything above read-only.

@@ -3,6 +3,7 @@ use crate::{
     RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
     RuntimeJobStartRequest, RuntimeToolSpec,
 };
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +28,8 @@ pub const RUNTIME_JOB_METHODS: &[&str] = &[
     RUNTIME_JOB_CANCEL_METHOD,
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeInfo {
     pub protocol: String,
@@ -51,13 +53,15 @@ impl RuntimeInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct RuntimeServerInfo {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct RuntimeCapabilities {
     pub transport: RuntimeTransportCapabilities,
     pub events: RuntimeEventCapabilities,
@@ -75,7 +79,8 @@ impl RuntimeCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct RuntimeTransportCapabilities {
     pub jsonrpc: String,
     pub framing: String,
@@ -90,7 +95,8 @@ impl Default for RuntimeTransportCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct RuntimeEventCapabilities {
     pub method: String,
 }
@@ -109,7 +115,8 @@ impl Default for RuntimeEventCapabilities {
 /// compatible with clients that read the bare event from `params`; `event_seq`
 /// is an additive sibling field (defaulting to 0 until a later wave assigns the
 /// real monotonic value at emit time).
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeEventNotification {
     /// Monotonically increasing, gap-detectable sequence number for this stream.
@@ -126,7 +133,8 @@ impl RuntimeEventNotification {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeJobCapabilities {
     pub methods: Vec<String>,
@@ -148,31 +156,36 @@ impl Default for RuntimeJobCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeToolsListResponse {
     pub tools: Vec<RuntimeToolSpec>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeJobResponse {
     pub job: RuntimeJobSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeJobListResponse {
     pub jobs: Vec<RuntimeJobSnapshot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct RuntimeJobCancelResponse {
     pub cancellation_requested: bool,
     pub job: RuntimeJobSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeProtocolSchema {
     pub json_value: serde_json::Value,

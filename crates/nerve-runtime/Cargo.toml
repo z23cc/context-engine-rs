@@ -13,6 +13,10 @@ semantic = ["nerve-core/semantic"]
 [dependencies]
 anyhow.workspace = true
 nerve-core = { path = "../nerve-core" }
+# nerve-proto holds the transport-neutral protocol vocabulary (wasm-safe, no
+# nerve-core dep). The `schema` feature is enabled here so the JsonSchema derives
+# are present for protocol_codegen / the drift test.
+nerve-proto = { workspace = true, features = ["schema"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

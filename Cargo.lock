@@ -2460,11 +2460,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nerve-proto"
+version = "0.0.57"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nerve-runtime"
 version = "0.0.57"
 dependencies = [
  "anyhow",
  "nerve-core",
+ "nerve-proto",
  "schemars",
  "serde",
  "serde_json",

@@ -19,8 +19,8 @@ use nerve_agent::AgentEvent;
 use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{
     DelegateAutonomy, FlowSource, RuntimeCommand, RuntimeEvent, RuntimeJobError,
-    RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest,
-    RuntimeJobStatus, SessionApprovalDecision,
+    RuntimeJobErrorExt, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
+    RuntimeJobStartRequest, RuntimeJobStatus, SessionApprovalDecision,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};

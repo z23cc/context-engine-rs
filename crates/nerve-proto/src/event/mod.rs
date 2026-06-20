@@ -1,6 +1,7 @@
 mod ctor;
 
 use crate::{RiskTier, RuntimeJobError, Strategy};
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +14,8 @@ fn default_approval_tier() -> RiskTier {
 }
 
 /// Runtime event emitted by human-facing adapters while executing jobs.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeEvent {
     JobStarted {
@@ -191,7 +193,8 @@ pub enum RuntimeEvent {
 /// The typed kinds a [`RuntimeEvent::FlowDecision`] can record (design §6/§8).
 /// A closed, additive-versioned enum so the audit trail is golden-diffable and
 /// replayable; later waves add vote/judge/debate kinds.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlowDecisionKind {
     /// The fleet budget (USD or tokens) was exhausted; the engine cooperatively
@@ -228,7 +231,8 @@ pub enum FlowDecisionKind {
 /// Which worker family ran a flow node — the only place the CLI-vs-provider
 /// distinction is visible to a flow client (design §2/§7). Protocol data; the
 /// host maps its own worker kind onto these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FlowWorkerKind {
     /// An external agentic CLI (codex / claude / gemini) subprocess.
@@ -244,7 +248,8 @@ pub enum FlowWorkerKind {
 /// A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`].
 /// Mirrors the token fields of [`AgentEventKind::Usage`]; cache counts are
 /// optional and omitted when the worker did not report caching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct FlowNodeUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -258,7 +263,8 @@ pub struct FlowNodeUsage {
 /// [`RuntimeEvent::FlowCompleted`]: whether the flow succeeded under its
 /// join/fail policy, a one-line summary, and the flow's final text (the kept
 /// results concatenated, in declared order).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct FlowRunOutcome {
     pub ok: bool,
     pub summary: String,
@@ -268,7 +274,8 @@ pub struct FlowRunOutcome {
 
 /// Authentication lifecycle event kind. Defined as pure protocol data; hosts map
 /// concrete credential/login implementation details onto these states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AuthEventKind {
     LoginPending,
@@ -279,7 +286,8 @@ pub enum AuthEventKind {
 
 /// Payload of a [`RuntimeEvent::Agent`] — one step of the agent loop. Defined as
 /// transport-neutral data; the host maps its own agent events onto these.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEventKind {
     TurnStarted {

@@ -1,0 +1,22 @@
+[package]
+name = "nerve-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Enable `schemars` so the protocol types derive `JsonSchema` (the export bin /
+# nerve-runtime turn this on to codegen the runtime schema). A WASM frontend can
+# omit it to drop the schemars dependency entirely.
+schema = ["dep:schemars"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, optional = true }
+
+[lints]
+workspace = true

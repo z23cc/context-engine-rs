@@ -6,38 +6,34 @@
 //! dispatch logic.
 
 pub mod adapter;
-pub mod command;
 pub mod error;
-pub mod event;
-pub mod flow;
 pub mod job;
-pub mod protocol;
-#[doc(hidden)]
-pub mod protocol_codegen;
 pub mod runtime;
 
 mod tool_spec;
 
-pub use adapter::{RiskTier, RuntimeToolAdapter, ToolCapability};
-pub use command::{
-    ApprovalMode, DelegateAutonomy, FlowSource, LedgerRef, RUNTIME_COMMAND_NAMES, RuntimeCommand,
-    SessionApprovalDecision, WorkerSelector,
-};
+// The transport-neutral protocol vocabulary now lives in the wasm-safe
+// `nerve-proto` crate. Re-export it here so every existing path
+// (`nerve_runtime::RuntimeCommand`, `nerve_runtime::protocol::RuntimeInfo`,
+// `nerve_runtime::protocol_codegen::*`, …) keeps resolving unchanged. The engine
+// adds the nerve-core-coupled pieces on top (the `Runtime` dispatcher, the
+// `RuntimeToolAdapter` trait, `RuntimeError`, and the `RuntimeJobError` ←→
+// `RuntimeError` bridge in `job.rs`).
+pub use nerve_proto::{protocol, protocol_codegen};
+
+pub use adapter::RuntimeToolAdapter;
 pub use error::RuntimeError;
-pub use event::{
-    AgentEventKind, AuthEventKind, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowWorkerKind,
-    RuntimeEvent,
-};
-pub use flow::{
-    BudgetSpec, ContextSplit, FailPolicy, Join, Step, Strategy, TaskTemplate, WorkerRef,
-    WorkflowDef,
-};
-pub use job::{
+pub use job::RuntimeJobErrorExt;
+pub use nerve_proto::{
+    AgentEventKind, ApprovalMode, AuthEventKind, BudgetSpec, ContextSplit, DelegateAutonomy,
+    FailPolicy, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowSource, FlowWorkerKind, Join,
+    LedgerRef, RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent,
     RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
-    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
+    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec,
+    SessionApprovalDecision, Step, Strategy, TaskTemplate, ToolCapability, WorkerRef,
+    WorkerSelector, WorkflowDef,
 };
 pub use runtime::Runtime;
-pub use tool_spec::RuntimeToolSpec;
 
 #[cfg(test)]
 mod tests {

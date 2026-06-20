@@ -9,13 +9,13 @@
 //!
 //! ## Permanent home, ZERO protocol commitment (C1)
 //!
-//! These types live in `nerve-runtime` because that crate is the long-term
-//! protocol authority for the `flow.*` family (design §4). **C2 wired them into
-//! the protocol:** [`WorkflowDef`] is reachable from
+//! These types live in `nerve-proto` (re-exported by `nerve-runtime`, the
+//! long-term protocol authority for the `flow.*` family — design §4). **C2 wired
+//! them into the protocol:** [`WorkflowDef`] is reachable from
 //! [`RuntimeCommand::FlowStart`](crate::RuntimeCommand) (via
 //! [`FlowSource`](crate::FlowSource)) and [`Strategy`] from
 //! [`RuntimeEvent::FlowStarted`](crate::RuntimeEvent), so these derive
-//! [`JsonSchema`](schemars::JsonSchema) and appear in the exported
+//! `JsonSchema` (behind the `schema` feature) and appear in the exported
 //! [`RuntimeProtocolSchema`](crate::protocol). The version bump that made this
 //! additive change is `RUNTIME_PROTOCOL_VERSION` `"3"` → `"4"`.
 //!
@@ -27,13 +27,15 @@
 //! are defined here so the data shape is stable and C5 only fills interpreter
 //! arms — additive by construction.
 
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A complete, declarative workflow: a named [`Strategy`] plus the fleet-wide
 /// governance envelope (design §3). `schema_version` is bumped only on a
 /// breaking change to the data shape (additive fields don't bump it).
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct WorkflowDef {
     /// The on-disk schema version of this workflow document (current: `1`).
     pub schema_version: u32,
@@ -58,7 +60,8 @@ fn default_max_depth() -> u32 {
 /// Which worker runs a [`Step`]. The only place the CLI-vs-provider distinction
 /// is encoded in the data (design §7); the engine resolves it through the
 /// `WorkerFactory` to a kind-agnostic `AgentWorker`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerRef {
     /// An external agentic CLI by catalog name (`codex` | `claude` | `gemini`).
@@ -72,7 +75,8 @@ pub enum WorkerRef {
 
 /// One unit of orchestrated work: which worker, what task, how autonomous, and
 /// what to do if it fails.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct Step {
     /// Which worker runs this step.
     pub worker: WorkerRef,
@@ -93,7 +97,8 @@ pub struct Step {
 /// downstream matchers, and the engine's interpreter matches every variant
 /// explicitly (returning `Terminate` with an "unimplemented strategy" outcome
 /// for the not-yet-wired ones), so the totality is compile-checked.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Strategy {
@@ -132,7 +137,8 @@ pub enum Strategy {
 
 /// How parallel/vote results are folded — always in **declared `Step` order**,
 /// never completion order (design §3, the determinism invariant).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Join {
     /// Keep every branch result (in declared order).
@@ -145,7 +151,8 @@ pub enum Join {
 }
 
 /// What the engine does when a step's worker fails (`ok == false` or errored).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FailPolicy {
     /// Stop the whole flow on this failure (the safe default).
@@ -160,11 +167,12 @@ pub enum FailPolicy {
 /// A minimal task template (design §3, open question 3): a plain prompt plus
 /// optional `{{name}}` placeholders substituted from named ledger outputs. **No
 /// expression language** — named-output substitution only, deliberately.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(from = "TaskTemplateRepr", into = "TaskTemplateRepr")]
 // The wire shape is the dual string/object [`TaskTemplateRepr`]; reflect that in
 // the exported schema rather than the internal `{ prompt }` struct.
-#[schemars(with = "TaskTemplateRepr")]
+#[cfg_attr(feature = "schema", schemars(with = "TaskTemplateRepr"))]
 pub struct TaskTemplate {
     /// The raw prompt with optional `{{name}}` placeholders.
     pub prompt: String,
@@ -219,7 +227,8 @@ impl TaskTemplate {
 /// On-disk representation of a [`TaskTemplate`]: accept either a bare string
 /// (`"do X"`) or an object (`{ "prompt": "do X" }`), and always serialize as the
 /// object form. Keeps the common case terse without an expression language.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(untagged)]
 enum TaskTemplateRepr {
     Prompt(String),
@@ -246,7 +255,8 @@ impl From<TaskTemplate> for TaskTemplateRepr {
 
 /// How a [`Strategy::MapReduce`] splits its shared context across map workers.
 /// Defined-ahead for C5; C1 never reads it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextSplit {
     /// Split a build_context selection into `n` roughly equal shards.
@@ -258,7 +268,8 @@ pub enum ContextSplit {
 /// The fleet budget envelope (design §6). C1 threads it as a placeholder; C3
 /// wires the deterministic debit/cancel loop. All fields optional — an omitted
 /// budget caps nothing (the engine still bounds concurrency separately).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct BudgetSpec {
     /// Total USD ceiling across the whole tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
