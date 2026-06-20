@@ -35,6 +35,7 @@ mod session_manager;
 mod subagent;
 mod sync;
 mod tools;
+mod worker;
 mod workspace;
 mod xai;
 
