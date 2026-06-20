@@ -28,10 +28,20 @@
 //! which the process awaits the next user line.
 //!
 //! On cancel while a turn is in flight, an `interrupt` is sent as a control
-//! request; the CLI replies with a control_response. DA-5b will add `can_use_tool`
-//! permission proxying — here we run with the autonomy-driven `--permission-mode`
-//! and a stray `can_use_tool` control_request is logged-and-ignored.
+//! request; the CLI replies with a control_response.
+//!
+//! ## DA-5b — permission proxying
+//!
+//! When the session is given a [`DelegateProxy`](crate::delegate_proxy::DelegateProxy)
+//! (an approver is available), the child is started in **proxied mode**:
+//! `--permission-prompt-tool stdio --permission-mode default`, so claude asks
+//! before each tool use instead of auto-running. A `can_use_tool` control_request
+//! arriving in the read loop is routed to Nerve's approval hub and answered with a
+//! `control_response` (see [`crate::delegate_proxy`]). Without a proxy (a pure CLI
+//! run with no interactive approver) we keep the DA-5a autonomy-driven
+//! `--permission-mode` and a stray `can_use_tool` is logged-and-ignored.
 
+use crate::delegate_proxy::DelegateProxy;
 use crate::delegate_runtime::DelegateUsage;
 use crate::sandbox::{CommandSpec, PersistentChild, SandboxLauncher};
 use nerve_core::CancelToken;
@@ -126,6 +136,10 @@ pub(crate) struct DelegateSession {
     child: PersistentChild,
     /// The claude `session_id` from the `system`/`init` line, captured on turn 1.
     session_id: Option<String>,
+    /// DA-5b: when present, the child runs in proxied mode and `can_use_tool` asks
+    /// are routed through this proxy to Nerve's approval hub. `None` keeps the DA-5a
+    /// autonomy-driven mode (no approver to route to).
+    proxy: Option<DelegateProxy>,
 }
 
 impl DelegateSession {
@@ -134,16 +148,27 @@ impl DelegateSession {
     /// `on_progress` and returning the turn's [`TurnResult`]. The launcher gate
     /// (a refusing launcher when `--allow-delegate` is off) is honored here: a
     /// refused spawn surfaces as [`SessionError::Io`].
+    #[allow(clippy::too_many_arguments)] // reason: one cohesive spawn call; cwd,
+    // autonomy, model, the first message, the optional approval proxy, and the
+    // cancel/progress sinks are independent inputs to the start, and bundling them
+    // into a struct would add indirection without isolating a separate responsibility.
     pub(crate) fn start(
         launcher: &dyn SandboxLauncher,
         cwd: &Path,
         autonomy: DelegateAutonomy,
         model: Option<&str>,
         first_message: &str,
+        proxy: Option<DelegateProxy>,
         cancel: &CancelToken,
         on_progress: &mut dyn FnMut(&str),
     ) -> Result<(Self, TurnResult), SessionError> {
-        let spec = build_persistent_claude_command(cwd, autonomy, model);
+        // Proxied mode (an approver is available) makes claude ASK before each tool;
+        // the DA-5a autonomy mode is the no-approver fallback.
+        let spec = if proxy.is_some() {
+            build_proxied_claude_command(cwd, model)
+        } else {
+            build_persistent_claude_command(cwd, autonomy, model)
+        };
         let policy = crate::delegate_runtime::delegate_policy(cwd);
         let child = launcher
             .launch_persistent(&spec, &policy)
@@ -151,9 +176,18 @@ impl DelegateSession {
         let mut session = Self {
             child,
             session_id: None,
+            proxy,
         };
-        let turn = session.run_turn(first_message, cancel, on_progress)?;
-        Ok((session, turn))
+        match session.run_turn(first_message, cancel, on_progress) {
+            Ok(turn) => Ok((session, turn)),
+            // A turn-1 failure (cancel mid-approval, stall, child death) must not
+            // leak the child: reap it before returning, since the unregistered
+            // session is about to be dropped (drop alone does not kill the child).
+            Err(err) => {
+                session.close();
+                Err(err)
+            }
+        }
     }
 
     /// Steer the session with a follow-up user message, running one more turn.
@@ -205,11 +239,11 @@ impl DelegateSession {
                 return Err(SessionError::Cancelled);
             }
             match self.child.lines().recv_timeout(POLL_INTERVAL) {
-                Ok(raw) => {
-                    if let Some(turn) = self.ingest_line(&raw, &mut acc, on_progress) {
-                        return Ok(turn);
-                    }
-                }
+                Ok(raw) => match self.ingest_line(&raw, &mut acc, cancel, on_progress) {
+                    LineOutcome::Done(turn) => return Ok(turn),
+                    LineOutcome::Interrupted => return Err(SessionError::Cancelled),
+                    LineOutcome::Continue => {}
+                },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if std::time::Instant::now() >= deadline {
                         return Err(SessionError::TurnTimedOut);
@@ -224,16 +258,20 @@ impl DelegateSession {
     }
 
     /// Parse one NDJSON line: capture `session_id` from `init`, forward
-    /// `assistant` text as progress, and return `Some(TurnResult)` on the `result`
-    /// line (turn done). Non-JSON / envelope lines are ignored.
+    /// `assistant` text as progress, route a `can_use_tool` control_request through
+    /// the approval proxy (DA-5b), and finish the turn on the `result` line.
+    /// Non-JSON / envelope lines are ignored.
     fn ingest_line(
         &mut self,
         raw: &str,
         acc: &mut TurnAccumulator,
+        cancel: &CancelToken,
         on_progress: &mut dyn FnMut(&str),
-    ) -> Option<TurnResult> {
+    ) -> LineOutcome {
         let line = reescape_control_chars(raw);
-        let value: Value = serde_json::from_str(&line).ok()?;
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            return LineOutcome::Continue;
+        };
         match value.get("type").and_then(Value::as_str) {
             Some("system") => {
                 if value.get("subtype").and_then(Value::as_str) == Some("init")
@@ -241,25 +279,52 @@ impl DelegateSession {
                 {
                     self.session_id.get_or_insert_with(|| id.to_string());
                 }
-                None
+                LineOutcome::Continue
             }
             Some("assistant") => {
                 if let Some(text) = assistant_text(&value) {
                     on_progress(&text);
                     acc.last_assistant = text;
                 }
-                None
+                LineOutcome::Continue
             }
+            Some("control_request") => self.handle_control_request(&value, cancel),
             Some("result") => {
                 if let Some(id) = value.get("session_id").and_then(Value::as_str) {
                     self.session_id.get_or_insert_with(|| id.to_string());
                 }
-                Some(acc.finish(&value))
+                LineOutcome::Done(acc.finish(&value))
             }
-            // `user` tool-result echoes and any stray control_request (e.g. a
-            // can_use_tool we don't proxy in DA-5a) are intentionally ignored.
-            _ => None,
+            // `user` tool-result echoes and `keep_alive` envelopes are ignored.
+            _ => LineOutcome::Continue,
         }
+    }
+
+    /// Handle a `control_request` line. A `can_use_tool` ask is resolved through the
+    /// proxy (blocking the reader for the operator decision — the claude turn is
+    /// itself blocked on the response) and answered with a `control_response`; a
+    /// deny+interrupt also ends the turn as cancelled. Without a proxy (DA-5a) the
+    /// ask is logged-and-ignored (claude is in autonomy mode and won't actually ask).
+    fn handle_control_request(&self, value: &Value, cancel: &CancelToken) -> LineOutcome {
+        let subtype = value
+            .get("request")
+            .and_then(|r| r.get("subtype"))
+            .and_then(Value::as_str);
+        if subtype != Some("can_use_tool") {
+            return LineOutcome::Continue;
+        }
+        let Some(proxy) = self.proxy.as_ref() else {
+            return LineOutcome::Continue;
+        };
+        let response = proxy.resolve(value, cancel);
+        // Best-effort write: a broken pipe means the child is already gone, which
+        // the next recv on the line stream surfaces as ProcessExited.
+        let _ = self.child.write_line(&format!("{}\n", response.line));
+        if response.interrupted {
+            self.interrupt();
+            return LineOutcome::Interrupted;
+        }
+        LineOutcome::Continue
     }
 
     /// Send an `interrupt` control request to abort the in-flight turn (best
@@ -290,6 +355,15 @@ impl DelegateSession {
         }
         let _ = self.child.wait();
     }
+}
+
+/// What one parsed stdout line means for the in-flight turn loop: keep reading,
+/// the turn finished (with its result), or the turn was interrupted (a proxied
+/// deny+interrupt) and should end as cancelled.
+enum LineOutcome {
+    Continue,
+    Done(TurnResult),
+    Interrupted,
 }
 
 /// Per-turn accumulator: the latest assistant text (the streamed answer) folded
@@ -384,6 +458,38 @@ fn build_persistent_claude_command(
     }
 }
 
+/// Build the **proxied-mode** persistent `claude` argv (DA-5b): like
+/// [`build_persistent_claude_command`] but with `--permission-prompt-tool stdio
+/// --permission-mode default` instead of the autonomy→permission-mode mapping, so
+/// claude asks (via stdout `can_use_tool` control_requests) before each tool use
+/// and Nerve approves. The autonomy argument is intentionally dropped here: in
+/// proxied mode the operator's approval — not a fixed permission mode — governs
+/// every tool call.
+fn build_proxied_claude_command(cwd: &Path, model: Option<&str>) -> CommandSpec {
+    let mut args = vec![
+        "-p".to_string(),
+        "--verbose".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--permission-prompt-tool".to_string(),
+        "stdio".to_string(),
+        "--permission-mode".to_string(),
+        "default".to_string(),
+    ];
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
+    args.push("--add-dir".to_string());
+    args.push(cwd.display().to_string());
+    CommandSpec {
+        command: "claude".to_string(),
+        args,
+    }
+}
+
 /// Frame one user message as the claude stream-json input shape (the body only;
 /// the caller appends the trailing `\n` and writes it as one flush).
 fn user_message_frame(message: &str) -> String {
@@ -450,6 +556,49 @@ mod tests {
                 "--add-dir",
                 "/work",
             ]
+        );
+    }
+
+    #[test]
+    fn proxied_claude_argv_uses_permission_prompt_tool_and_default_mode() {
+        // DA-5b: proxied mode swaps the autonomy→permission-mode mapping for the
+        // stdio permission prompt + the `default` mode (so claude ASKS), and drops
+        // the autonomy argument entirely.
+        let spec = build_proxied_claude_command(Path::new("/work"), None);
+        assert_eq!(spec.command, "claude");
+        assert_eq!(
+            spec.args,
+            vec![
+                "-p",
+                "--verbose",
+                "--output-format",
+                "stream-json",
+                "--input-format",
+                "stream-json",
+                "--permission-prompt-tool",
+                "stdio",
+                "--permission-mode",
+                "default",
+                "--add-dir",
+                "/work",
+            ]
+        );
+        // No autonomy-derived mode leaks into proxied argv.
+        assert!(!spec.args.iter().any(|a| a == "plan" || a == "acceptEdits"));
+    }
+
+    #[test]
+    fn proxied_claude_argv_keeps_model() {
+        let spec = build_proxied_claude_command(Path::new("/w"), Some("claude-sonnet-4-6"));
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|w| w == ["--model", "claude-sonnet-4-6"])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|w| w == ["--permission-mode", "default"])
         );
     }
 

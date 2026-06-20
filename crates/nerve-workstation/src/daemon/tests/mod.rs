@@ -94,7 +94,10 @@ fn response_with_id(output: &[Value], id: Value) -> &Value {
 }
 
 fn wait_for_job_event(output: &Arc<Mutex<Vec<Value>>>, event_type: &str, job_id: &str) -> Value {
-    for _ in 0..100 {
+    // Generous budget: several delegate-session tests spawn real subprocesses in
+    // parallel, so a tight poll window flakes under load. The loop returns as soon
+    // as the event appears, so a large bound only affects the failure latency.
+    for _ in 0..600 {
         let found = output
             .lock()
             .expect("output lock")

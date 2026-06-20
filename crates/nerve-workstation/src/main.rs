@@ -12,6 +12,7 @@ mod cost;
 mod daemon;
 mod delegate;
 mod delegate_live;
+mod delegate_proxy;
 mod delegate_runtime;
 mod delegate_session;
 mod delegate_tool;

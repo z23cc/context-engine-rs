@@ -6,6 +6,7 @@
 
 use crate::auth::AuthManager;
 use crate::delegate_live::LiveSessions;
+use crate::delegate_proxy::{DelegateDecisions, DelegateProxy};
 use crate::delegate_runtime::{self, DelegateAgent, DelegateError, DelegateParser};
 use crate::delegate_session::DelegateSession;
 use crate::policy::{Policy, ToolGate};
@@ -476,16 +477,31 @@ impl JobManager {
                 text.to_string(),
             ));
         };
+        // Proxied mode (DA-5b): route claude's `can_use_tool` prompts through the
+        // SAME approval hub the SessionManager resolves `session.respond` against,
+        // keyed by the delegate job id — so the TUI modal and `SessionRespond` reach
+        // delegated tool approvals exactly as they reach agent-tool approvals.
+        let proxy = self.delegate_proxy(job_id);
         let (session, turn) = DelegateSession::start(
             self.delegate_launcher.as_ref(),
             cwd,
             autonomy,
             model.as_deref(),
             task,
+            proxy,
             token,
             &mut on_progress,
         )
-        .map_err(|err| delegate_session_error("claude", &err.to_string()))?;
+        // A start that fails because the job was cancelled (e.g. cancel arrived
+        // while turn 1 was blocked on a tool approval) maps to `cancelled()` so the
+        // job finishes as `job_cancelled`, not `job_failed`.
+        .map_err(|err| {
+            if token.is_cancelled() {
+                nerve_runtime::RuntimeError::cancelled()
+            } else {
+                delegate_session_error("claude", &err.to_string())
+            }
+        })?;
         if token.is_cancelled() {
             return Err(nerve_runtime::RuntimeError::cancelled());
         }
@@ -539,6 +555,21 @@ impl JobManager {
             .close(session_id)
             .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))?;
         Ok(json!({ "session_id": session_id, "closed": true }))
+    }
+
+    /// Build the proxied-mode approval bridge (DA-5b) for a delegated `claude`
+    /// session keyed under its start-job id. The approver is the SessionManager's
+    /// `ApprovalHub` — the same hub `session.respond` resolves against — so a
+    /// delegated tool prompt rides the existing approval modal + `SessionRespond`
+    /// round-trip. A fresh per-session [`DelegateDecisions`] memory backs
+    /// allow-always / deny-always for the life of the session.
+    fn delegate_proxy(&self, job_id: &str) -> Option<DelegateProxy> {
+        let approver: Arc<dyn crate::delegate_proxy::DelegateApprover> = self.sessions.approvals();
+        Some(DelegateProxy::new(
+            approver,
+            job_id.to_string(),
+            DelegateDecisions::default(),
+        ))
     }
 
     /// Resolve the workspace root a delegated run is confined to (the default

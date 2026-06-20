@@ -23,7 +23,14 @@ const APPROVAL_POLL: Duration = Duration::from_millis(100);
 /// hanging the turn — and therefore the session — forever.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub(super) struct ApprovalHub {
+/// The runtime-protocol approval round-trip used by both session agent turns
+/// (via [`ProtocolApprover`]) and delegated-claude tool prompts (DA-5b, via
+/// [`crate::delegate_session::DelegateApprover`]). Crate-visible so the
+/// [`JobManager`](crate::jobs) can route a `delegate.start` job's `can_use_tool`
+/// prompts through the *same* hub the `SessionManager` resolves `session.respond`
+/// against — so the TUI modal and `SessionRespond` reach delegated tool approvals
+/// exactly as they do agent-tool approvals.
+pub(crate) struct ApprovalHub {
     pending: Mutex<HashMap<ApprovalKey, mpsc::Sender<SessionApprovalDecision>>>,
     next_id: AtomicU64,
     emit: Arc<EventEmitter>,
@@ -36,7 +43,7 @@ struct ApprovalKey {
 }
 
 impl ApprovalHub {
-    pub(super) fn new(emit: Arc<EventEmitter>) -> Self {
+    pub(crate) fn new(emit: Arc<EventEmitter>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -49,7 +56,7 @@ impl ApprovalHub {
     /// operator's decision. Returns the full [`SessionApprovalDecision`] so the
     /// caller can act on `.remember()`; cancellation / timeout / a dropped
     /// responder all resolve to [`SessionApprovalDecision::Deny`].
-    pub(super) fn request(
+    pub(crate) fn request(
         &self,
         session_id: &str,
         tool: &str,
@@ -104,6 +111,25 @@ impl ApprovalHub {
         crate::sync::lock_recover(&self.pending)
             .remove(&key)
             .is_some_and(|sender| sender.send(decision).is_ok())
+    }
+}
+
+/// DA-5b: the hub also serves a delegated `claude` session's `can_use_tool`
+/// permission prompts. The blocking round-trip is identical to a session agent's
+/// (`approve` above), so a delegated tool ask emits the same `approval_requested`
+/// event and is resolved by the same `session.respond` — the per-session decision
+/// memory lives in the delegate session, mirroring [`ProtocolApprover`].
+impl crate::delegate_proxy::DelegateApprover for ApprovalHub {
+    fn request(
+        &self,
+        session_id: &str,
+        tool: &str,
+        args: &Value,
+        tier: RiskTier,
+        preview: String,
+        cancel: &CancelToken,
+    ) -> SessionApprovalDecision {
+        ApprovalHub::request(self, session_id, tool, args, tier, preview, cancel)
     }
 }
 

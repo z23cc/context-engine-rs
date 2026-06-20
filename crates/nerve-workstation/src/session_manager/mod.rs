@@ -21,8 +21,10 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use approval::{ApprovalHub, DecisionMemory, ProtocolApprover};
+use approval::{DecisionMemory, ProtocolApprover};
 use run_config::{map_session_agent_event, session_run_config};
+
+pub(crate) use approval::ApprovalHub;
 
 type EventEmitter = dyn Fn(RuntimeEvent) + Send + Sync + 'static;
 type SessionCheckpoint = Arc<Mutex<Checkpoint>>;
@@ -118,6 +120,15 @@ impl SessionManager {
             allow_delegate,
             delegate_launcher,
         }
+    }
+
+    /// The shared approval hub `session.respond` resolves against. Exposed so the
+    /// [`JobManager`](crate::jobs) can route a delegated-claude `delegate.start`
+    /// job's `can_use_tool` prompts (DA-5b) through the *same* hub — making the TUI
+    /// modal and `SessionRespond` reach delegated tool approvals exactly as they
+    /// reach agent-tool approvals.
+    pub(crate) fn approvals(&self) -> Arc<ApprovalHub> {
+        Arc::clone(&self.approvals)
     }
 
     pub(crate) fn handle_command(
