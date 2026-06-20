@@ -76,6 +76,12 @@ pub(crate) trait FlowObserver: Sync {
     /// The engine refused to spawn `node` at a ceiling (design §8, absence-at-floor).
     /// The host records a `FlowDecision`. Default no-op for the hidden CLI.
     fn spawn_refused(&self, _node: &str, _refusal: SpawnRefusal) {}
+    /// The interpreter made a typed audit decision (design §4/§6): a vote tally, a
+    /// judge pick, a debate round (the richer C5 strategies). The host maps it onto a
+    /// [`RuntimeEvent::FlowDecision`](nerve_runtime::RuntimeEvent). Fired from the
+    /// engine loop in the deterministic step order, so the audit trail is replayable.
+    /// Default no-op for the hidden CLI / unbudgeted flows.
+    fn decision(&self, _node: &str, _kind: &nerve_runtime::FlowDecisionKind) {}
 }
 
 /// The orchestration driver. Owns the shared [`WorkerContext`] deps (root /
@@ -238,6 +244,15 @@ impl<'a> Driver<'a> {
             for action in actions {
                 match action {
                     Action::StartWorker { node, step_index } => starts.push((node, step_index)),
+                    Action::Decision { node, kind } => {
+                        // A pure audit decision (vote tally / judge pick / debate
+                        // round): fire the observer in step order. Recorded nowhere on
+                        // the tape (the events it summarizes already are), so replay
+                        // reproduces it deterministically from the same results.
+                        if let Some(observer) = self.observer {
+                            observer.decision(node.as_str(), &kind);
+                        }
+                    }
                     Action::Emit { outcome } => emitted = Some(outcome),
                     Action::Terminate => {
                         return emitted.unwrap_or_else(terminated_without_emit);

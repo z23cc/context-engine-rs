@@ -23,6 +23,7 @@
 mod budget;
 mod contract;
 mod replay;
+mod strategy;
 
 use super::{Driver, FlowOutcome, WorkerResolver};
 use crate::delegate_proxy::DelegateApprover;
@@ -244,6 +245,22 @@ fn pipeline_step(prompt: &str) -> Step {
         task: TaskTemplate::new(prompt),
         autonomy: nerve_runtime::DelegateAutonomy::ReadOnly,
         on_fail: FailPolicy::Abort,
+    }
+}
+
+/// An in-process PROVIDER step (a judge / reduce / planner is almost always a
+/// `ProviderWorker`, design §7) — so a `VoteJudge`/`MapReduce`/`Debate` test can mix
+/// CLI candidates with an in-process judge (the mixed-substrate property). The
+/// `FakeResolver` hands provider refs a provider-kind fake.
+fn provider_step(prompt: &str) -> Step {
+    Step {
+        worker: WorkerRef::Provider {
+            provider: "xai".into(),
+            model: "grok".into(),
+        },
+        task: TaskTemplate::new(prompt),
+        autonomy: nerve_runtime::DelegateAutonomy::ReadOnly,
+        on_fail: FailPolicy::Continue,
     }
 }
 

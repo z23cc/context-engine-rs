@@ -309,17 +309,25 @@ pub(crate) fn run_flow_start(
     )
 }
 
-/// Resolve the additive [`FlowSource`] into a concrete [`WorkflowDef`]. The inline
-/// form is wired; a named ref is the P3 workflow-def loader surface (defined-ahead),
-/// refused here with a clear message — the protocol shape is stable regardless.
+/// Resolve the additive [`FlowSource`] into a concrete [`WorkflowDef`], then run the
+/// static safety checks (design §8): the inline form is wired; a named ref is the P3
+/// workflow-def loader surface (defined-ahead), refused with a clear message. A
+/// workflow that fails [`validate_workflow`] (a zero-depth hierarchy, an unresolvable
+/// named worker, or a planner fork-loop) is REJECTED at `flow.start`, before any worker
+/// spawns — the bounded-recursion model's front door.
 fn resolve_workflow(workflow: FlowSource) -> Result<WorkflowDef, RuntimeError> {
-    match workflow {
-        FlowSource::Inline { workflow } => Ok(*workflow),
-        FlowSource::Named { workflow_ref } => Err(RuntimeError::adapter(format!(
-            "named workflow `{workflow_ref}` is not yet resolvable (inline `workflow` is supported; \
-             named workflow-def loading lands with the P3 workflow-defs loader)"
-        ))),
-    }
+    let def = match workflow {
+        FlowSource::Inline { workflow } => *workflow,
+        FlowSource::Named { workflow_ref } => {
+            return Err(RuntimeError::adapter(format!(
+                "named workflow `{workflow_ref}` is not yet resolvable (inline `workflow` is \
+                 supported; named workflow-def loading lands with the P3 workflow-defs loader)"
+            )));
+        }
+    };
+    crate::flow::validate_workflow(&def)
+        .map_err(|err| RuntimeError::adapter(format!("invalid workflow: {err}")))?;
+    Ok(def)
 }
 
 /// Build the [`WorkerFactory`] over the flow's deps + the flow-scoped `gate`. CLI

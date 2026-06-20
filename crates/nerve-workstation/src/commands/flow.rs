@@ -56,6 +56,10 @@ pub(crate) fn run(args: FlowArgs) -> Result<()> {
         "\u{26a0}  nerve flow run is EXPERIMENTAL: the WorkflowDef shape and engine are not a stable contract (C1)."
     );
     let def = load_workflow(&args.file)?;
+    // Static safety checks (design §8): reject a zero-depth hierarchy, an unresolvable
+    // named worker, or a planner fork-loop before any worker spawns.
+    crate::flow::validate_workflow(&def)
+        .map_err(|err| anyhow::anyhow!("invalid workflow: {err}"))?;
     let cancel = CancelToken::new();
     crate::agent::install_interrupt_handler(&cancel);
 
@@ -225,6 +229,39 @@ impl FlowObserver for StdoutBudgetObserver {
             "\u{26d4} spawn refused for `{node}`: {}",
             refusal_text(refusal)
         );
+    }
+
+    fn decision(&self, node: &str, kind: &nerve_runtime::FlowDecisionKind) {
+        // Surface the richer-strategy audit decisions (C5) on the experimental CLI.
+        println!("\u{2696} decision @ `{node}`: {}", decision_text(kind));
+    }
+}
+
+/// A one-line description of an interpreter audit decision for the experimental CLI.
+fn decision_text(kind: &nerve_runtime::FlowDecisionKind) -> String {
+    use nerve_runtime::FlowDecisionKind as K;
+    match kind {
+        K::VoteTally {
+            ok,
+            total,
+            k,
+            reached,
+        } => format!(
+            "vote tally {ok}/{total} ok, quorum {k} {}",
+            if *reached { "reached" } else { "short" }
+        ),
+        K::JudgePick { node_id, ok } => {
+            format!("judge `{node_id}` {}", if *ok { "ok" } else { "failed" })
+        }
+        K::DebateRound { round, sides_ok } => {
+            format!("debate round {round}: {sides_ok} side(s) ok")
+        }
+        K::DepthCeiling { depth, max_depth } => format!("depth ceiling ({depth}/{max_depth})"),
+        K::WorkerCeiling {
+            live_workers,
+            max_workers,
+        } => format!("worker ceiling ({live_workers}/{max_workers})"),
+        K::BudgetExhausted => "budget exhausted".to_string(),
     }
 }
 

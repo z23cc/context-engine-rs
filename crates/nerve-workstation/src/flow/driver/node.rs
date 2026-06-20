@@ -9,7 +9,9 @@
 //! the nondeterminism a flow has lives here; the loop in [`super`] stays a pure fold.
 
 use super::Driver;
-use crate::flow::resolve::{failed_result, is_pipeline, provider_model, refused_result, step_for};
+use crate::flow::resolve::{
+    failed_result, is_pipeline, provider_model, refused_result, step_for_node,
+};
 use crate::flow::{FlowProgress, NodeId};
 use crate::worker::{
     BudgetGrant, SpawnRefusal, TurnResult, WorkerContext, WorkerError, WorkerEvent, WorkerSession,
@@ -52,8 +54,8 @@ impl Driver<'_> {
             },
             None => None,
         };
-        let Some(step_def) = step_for(def, step_index) else {
-            return NodeRun::failed(&format!("no step at index {step_index}"));
+        let Some(step_def) = step_for_node(def, node) else {
+            return NodeRun::failed(&format!("no step for node `{node}`"));
         };
         let worker = match self.resolver.resolve(&step_def.worker) {
             Ok(worker) => worker,
@@ -64,7 +66,7 @@ impl Driver<'_> {
         if let Some(observer) = self.observer {
             observer.node_started(node.as_str(), &step_def.worker);
         }
-        let task = self.build_task(step_def, def, step_index);
+        let task = self.build_task(step_def, def, node, step_index);
         let ctx = self.worker_context(def, node);
         // Writer-node path-lease (C4, design §6): a writer (Edit/Full autonomy) holds
         // its scope's lease for the whole turn, so two writer-nodes on overlapping
@@ -132,22 +134,32 @@ impl Driver<'_> {
     /// - `{{prev}}` — a `Pipeline`-only alias for the immediately-upstream stage's
     ///   output (`stage-{index-1}`). For a non-pipeline node, or stage 0, `prev`
     ///   resolves to nothing and is left as a verbatim `{{prev}}` placeholder.
+    /// - `{{split}}` — a `MapReduce`-only alias for THIS map node's deterministic split
+    ///   item (the shard label or path group, design §3). Empty for a non-map node.
     ///
     /// An unknown/unresolved placeholder is left verbatim (the [`TaskTemplate`]
     /// contract — no silent emptying). Pure and deterministic: the same recorded
     /// blackboard renders byte-identically, so replay stays faithful.
-    fn build_task(&self, step_def: &Step, def: &WorkflowDef, step_index: usize) -> WorkerTask {
+    fn build_task(
+        &self,
+        step_def: &Step,
+        def: &WorkflowDef,
+        node: &NodeId,
+        step_index: usize,
+    ) -> WorkerTask {
         let ledger = Arc::clone(&self.ledger);
         let prev_node = (is_pipeline(def) && step_index > 0).then(|| NodeId::stage(step_index - 1));
+        let split = map_split_item(def, node);
         let prompt = step_def.task.render(&|name| {
-            // `{{prev}}` is the upstream stage's output; everything else is a node
-            // id looked up directly in the blackboard.
-            if name == "prev" {
-                return prev_node
+            // `{{prev}}` is the upstream stage's output; `{{split}}` is this map node's
+            // shard; everything else is a node id looked up directly in the blackboard.
+            match name {
+                "prev" => prev_node
                     .as_ref()
-                    .and_then(|node| ledger.output(node.as_str()));
+                    .and_then(|node| ledger.output(node.as_str())),
+                "split" => split.clone(),
+                other => ledger.output(other),
             }
-            ledger.output(name)
         });
         WorkerTask {
             prompt,
@@ -205,6 +217,18 @@ impl Driver<'_> {
             None => 0,
         }
     }
+}
+
+/// The deterministic split item a `map-{i}` node of a `MapReduce` strategy sees as its
+/// `{{split}}` (design §3), or `None` for any other node/strategy. A pure function of
+/// the `WorkflowDef` + node id (the split is data, no filesystem walk), so a map worker
+/// renders byte-identically on replay.
+fn map_split_item(def: &WorkflowDef, node: &NodeId) -> Option<String> {
+    let nerve_runtime::Strategy::MapReduce { over, .. } = &def.strategy else {
+        return None;
+    };
+    let index: usize = node.as_str().strip_prefix("map-")?.parse().ok()?;
+    crate::flow::split_item(over, index)
 }
 
 /// A node's produced result + buffered events, paired with its id so a fan-out wave

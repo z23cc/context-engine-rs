@@ -13,7 +13,7 @@ use nerve_runtime::{Step, Strategy, WorkerRef, WorkflowDef};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::FlowOutcome;
+use super::{FlowOutcome, NodeId};
 
 /// How the driver resolves a [`WorkerRef`] into a runnable [`AgentWorker`]. The
 /// production driver uses the C0 [`WorkerFactory`]; tests inject a closure that
@@ -119,15 +119,69 @@ fn worker_kind(worker_ref: &WorkerRef) -> Result<WorkerKind, WorkerError> {
     }
 }
 
-/// Look up the declared [`Step`] for a flat `step_index` across the wired
-/// strategies (`Single` / `Parallel` / `Pipeline`).
-pub(super) fn step_for(def: &WorkflowDef, step_index: usize) -> Option<&Step> {
-    match &def.strategy {
-        Strategy::Single { step } if step_index == 0 => Some(step),
-        Strategy::Parallel { branches, .. } => branches.get(step_index),
-        Strategy::Pipeline { stages } => stages.get(step_index),
+/// Look up the declared [`Step`] for a `node` by decoding its id against `def`'s
+/// strategy (design §3). Resolving by NODE ID (not a flat index) is what lets the
+/// richer C5 strategies — whose nodes have heterogeneous roles (candidate vs judge,
+/// map vs reduce, a debate turn, a planner, a nested child node) — share one engine
+/// loop. A `Hierarchical` child node (`child/…`) is resolved against the child
+/// strategy by stripping the prefix and recursing.
+pub(super) fn step_for_node<'a>(def: &'a WorkflowDef, node: &NodeId) -> Option<&'a Step> {
+    step_in_strategy(&def.strategy, node.as_str())
+}
+
+/// Resolve a node id against a (possibly child) strategy. Pure string decode over the
+/// engine's own typed [`NodeId`] constructors, so it is total + deterministic.
+fn step_in_strategy<'a>(strategy: &'a Strategy, node: &str) -> Option<&'a Step> {
+    // A child-flow node delegates to the child strategy with the prefix stripped.
+    if let Some(child) = node.strip_prefix(crate::flow::CHILD_PREFIX) {
+        return match strategy {
+            Strategy::Hierarchical { child: inner, .. } => step_in_strategy(inner, child),
+            _ => None,
+        };
+    }
+    match strategy {
+        Strategy::Single { step } if node == "node-0" => Some(step),
+        Strategy::Parallel { branches, .. } => {
+            index_suffix(node, "branch-").and_then(|i| branches.get(i))
+        }
+        Strategy::Pipeline { stages } => index_suffix(node, "stage-").and_then(|i| stages.get(i)),
+        Strategy::VoteJudge {
+            candidates, judge, ..
+        } => {
+            if node == "judge" {
+                Some(judge)
+            } else {
+                index_suffix(node, "cand-").and_then(|i| candidates.get(i))
+            }
+        }
+        Strategy::MapReduce { map, reduce, .. } => match node {
+            "reduce" => Some(reduce),
+            // Every map node runs the SAME declared `map` step (one per split item).
+            n if n.starts_with("map-") => Some(map),
+            _ => None,
+        },
+        Strategy::Debate { sides, judge, .. } => {
+            if node == "judge" {
+                Some(judge)
+            } else {
+                debate_side(node).and_then(|s| sides.get(s))
+            }
+        }
+        Strategy::Hierarchical { planner, .. } if node == "planner" => Some(planner),
         _ => None,
     }
+}
+
+/// Parse `prefix{i}` → `i` (the index suffix of a node id).
+fn index_suffix(node: &str, prefix: &str) -> Option<usize> {
+    node.strip_prefix(prefix).and_then(|n| n.parse().ok())
+}
+
+/// Parse a debate turn id `side-{s}-round-{r}` → `s` (which declared side ran it).
+fn debate_side(node: &str) -> Option<usize> {
+    node.strip_prefix("side-")
+        .and_then(|rest| rest.split_once("-round-"))
+        .and_then(|(side, _round)| side.parse().ok())
 }
 
 /// Whether `def`'s strategy interpolates a `{{prev}}` alias (only a `Pipeline` has

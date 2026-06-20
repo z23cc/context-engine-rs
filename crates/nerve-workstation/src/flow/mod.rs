@@ -35,14 +35,17 @@ mod driver;
 mod engine;
 mod resolve;
 mod resume;
+mod safety;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use driver::{Driver, FlowObserver, FlowProgress};
+pub(crate) use engine::{split_item, split_len};
 pub(crate) use resolve::{
     FactoryResolver, ReplayResolver, WorkerResolver, replay_generation_provider,
 };
+pub(crate) use safety::{WorkflowError, validate_workflow};
 
 use crate::worker::TurnResult;
 use nerve_runtime::Join;
@@ -72,11 +75,67 @@ impl NodeId {
         Self(format!("stage-{index}"))
     }
 
+    /// The node id for the `index`-th candidate of a `VoteJudge` strategy (design §3).
+    /// The judge interpolates each candidate's output by this id (e.g. `{{cand-0}}`).
+    fn candidate(index: usize) -> Self {
+        Self(format!("cand-{index}"))
+    }
+
+    /// The node id for a `VoteJudge`/`Debate` strategy's adjudicating judge.
+    fn judge() -> Self {
+        Self("judge".to_string())
+    }
+
+    /// The node id for the `index`-th map worker of a `MapReduce` strategy (one per
+    /// `ContextSplit` item). The reduce interpolates each by this id (e.g. `{{map-0}}`).
+    fn map(index: usize) -> Self {
+        Self(format!("map-{index}"))
+    }
+
+    /// The node id for a `MapReduce` strategy's reduce worker.
+    fn reduce() -> Self {
+        Self("reduce".to_string())
+    }
+
+    /// The node id for `side` `s` in `round` `r` of a `Debate` strategy (design §3).
+    /// A later round interpolates an earlier round's argument by this id
+    /// (e.g. `{{side-0-round-0}}`).
+    fn debate_turn(side: usize, round: usize) -> Self {
+        Self(format!("side-{side}-round-{round}"))
+    }
+
+    /// The node id for a `Hierarchical` strategy's planner (design §8). It runs first
+    /// and decides whether a child flow may spawn.
+    fn planner() -> Self {
+        Self("planner".to_string())
+    }
+
+    /// Prefix this node id so it is unique inside a child flow (design §8): a
+    /// `Hierarchical` strategy runs its child as a nested flow, recording into the
+    /// SAME ledger, so the child's `node-0` becomes `child/node-0`. Nesting composes
+    /// (`child/child/node-0`), bounded by the depth ceiling.
+    fn nested(&self) -> Self {
+        Self(format!("{CHILD_PREFIX}{}", self.0))
+    }
+
+    /// Strip ONE `child/` prefix, projecting a parent node id into the child-flow
+    /// namespace ([`Self::nested`]'s inverse), or `None` for a non-child node. The
+    /// `Hierarchical` arm uses this to project the parent state onto the child's view.
+    fn strip_nested(&self) -> Option<Self> {
+        self.0
+            .strip_prefix(CHILD_PREFIX)
+            .map(|inner| Self(inner.to_string()))
+    }
+
     /// The id as a string slice (for ledger keys / logs).
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
+
+/// The path prefix the engine prepends to a child flow's node ids (design §8), so a
+/// `Hierarchical` child's nodes never collide with the parent's in the shared ledger.
+pub(crate) const CHILD_PREFIX: &str = "child/";
 
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -108,6 +167,17 @@ pub(crate) enum Action {
     /// Request operator approval. Declared-ahead for the protocol wave (C2/C4);
     /// C1 routes CLI approvals through the existing hub, not this action.
     RequestApproval { node: NodeId, request_id: String },
+    /// Record a typed audit decision the interpreter made (design §4/§6): a vote
+    /// tally, a judge pick, a debate round. Pure — a deterministic function of the
+    /// recorded results — so it replays byte-identically. The driver fires the
+    /// [`FlowObserver::decision`] callback (which the host maps onto a
+    /// [`RuntimeEvent::FlowDecision`](nerve_runtime::RuntimeEvent)); it records NO
+    /// ledger entry (the events/results the decision summarizes are already on the
+    /// tape), so replay reproduces it from the same recorded results.
+    Decision {
+        node: NodeId,
+        kind: nerve_runtime::FlowDecisionKind,
+    },
     /// Emit the flow's aggregated outcome (the fold of recorded results).
     Emit { outcome: FlowOutcome },
     /// The flow is finished — stop the driver loop.

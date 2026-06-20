@@ -63,38 +63,65 @@ pub(crate) fn replay_to_boundary(def: &WorkflowDef, recorded: &WorkerLedger) -> 
 /// - `Pipeline`: the FIRST not-yet-finished `stage-i` in declared order, plus every
 ///   later stage — but a pipeline runs them strictly sequentially, so the immediate
 ///   frontier is the first pending stage (the rest follow once it lands).
-/// - Other (defined-ahead) strategies: empty (their resume lands with their wave).
+/// - `VoteJudge`: every unfinished `cand-i`, plus `judge` (once the quorum is met).
+/// - `MapReduce`: every unfinished `map-i`, plus `reduce`.
+/// - `Debate`: every unfinished `side-s-round-r`, plus `judge`.
+/// - `Hierarchical`: `planner`, then the child flow's pending nodes (`child/…`) —
+///   computed by recursing over the child strategy and re-prefixing.
 #[must_use]
 pub(crate) fn pending_nodes(def: &WorkflowDef, finished: &[String]) -> Vec<String> {
+    pending_in(&def.strategy, finished, "")
+}
+
+/// Pending nodes for a (possibly child) strategy, under a `prefix` (empty at the root,
+/// `child/` inside a `Hierarchical`). Pure over the strategy shape + finished set.
+fn pending_in(strategy: &Strategy, finished: &[String], prefix: &str) -> Vec<String> {
+    let id = |node: &str| format!("{prefix}{node}");
     let is_finished = |node: &str| finished.iter().any(|f| f == node);
-    match &def.strategy {
-        Strategy::Single { .. } => single_pending(&is_finished),
-        Strategy::Parallel { branches, .. } => parallel_pending(branches.len(), &is_finished),
-        Strategy::Pipeline { stages } => pipeline_pending(stages.len(), &is_finished),
+    let unfinished = |nodes: Vec<String>| -> Vec<String> {
+        nodes.into_iter().filter(|n| !is_finished(n)).collect()
+    };
+    match strategy {
+        Strategy::Single { .. } => unfinished(vec![id("node-0")]),
+        Strategy::Parallel { branches, .. } => unfinished(
+            (0..branches.len())
+                .map(|i| id(&format!("branch-{i}")))
+                .collect(),
+        ),
+        Strategy::Pipeline { stages } => unfinished(
+            (0..stages.len())
+                .map(|i| id(&format!("stage-{i}")))
+                .collect(),
+        ),
+        Strategy::VoteJudge { candidates, .. } => {
+            let mut nodes: Vec<String> = (0..candidates.len())
+                .map(|i| id(&format!("cand-{i}")))
+                .collect();
+            nodes.push(id("judge"));
+            unfinished(nodes)
+        }
+        Strategy::MapReduce { over, .. } => {
+            let items = crate::flow::split_len(over);
+            let mut nodes: Vec<String> = (0..items).map(|i| id(&format!("map-{i}"))).collect();
+            nodes.push(id("reduce"));
+            unfinished(nodes)
+        }
+        Strategy::Debate { sides, rounds, .. } => {
+            let mut nodes: Vec<String> = (0..*rounds)
+                .flat_map(|r| (0..sides.len()).map(move |s| (s, r)))
+                .map(|(s, r)| id(&format!("side-{s}-round-{r}")))
+                .collect();
+            nodes.push(id("judge"));
+            unfinished(nodes)
+        }
+        Strategy::Hierarchical { child, .. } => {
+            let mut nodes = unfinished(vec![id("planner")]);
+            // The child flow's pending nodes live under `<prefix>child/…`.
+            nodes.extend(pending_in(child, finished, &format!("{prefix}child/")));
+            nodes
+        }
         _ => Vec::new(),
     }
-}
-
-fn single_pending(is_finished: &dyn Fn(&str) -> bool) -> Vec<String> {
-    if is_finished("node-0") {
-        Vec::new()
-    } else {
-        vec!["node-0".to_string()]
-    }
-}
-
-fn parallel_pending(branches: usize, is_finished: &dyn Fn(&str) -> bool) -> Vec<String> {
-    (0..branches)
-        .map(|i| format!("branch-{i}"))
-        .filter(|node| !is_finished(node))
-        .collect()
-}
-
-fn pipeline_pending(stages: usize, is_finished: &dyn Fn(&str) -> bool) -> Vec<String> {
-    (0..stages)
-        .map(|i| format!("stage-{i}"))
-        .filter(|node| !is_finished(node))
-        .collect()
 }
 
 /// The approver a resume replay runs under: a replay re-emits recorded events and
@@ -177,6 +204,76 @@ mod tests {
                 &["branch-0".into(), "branch-1".into(), "branch-2".into()]
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn pending_nodes_for_vote_judge() {
+        let d = def(Strategy::VoteJudge {
+            candidates: vec![step("a"), step("b")],
+            judge: step("j"),
+            k: 2,
+        });
+        // Nothing finished → both candidates + the judge pending.
+        assert_eq!(
+            pending_nodes(&d, &[]),
+            vec![
+                "cand-0".to_string(),
+                "cand-1".to_string(),
+                "judge".to_string()
+            ]
+        );
+        // Candidates done → only the judge remains.
+        assert_eq!(
+            pending_nodes(&d, &["cand-0".into(), "cand-1".into()]),
+            vec!["judge".to_string()]
+        );
+    }
+
+    #[test]
+    fn pending_nodes_for_map_reduce_and_debate() {
+        let mr = def(Strategy::MapReduce {
+            map: step("m"),
+            over: nerve_runtime::ContextSplit::Shards { n: 2 },
+            reduce: step("r"),
+        });
+        assert_eq!(
+            pending_nodes(&mr, &["map-0".into()]),
+            vec!["map-1".to_string(), "reduce".to_string()]
+        );
+        let debate = def(Strategy::Debate {
+            sides: vec![step("p"), step("c")],
+            rounds: 2,
+            judge: step("j"),
+        });
+        // All side-turns + the judge, none finished.
+        assert_eq!(
+            pending_nodes(&debate, &[]),
+            vec![
+                "side-0-round-0".to_string(),
+                "side-1-round-0".to_string(),
+                "side-0-round-1".to_string(),
+                "side-1-round-1".to_string(),
+                "judge".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_nodes_for_hierarchical_prefixes_the_child() {
+        let d = def(Strategy::Hierarchical {
+            planner: step("plan"),
+            child: Box::new(Strategy::Single { step: step("work") }),
+        });
+        // Planner pending + the child's pending node under `child/`.
+        assert_eq!(
+            pending_nodes(&d, &[]),
+            vec!["planner".to_string(), "child/node-0".to_string()]
+        );
+        // Planner done → only the child node remains pending.
+        assert_eq!(
+            pending_nodes(&d, &["planner".into()]),
+            vec!["child/node-0".to_string()]
         );
     }
 

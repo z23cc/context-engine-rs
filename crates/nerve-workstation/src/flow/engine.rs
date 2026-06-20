@@ -7,6 +7,10 @@
 //! results)` — no wall-clock, no completion order, no RNG — so the orchestration
 //! is golden-testable and replayable.
 
+mod strategy;
+
+pub(crate) use strategy::{split_item, split_len};
+
 use super::{Action, FlowOutcome, NodeId, fold_results};
 use crate::worker::TurnResult;
 use nerve_runtime::{Strategy, WorkflowDef};
@@ -58,6 +62,30 @@ impl FlowState {
     fn result(&self, node: &NodeId) -> Option<&TurnResult> {
         self.results.get(node)
     }
+
+    /// Project this state onto the child-flow namespace: keep only `child/…` nodes,
+    /// with ONE `child/` prefix stripped, so the child strategy's interpreter (the same
+    /// [`step`]) reads/dispatches in its own un-prefixed namespace. The
+    /// [`step_hierarchical`](strategy::step_hierarchical) arm re-prefixes the returned
+    /// actions. Pure — clones only the child slice.
+    fn project_child(&self) -> FlowState {
+        let dispatched = self
+            .dispatched
+            .keys()
+            .filter_map(|node| node.strip_nested().map(|inner| (inner, ())))
+            .collect();
+        FlowState {
+            dispatched,
+            results: self
+                .results
+                .iter()
+                .filter_map(|(node, result)| {
+                    node.strip_nested().map(|inner| (inner, result.clone()))
+                })
+                .collect(),
+            terminated: false,
+        }
+    }
 }
 
 /// The pure interpreter (design §3). Given the current `state` and the
@@ -74,7 +102,16 @@ pub(crate) fn step(state: &FlowState, def: &WorkflowDef) -> Vec<Action> {
         Strategy::Single { .. } => step_single(state),
         Strategy::Parallel { branches, join } => step_parallel(state, branches.len(), *join),
         Strategy::Pipeline { stages } => step_pipeline(state, stages),
-        // Defined-ahead strategies (design §3, C5): not yet interpreted. Terminate
+        // The richer C5 strategies — each a pure phase machine over recorded results.
+        Strategy::VoteJudge { candidates, k, .. } => {
+            strategy::step_vote_judge(state, candidates.len(), *k)
+        }
+        Strategy::MapReduce { over, .. } => strategy::step_map_reduce(state, over),
+        Strategy::Debate { sides, rounds, .. } => {
+            strategy::step_debate(state, sides.len(), *rounds)
+        }
+        Strategy::Hierarchical { child, .. } => strategy::step_hierarchical(state, def, child),
+        // `Strategy` is `#[non_exhaustive]`; a future variant terminates
         // deterministically with an explanatory outcome rather than diverging.
         other => vec![
             Action::Emit {
@@ -82,6 +119,21 @@ pub(crate) fn step(state: &FlowState, def: &WorkflowDef) -> Vec<Action> {
             },
             Action::Terminate,
         ],
+    }
+}
+
+/// Build a child [`WorkflowDef`] wrapping `strategy` for a nested `Hierarchical` flow
+/// (design §8): it carries the SAME `max_depth` + `budget` as the parent (the budget
+/// is enforced tree-wide by the driver's `FleetBudget`; the def-level fields just keep
+/// the child interpretable by the shared [`step`]). Used only by the `Hierarchical`
+/// arm to re-run the interpreter over the child strategy.
+pub(in crate::flow::engine) fn child_def(parent: &WorkflowDef, strategy: Strategy) -> WorkflowDef {
+    WorkflowDef {
+        schema_version: parent.schema_version,
+        name: parent.name.clone(),
+        strategy,
+        budget: parent.budget,
+        max_depth: parent.max_depth,
     }
 }
 
@@ -354,10 +406,11 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_strategy_terminates_with_explanation() {
-        // A still-defined-ahead strategy (`MapReduce`, C5) terminates with an
-        // explanatory outcome rather than dispatching. (`Pipeline` is now wired, so
-        // it is exercised by the pipeline tests below instead.)
+    fn every_strategy_variant_is_wired_into_the_dispatcher() {
+        // C5 wired the last four strategies, so the dispatcher dispatches (rather than
+        // terminating with "unimplemented") for each. `MapReduce` here dispatches its
+        // first map node; the richer per-strategy behaviour is pinned in the
+        // `engine::strategy` submodule tests + the golden/replay tests.
         let def = WorkflowDef {
             schema_version: 1,
             name: "mr".into(),
@@ -370,14 +423,23 @@ mod tests {
             max_depth: 2,
         };
         let actions = step(&FlowState::new(), &def);
-        match &actions[0] {
-            Action::Emit { outcome } => {
-                assert!(!outcome.ok);
-                assert!(outcome.summary.contains("map_reduce"));
-            }
-            other => panic!("expected Emit, got {other:?}"),
-        }
-        assert_eq!(actions[1], Action::Terminate);
+        // Two map shards dispatched (not an "unimplemented" Emit).
+        assert!(
+            actions
+                .iter()
+                .all(|a| matches!(a, Action::StartWorker { .. })),
+            "MapReduce dispatches its map wave, not an unimplemented outcome: {actions:?}"
+        );
+        assert_eq!(actions.len(), 2, "one StartWorker per shard");
+    }
+
+    #[test]
+    fn unimplemented_outcome_explains_a_future_variant() {
+        // The defensive `#[non_exhaustive]` fallback still produces an explanatory
+        // outcome for a hypothetical future variant (kept total + golden-friendly).
+        let outcome = unimplemented_outcome("future");
+        assert!(!outcome.ok);
+        assert!(outcome.summary.contains("future"));
     }
 
     // ---- Pipeline interpreter ---------------------------------------------------

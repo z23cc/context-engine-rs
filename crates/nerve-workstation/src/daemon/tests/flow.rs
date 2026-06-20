@@ -689,3 +689,125 @@ fn flow_replay_unknown_flow_errors_cleanly() {
     let job = &response_with_id(&observed, json!(2))["result"]["job"];
     assert_eq!(job["status"], "failed");
 }
+
+/// A `flow.start` of a `VoteJudge` (two CLI candidates + a CLI judge, all the fake
+/// claude) as a command payload. The judge's task interpolates the candidate outputs.
+fn vote_judge_flow_command() -> Value {
+    json!({
+        "kind": "flow.start",
+        "workflow": {
+            "schema_version": 1,
+            "name": "vote",
+            "strategy": {
+                "type": "vote_judge",
+                "candidates": [
+                    { "worker": { "kind": "cli", "name": "claude" }, "task": "draft A" },
+                    { "worker": { "kind": "cli", "name": "claude" }, "task": "draft B" }
+                ],
+                "judge": {
+                    "worker": { "kind": "cli", "name": "claude" },
+                    "task": "judge {{cand-0}} vs {{cand-1}}"
+                },
+                "k": 2
+            }
+        }
+    })
+}
+
+#[test]
+fn flow_start_vote_judge_emits_the_decision_audit_trail() {
+    // C5 end-to-end: a VoteJudge flow over real contained CLI workers emits the
+    // `flow_decision` audit trail (a vote_tally then a judge_pick) through the protocol,
+    // proving the C5 interpreter decisions reach a client unchanged.
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({ "job_id": "vote-1", "command": vote_judge_flow_command() }),
+        ),
+    );
+    wait_for_job_event(&output, "job_completed", "vote-1");
+
+    let events = flow_events(&output, "vote-1");
+    // The candidates + judge all started + finished (3 nodes).
+    let started = events
+        .iter()
+        .filter(|e| e["type"] == "flow_node_started")
+        .count();
+    assert_eq!(started, 3, "two candidates + the judge started");
+    // The audit trail: a vote_tally (2/2 ok, quorum 2 reached) then a judge_pick.
+    let decisions: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "flow_decision")
+        .collect();
+    let tally = decisions
+        .iter()
+        .find(|e| e["kind"]["kind"] == "vote_tally")
+        .expect("a vote_tally decision");
+    assert_eq!(tally["kind"]["ok"], 2);
+    assert_eq!(tally["kind"]["reached"], true);
+    assert!(
+        decisions.iter().any(|e| e["kind"]["kind"] == "judge_pick"),
+        "a judge_pick decision: {decisions:?}"
+    );
+    // The vote → judge DAG edges emit at start (each candidate → judge).
+    let to_judge = events
+        .iter()
+        .filter(|e| e["type"] == "flow_edge" && e["to"] == "judge")
+        .count();
+    assert_eq!(to_judge, 2, "each candidate edges into the judge");
+
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "flow_completed")
+        .expect("a flow_completed event");
+    assert_eq!(completed["outcome"]["ok"], true);
+}
+
+#[test]
+fn flow_start_rejects_a_zero_depth_hierarchy_at_start() {
+    // The static safety gate (design §8): a malformed Hierarchical (max_depth 0) is
+    // rejected at flow.start, before any worker spawns — the job fails cleanly.
+    let fixture = runtime_with_file();
+    let (router, output) = flow_router(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
+    let command = json!({
+        "kind": "flow.start",
+        "workflow": {
+            "schema_version": 1,
+            "name": "bad",
+            "max_depth": 0,
+            "strategy": {
+                "type": "hierarchical",
+                "planner": { "worker": { "kind": "cli", "name": "claude" }, "task": "plan" },
+                "child": { "type": "single",
+                           "step": { "worker": { "kind": "cli", "name": "claude" }, "task": "work" } }
+            }
+        }
+    });
+    dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(1),
+            "runtime/jobs/start",
+            json!({ "job_id": "bad-1", "command": command }),
+        ),
+    );
+    wait_for_job_terminal(&output, "bad-1");
+    let observed = dispatch(
+        &router,
+        &output,
+        rpc(
+            json!(2),
+            "runtime/jobs/get",
+            json!({ "job_id": "bad-1", "include_result": true }),
+        ),
+    );
+    let job = &response_with_id(&observed, json!(2))["result"]["job"];
+    assert_eq!(job["status"], "failed", "a zero-depth hierarchy is refused");
+}

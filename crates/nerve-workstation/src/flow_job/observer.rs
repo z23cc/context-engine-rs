@@ -35,9 +35,60 @@ pub(super) fn emit_strategy_edges(flow_id: &str, strategy: &Strategy, emit: &Arc
             }
         }
         Strategy::Pipeline { stages } => emit_pipeline_edges(flow_id, stages.len(), emit),
-        // The remaining defined-ahead strategies emit their edges from the engine
-        // in C5.
+        Strategy::VoteJudge { candidates, .. } => {
+            // flow → cand-i (fan-out), then every cand-i → judge (the adjudication).
+            for index in 0..candidates.len() {
+                let cand = format!("cand-{index}");
+                emit(RuntimeEvent::flow_edge(flow_id, "flow", cand.clone()));
+                emit(RuntimeEvent::flow_edge(flow_id, cand, "judge"));
+            }
+        }
+        Strategy::MapReduce { over, .. } => {
+            // flow → map-i (fan-out over the split), then every map-i → reduce.
+            for index in 0..crate::flow::split_len(over) {
+                let map = format!("map-{index}");
+                emit(RuntimeEvent::flow_edge(flow_id, "flow", map.clone()));
+                emit(RuntimeEvent::flow_edge(flow_id, map, "reduce"));
+            }
+        }
+        Strategy::Debate { sides, rounds, .. } => {
+            emit_debate_edges(flow_id, sides.len(), *rounds, emit);
+        }
+        // A `Hierarchical` flow's child DAG is data-dependent on the planner's run, so
+        // its edges emit from the engine as nodes start (the planner edge is the only
+        // static one).
+        Strategy::Hierarchical { .. } => {
+            emit(RuntimeEvent::flow_edge(flow_id, "flow", "planner"));
+        }
         _ => {}
+    }
+}
+
+/// Emit a `Debate`'s DAG edges (C5): `flow → side-s-round-0`, each round's sides chain
+/// to the next round's, and the final round's sides → `judge`. Static (declared sides
+/// × rounds), so the edges are known at `flow.start`.
+fn emit_debate_edges(flow_id: &str, sides: usize, rounds: u32, emit: &Arc<EventEmitter>) {
+    if sides == 0 || rounds == 0 {
+        return;
+    }
+    for side in 0..sides {
+        emit(RuntimeEvent::flow_edge(
+            flow_id,
+            "flow",
+            format!("side-{side}-round-0"),
+        ));
+        for round in 1..rounds {
+            emit(RuntimeEvent::flow_edge(
+                flow_id,
+                format!("side-{side}-round-{}", round - 1),
+                format!("side-{side}-round-{round}"),
+            ));
+        }
+        emit(RuntimeEvent::flow_edge(
+            flow_id,
+            format!("side-{side}-round-{}", rounds - 1),
+            "judge",
+        ));
     }
 }
 
@@ -155,6 +206,17 @@ impl FlowObserver for FlowEventObserver {
             self.flow_id.clone(),
             node.to_string(),
             refusal_kind(refusal),
+        ));
+    }
+
+    fn decision(&self, node: &str, kind: &FlowDecisionKind) {
+        // A pure interpreter audit decision (C5: vote tally / judge pick / debate
+        // round, plus the depth-ceiling refusal from a Hierarchical planner). Surface
+        // it verbatim as a node-keyed `FlowDecision` (the audit trail, design §4/§6).
+        (self.emit)(RuntimeEvent::flow_decision(
+            self.flow_id.clone(),
+            node.to_string(),
+            kind.clone(),
         ));
     }
 }

@@ -204,6 +204,25 @@ pub enum FlowDecisionKind {
     /// A spawn was refused at the worker ceiling — `live_workers >= max_workers`
     /// across the whole tree (design §8, the process-global semaphore bound).
     WorkerCeiling { live_workers: u32, max_workers: u32 },
+    /// A `VoteJudge` strategy tallied its candidates before adjudication (design §3):
+    /// how many candidate workers succeeded out of how many ran, and whether the
+    /// quorum `k` was reached. The audit trail of WHAT the judge was handed. Additive
+    /// within v4.
+    VoteTally {
+        ok: u32,
+        total: u32,
+        k: u32,
+        reached: bool,
+    },
+    /// A judge (a `VoteJudge` or `Debate` strategy's adjudicator) picked an outcome
+    /// (design §3): the judge node's id and whether it succeeded. The audit trail of
+    /// the adjudication itself. Additive within v4.
+    JudgePick { node_id: String, ok: bool },
+    /// One round of a `Debate` strategy completed (design §3): the round index
+    /// (0-based) and how many of the sides argued successfully that round. Emitted
+    /// once per round so the debate's progression is a replayable audit trail.
+    /// Additive within v4.
+    DebateRound { round: u32, sides_ok: u32 },
 }
 
 /// Which worker family ran a flow node — the only place the CLI-vs-provider
@@ -468,5 +487,62 @@ mod tests {
         assert_eq!(value["kind"]["max_workers"], 4);
         let back: RuntimeEvent = serde_json::from_value(value).expect("round-trip");
         assert_eq!(back, workers);
+    }
+
+    #[test]
+    fn flow_decision_round_trips_c5_audit_kinds() {
+        // The richer-strategy audit kinds (C5): a vote tally, a judge pick, a debate
+        // round — all additive within v4.
+        let tally = RuntimeEvent::flow_decision(
+            "flow-1",
+            "flow",
+            FlowDecisionKind::VoteTally {
+                ok: 2,
+                total: 3,
+                k: 2,
+                reached: true,
+            },
+        );
+        let value = serde_json::to_value(&tally).expect("tally json");
+        assert_eq!(value["kind"]["kind"], "vote_tally");
+        assert_eq!(value["kind"]["ok"], 2);
+        assert_eq!(value["kind"]["reached"], true);
+        assert_eq!(
+            serde_json::from_value::<RuntimeEvent>(value).expect("round-trip"),
+            tally
+        );
+
+        let pick = RuntimeEvent::flow_decision(
+            "flow-1",
+            "judge",
+            FlowDecisionKind::JudgePick {
+                node_id: "judge".into(),
+                ok: true,
+            },
+        );
+        let value = serde_json::to_value(&pick).expect("pick json");
+        assert_eq!(value["kind"]["kind"], "judge_pick");
+        assert_eq!(value["kind"]["node_id"], "judge");
+        assert_eq!(
+            serde_json::from_value::<RuntimeEvent>(value).expect("round-trip"),
+            pick
+        );
+
+        let round = RuntimeEvent::flow_decision(
+            "flow-1",
+            "flow",
+            FlowDecisionKind::DebateRound {
+                round: 1,
+                sides_ok: 2,
+            },
+        );
+        let value = serde_json::to_value(&round).expect("round json");
+        assert_eq!(value["kind"]["kind"], "debate_round");
+        assert_eq!(value["kind"]["round"], 1);
+        assert_eq!(value["kind"]["sides_ok"], 2);
+        assert_eq!(
+            serde_json::from_value::<RuntimeEvent>(value).expect("round-trip"),
+            round
+        );
     }
 }

@@ -1,0 +1,8 @@
+---
+source: crates/nerve-workstation/src/flow/tests/strategy.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=hierarchical: child refused at depth ceiling (1/1); planner only
+results:
+  [0] ok=true text="PLAN ONLY"

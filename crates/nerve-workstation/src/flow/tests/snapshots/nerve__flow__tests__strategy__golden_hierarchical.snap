@@ -1,0 +1,9 @@
+---
+source: crates/nerve-workstation/src/flow/tests/strategy.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=hierarchical: planner + child (single: node ok=true (4 chars))
+results:
+  [0] ok=true text="PLAN"
+  [1] ok=true text="DONE"

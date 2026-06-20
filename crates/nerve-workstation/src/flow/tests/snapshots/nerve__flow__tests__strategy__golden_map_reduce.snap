@@ -1,0 +1,8 @@
+---
+source: crates/nerve-workstation/src/flow/tests/strategy.rs
+expression: render_outcome(&outcome)
+---
+ok=true
+summary=map_reduce: 3/3 map shard(s) ok, reduce ok
+results:
+  [0] ok=true text="MERGED"

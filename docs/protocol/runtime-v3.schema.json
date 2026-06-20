@@ -441,6 +441,93 @@
             "max_workers"
           ],
           "type": "object"
+        },
+        {
+          "description": "A `VoteJudge` strategy tallied its candidates before adjudication (design §3): how many candidate workers succeeded out of how many ran, and whether the quorum `k` was reached. The audit trail of WHAT the judge was handed. Additive within v4.",
+          "properties": {
+            "k": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "vote_tally"
+              ],
+              "type": "string"
+            },
+            "ok": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "reached": {
+              "type": "boolean"
+            },
+            "total": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "k",
+            "kind",
+            "ok",
+            "reached",
+            "total"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A judge (a `VoteJudge` or `Debate` strategy's adjudicator) picked an outcome (design §3): the judge node's id and whether it succeeded. The audit trail of the adjudication itself. Additive within v4.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "judge_pick"
+              ],
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "node_id",
+            "ok"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One round of a `Debate` strategy completed (design §3): the round index (0-based) and how many of the sides argued successfully that round. Emitted once per round so the debate's progression is a replayable audit trail. Additive within v4.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "debate_round"
+              ],
+              "type": "string"
+            },
+            "round": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "sides_ok": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "round",
+            "sides_ok"
+          ],
+          "type": "object"
         }
       ]
     },
