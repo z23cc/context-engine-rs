@@ -1,0 +1,15 @@
+# Trunk build config for the Nerve Leptos CSR frontend.
+#
+# `filehash = false` emits STABLE asset names (`nerve-gui.js`,
+# `nerve-gui_bg.wasm`) rather than content-hashed ones, so the daemon can
+# `include_bytes!` them from a fixed path (crates/nerve-gui/dist/) without a
+# codegen step. Regenerate the committed dist with `trunk build` (cwd here)
+# after changing the frontend; CI should rebuild + drift-check the committed
+# dist, mirroring the runtime-protocol schema drift discipline.
+[build]
+dist = "dist"
+filehash = false
+# The daemon serves this bundle under `/app/` (GET /app + /app/<asset>), so the
+# asset URLs in the generated index.html must be `/app/`-prefixed (not root-
+# relative) to resolve. `public_url` rewrites every emitted href accordingly.
+public_url = "/app/"

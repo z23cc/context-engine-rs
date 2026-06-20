@@ -130,7 +130,7 @@ struct HttpContext {
 }
 
 /// Per-run transport hardening for the HTTP daemon. See the module docs.
-struct HttpSecurity {
+pub(super) struct HttpSecurity {
     /// Bearer token required on `/rpc` and `/events`, fresh each run.
     token: String,
     /// True for a loopback bind: also require a loopback `Host` header (DNS
@@ -144,6 +144,13 @@ impl HttpSecurity {
             token: random_urlsafe(32),
             enforce_loopback_host: addr.ip().is_loopback(),
         }
+    }
+
+    /// The token to bake into a served page, or `None` on a remote bind (where
+    /// the page must never carry it — the operator supplies it out-of-band).
+    /// Used by the `/app` Leptos surface, mirroring [`Self::render_gui`].
+    pub(super) fn embed_token(&self) -> Option<&str> {
+        self.enforce_loopback_host.then_some(self.token.as_str())
     }
 
     /// Whether a request carries the correct token, via `Authorization: Bearer`
@@ -198,6 +205,11 @@ fn handle_request(ctx: &HttpContext, request: Request) -> Result<()> {
         (Method::Get, "/") => {
             let html = ctx.security.render_gui(GUI_HTML);
             respond_html(request, &html, cors.as_deref())
+        }
+        // The Leptos WASM frontend (G1b): a second client of this same Protocol
+        // v4 transport. The legacy GUI at `/` is untouched.
+        (Method::Get, p) if super::app::is_app_path(p) => {
+            super::app::serve_app(ctx.security.embed_token(), request, p, cors.as_deref())
         }
         _ => respond_text(request, 404, "not found", cors.as_deref()),
     }
@@ -519,7 +531,7 @@ fn respond_json(request: Request, status: u16, value: &Value, cors: Option<&str>
         .map_err(|err| anyhow!("failed to write /rpc response: {err}"))
 }
 
-fn respond_html(request: Request, html: &str, cors: Option<&str>) -> Result<()> {
+pub(super) fn respond_html(request: Request, html: &str, cors: Option<&str>) -> Result<()> {
     let response = with_cors(
         Response::from_string(html.to_string())
             .with_status_code(StatusCode(200))
@@ -531,7 +543,32 @@ fn respond_html(request: Request, html: &str, cors: Option<&str>) -> Result<()> 
         .map_err(|err| anyhow!("failed to write GUI response: {err}"))
 }
 
-fn respond_text(request: Request, status: u16, message: &str, cors: Option<&str>) -> Result<()> {
+/// Respond with a static binary/text asset and an explicit Content-Type. Used by
+/// the `/app` Leptos surface to serve its embedded `.js` / `.wasm` / `.css` with
+/// the right MIME (notably `application/wasm`, required for `instantiateStreaming`).
+pub(super) fn respond_asset(
+    request: Request,
+    bytes: &'static [u8],
+    content_type: &str,
+    cors: Option<&str>,
+) -> Result<()> {
+    let response = with_cors(
+        Response::from_data(bytes)
+            .with_status_code(StatusCode(200))
+            .with_header(static_header("Content-Type", content_type)),
+        cors,
+    );
+    request
+        .respond(response)
+        .map_err(|err| anyhow!("failed to write asset response: {err}"))
+}
+
+pub(super) fn respond_text(
+    request: Request,
+    status: u16,
+    message: &str,
+    cors: Option<&str>,
+) -> Result<()> {
     let response = with_cors(
         Response::from_string(message.to_string())
             .with_status_code(StatusCode(status))

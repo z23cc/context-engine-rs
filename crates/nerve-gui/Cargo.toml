@@ -1,0 +1,36 @@
+[package]
+name = "nerve-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# wasm32-only CSR frontend. Kept out of the engine's default build set
+# (Cargo.toml `default-members`) so `cargo build/test --workspace` for the
+# engine never tries to host-compile a WASM-only crate. Build it explicitly
+# with `trunk build` (cwd here) against the wasm32-unknown-unknown target.
+publish = false
+
+[lib]
+# `rlib` only: the WASM artifact is the `nerve-gui` *binary* (`src/main.rs`,
+# trunk's CSR entry). A `cdylib` here would make two wasm artifacts and trunk
+# cannot pick between them ("found more than one target artifact").
+crate-type = ["rlib"]
+
+[dependencies]
+# Shared protocol vocabulary — WITHOUT the `schema` feature, so the frontend
+# never pulls schemars. This is the single protocol authority (no hand-rolled
+# duplicate types): the WASM app deserializes the EXACT engine types.
+nerve-proto = { workspace = true }
+leptos = { version = "0.7", features = ["csr"] }
+gloo-net = { version = "0.6", features = ["http"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+console_error_panic_hook = "0.1"
+
+[lints]
+workspace = true

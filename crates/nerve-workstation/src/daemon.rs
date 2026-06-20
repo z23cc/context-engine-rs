@@ -1,3 +1,4 @@
+mod app;
 mod http;
 mod router;
 mod setup;

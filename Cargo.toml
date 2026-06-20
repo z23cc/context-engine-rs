@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/nerve-core", "crates/nerve-proto", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui"]
+members = ["crates/nerve-core", "crates/nerve-proto", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui", "crates/nerve-gui"]
+# nerve-gui is a wasm32-only CSR crate: it depends on leptos/web-sys/gloo, which
+# do not host-compile. Keeping it out of `default-members` means the engine's
+# normal `cargo build/test --workspace` (host target) never tries to build it,
+# while it stays a workspace member so it shares the lockfile + nerve-proto path.
+# Build it explicitly with `trunk build` (cwd crates/nerve-gui) for wasm32.
+default-members = ["crates/nerve-core", "crates/nerve-proto", "crates/nerve-runtime", "crates/nerve-workstation", "crates/nerve-agent", "crates/nerve-tui"]
 exclude = ["fuzz", "apps"]
 resolver = "3"
 
