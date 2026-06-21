@@ -182,3 +182,14 @@ cp target/release/nerve "apps/desktop/src-tauri/binaries/nerve-$(rustc -vV | sed
 ```
 
 The app spawns its bundled `nerve daemon` and opens the Leptos GUI at `/`.
+
+### macOS: re-sign after copying the .app
+
+Copying the bundle (e.g. into `/Applications`) can invalidate the ad-hoc signature so
+the hardened shell refuses to spawn the bundled `nerve` sidecar ("daemon did not start").
+After copying, clear xattrs + ad-hoc re-sign the whole bundle:
+
+```bash
+xattr -cr "/Applications/Nerve Workstation.app"
+codesign --force --deep --sign - "/Applications/Nerve Workstation.app"
+```
