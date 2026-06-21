@@ -42,6 +42,7 @@ pub(crate) fn Sidebar(
     token: StoredValue<Option<String>>,
     search: RwSignal<String>,
     workspace: RwSignal<String>,
+    workspaces: RwSignal<Vec<(String, String)>>,
     settings_open: RwSignal<bool>,
     busy: Signal<bool>,
 ) -> impl IntoView {
@@ -83,6 +84,46 @@ pub(crate) fn Sidebar(
         });
     };
 
+    // Project management. `adding` toggles a path input; do_add registers a root
+    // (name = its basename) and switches to it; do_remove drops one (keeping the
+    // active selection valid, and never the last workspace).
+    let adding = RwSignal::new(false);
+    let new_path = RwSignal::new(String::new());
+    let do_add = move || {
+        let Some(tok) = token.get_value() else { return };
+        let path = new_path.get_untracked().trim().to_string();
+        if path.is_empty() {
+            return;
+        }
+        let name = path
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or(path.as_str())
+            .to_string();
+        new_path.set(String::new());
+        adding.set(false);
+        leptos::task::spawn_local(async move {
+            let list = crate::data::add_workspace(&tok, &name, &path).await;
+            workspaces.set(list);
+            workspace.set(name);
+        });
+    };
+    let do_remove = move |name: String| {
+        if workspaces.with_untracked(|all| all.len()) <= 1 {
+            return;
+        }
+        let Some(tok) = token.get_value() else { return };
+        leptos::task::spawn_local(async move {
+            let list = crate::data::remove_workspace(&tok, &name).await;
+            if workspace.get_untracked() == name
+                && let Some((first, _)) = list.first()
+            {
+                workspace.set(first.clone());
+            }
+            workspaces.set(list);
+        });
+    };
+
     view! {
         <aside class="sidebar">
             <div class="brand"><span class="spark">"N"</span><span>"Nerve"</span></div>
@@ -102,8 +143,53 @@ pub(crate) fn Sidebar(
                     } />
                 <button class="search-clear" title="Clear" on:click=move |_| search.set(String::new())>"×"</button>
             </div>
-            <div class="rail-label">"Projects"</div>
-            <div class="project-row"><span class="project-dot"></span><span>{move || workspace.get()}</span></div>
+            <div class="rail-label rail-label-row">
+                <span>"Projects"</span>
+                <button class="rail-add" title="Add project"
+                    on:click=move |_| adding.update(|a| *a = !*a)>"+"</button>
+            </div>
+            {move || adding.get().then(|| view! {
+                <input class="proj-add-in" placeholder="Absolute path to a repo…"
+                    prop:value=move || new_path.get()
+                    on:input=move |ev| new_path.set(event_target_value(&ev))
+                    on:keydown=move |ev| {
+                        if ev.key() == "Enter" { ev.prevent_default(); do_add(); }
+                        if ev.key() == "Escape" { adding.set(false); }
+                    } />
+            })}
+            <div class="proj-list">
+                {move || {
+                    let cur = workspace.get();
+                    let list = workspaces.get();
+                    if list.is_empty() {
+                        return view! {
+                            <div class="project-row"><span class="project-dot"></span>
+                                <span>{move || workspace.get()}</span></div>
+                        }.into_any();
+                    }
+                    let multi = list.len() > 1;
+                    list.into_iter().map(|(name, _root)| {
+                        let on = name == cur;
+                        let pick = name.clone();
+                        let rm = name.clone();
+                        view! {
+                            <div class="rail-row" class:on=on>
+                                <button class="rail-pick" on:click=move |_| workspace.set(pick.clone())>
+                                    <span class="project-dot"></span>
+                                    <span class="rail-title">{name}</span>
+                                </button>
+                                {multi.then(|| {
+                                    let rm = rm.clone();
+                                    view! {
+                                        <button class="rail-close" title="Remove project"
+                                            on:click=move |_| do_remove(rm.clone())>"×"</button>
+                                    }
+                                })}
+                            </div>
+                        }
+                    }).collect_view().into_any()
+                }}
+            </div>
             <div class="rail-label">"Conversations"</div>
             <div class="rail">
                 {move || {

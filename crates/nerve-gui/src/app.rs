@@ -130,8 +130,23 @@ pub fn App() -> impl IntoView {
     let inspector_open = RwSignal::new(false);
     // Top-level surface: the delegate chat, or the Context builder.
     let mode = RwSignal::new("chat");
-    let workspace = RwSignal::new("workspace".to_string());
+    // Multi-project: `workspaces` is every registered workspace `(name, root)`;
+    // `workspace` is the ACTIVE one's name (the routing key threaded into every
+    // tool call + delegate cwd + reveal). Switching projects re-points all of it.
+    let workspaces = RwSignal::new(Vec::<(String, String)>::new());
+    let workspace = RwSignal::new(String::new());
     let branch = RwSignal::new("—".to_string());
+    // The active workspace's root path (for delegate cwd); "" until loaded. Read
+    // only from event handlers, so untracked.
+    let active_root = move || {
+        let name = workspace.get_untracked();
+        workspaces.with_untracked(|all| {
+            all.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, root)| root.clone())
+                .unwrap_or_default()
+        })
+    };
 
     Effect::new(move |_| {
         let Some(tok) = token.get_value() else {
@@ -142,12 +157,29 @@ pub fn App() -> impl IntoView {
         };
         let _ = open_events(&tok, move |event| route_event(event, chats, approval));
         leptos::task::spawn_local(async move {
-            if let Some((name, _root)) = crate::data::fetch_workspace(&tok).await {
-                workspace.set(name);
+            let list = crate::data::list_workspaces(&tok).await;
+            if workspace.get_untracked().is_empty()
+                && let Some((name, _)) = list.first()
+            {
+                workspace.set(name.clone());
             }
-            if let Some(b) = crate::data::fetch_branch(&tok).await {
-                branch.set(b);
-            }
+            workspaces.set(list);
+        });
+    });
+
+    // Re-fetch the active workspace's branch whenever the selection changes.
+    Effect::new(move |_| {
+        let ws = workspace.get();
+        if ws.is_empty() {
+            return;
+        }
+        let Some(tok) = token.get_value() else { return };
+        leptos::task::spawn_local(async move {
+            branch.set(
+                crate::data::fetch_branch(&tok, &ws)
+                    .await
+                    .unwrap_or_else(|| "—".into()),
+            );
         });
     });
 
@@ -212,10 +244,11 @@ pub fn App() -> impl IntoView {
                 }
             }
         });
-        let (ag, au, md) = (
+        let (ag, au, md, root) = (
             agent.get_untracked(),
             autonomy.get_untracked(),
             model.get_untracked(),
+            active_root(),
         );
         leptos::task::spawn_local(async move {
             let cmd = match &existing {
@@ -224,6 +257,10 @@ pub fn App() -> impl IntoView {
                     let mut cmd = json!({"kind": "delegate.start", "agent": ag, "task": text, "autonomy": au});
                     if !md.is_empty() {
                         cmd["model"] = json!(md);
+                    }
+                    // Run the delegated CLI in the ACTIVE workspace's root.
+                    if !root.is_empty() {
+                        cmd["cwd"] = json!(root);
                     }
                     cmd
                 }
@@ -265,11 +302,12 @@ pub fn App() -> impl IntoView {
             return;
         }
         let Some(tok) = token.get_value() else { return };
+        let ws = workspace.get_untracked();
         inspector_data.set("loading…".into());
         leptos::task::spawn_local(async move {
             let text = match tab {
-                "files" => crate::data::fetch_file_tree(&tok).await,
-                "changes" => crate::data::fetch_diff(&tok).await,
+                "files" => crate::data::fetch_file_tree(&tok, &ws).await,
+                "changes" => crate::data::fetch_diff(&tok, &ws).await,
                 _ => None,
             };
             inspector_data.set(text.unwrap_or_else(|| "—".into()));
@@ -289,8 +327,9 @@ pub fn App() -> impl IntoView {
     // platform opener.
     let reveal = move || {
         let Some(tok) = token.get_value() else { return };
+        let ws = workspace.get_untracked();
         leptos::task::spawn_local(async move {
-            let _ = start_job(&tok, json!({ "kind": "workspace.reveal" })).await;
+            let _ = start_job(&tok, json!({ "kind": "workspace.reveal", "workspace": ws })).await;
         });
     };
 
@@ -372,7 +411,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div id="nerve-shell" class:with-inspector=move || inspector_open.get()>
-            <Sidebar chats active input error token search workspace settings_open
+            <Sidebar chats active input error token search workspace workspaces settings_open
                 busy=Signal::derive(active_busy) />
             <main class="main chat">
                 <div class="topbar">
@@ -396,7 +435,7 @@ pub fn App() -> impl IntoView {
                 </div>
                 {move || error.get().map(|e| view! { <div class="shell-error">{e}</div> })}
                 {move || if mode.get() == "context" {
-                    view! { <ContextView token=token/> }.into_any()
+                    view! { <ContextView token=token workspace=workspace/> }.into_any()
                 } else if empty.get() {
                     view! {
                         <div class="hero">

@@ -1166,3 +1166,36 @@ summary:focus-visible {
   font-size: 12.5px;
   cursor: pointer;
 }
+
+/* ── Projects management (multi-workspace, G16) ───────────────────────────── */
+.rail-label-row { display: flex; align-items: center; justify-content: space-between; }
+.rail-add {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.rail-add:hover { background: var(--hover); color: var(--fg); }
+.proj-list { display: flex; flex-direction: column; gap: 1px; flex: 0 0 auto; }
+.proj-add-in {
+  margin: 2px 0 4px;
+  min-height: 30px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 12.5px;
+  outline: none;
+}
+.proj-add-in:focus { border-color: var(--focus); }

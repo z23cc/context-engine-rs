@@ -33,7 +33,12 @@ struct Budget {
 }
 
 #[component]
-pub fn ContextView(token: StoredValue<Option<String>>) -> impl IntoView {
+pub fn ContextView(
+    token: StoredValue<Option<String>>,
+    /// The active workspace name, threaded into every tool call so the Context
+    /// surface follows the selected project.
+    workspace: RwSignal<String>,
+) -> impl IntoView {
     let recipe = RwSignal::new("standard".to_string());
     let filter = RwSignal::new(String::new());
     let files = RwSignal::new(Vec::<FileRow>::new());
@@ -45,13 +50,14 @@ pub fn ContextView(token: StoredValue<Option<String>>) -> impl IntoView {
     let refresh = move || {
         let Some(tok) = token.get_value() else { return };
         let rec = recipe.get_untracked();
+        let ws = workspace.get_untracked();
         leptos::task::spawn_local(async move {
             let git_diff = if rec == "review" || rec == "diff" {
-                fetch_diff(&tok).await
+                fetch_diff(&tok, &ws).await
             } else {
                 None
             };
-            if let Some((text, structured)) = fetch_context(&tok, &rec, git_diff).await {
+            if let Some((text, structured)) = fetch_context(&tok, &rec, git_diff, &ws).await {
                 context_text.set(text);
                 let parsed = structured
                     .get("tokens")
@@ -69,10 +75,11 @@ pub fn ContextView(token: StoredValue<Option<String>>) -> impl IntoView {
     let load_files = move || {
         let Some(tok) = token.get_value() else { return };
         let query = filter.get_untracked();
+        let ws = workspace.get_untracked();
         let generation = load_gen.get_value() + 1;
         load_gen.set_value(generation);
         leptos::task::spawn_local(async move {
-            let (rows, trunc) = list_files(&tok, &query, FILE_LIMIT).await;
+            let (rows, trunc) = list_files(&tok, &query, FILE_LIMIT, &ws).await;
             if load_gen.get_value() == generation {
                 files.set(rows);
                 truncated.set(trunc);
@@ -80,21 +87,23 @@ pub fn ContextView(token: StoredValue<Option<String>>) -> impl IntoView {
         });
     };
 
+    // Re-run on recipe / filter changes AND when the active workspace switches.
     Effect::new(move |_| {
-        let _ = recipe.get();
+        let _ = (recipe.get(), workspace.get());
         refresh();
     });
     Effect::new(move |_| {
-        let _ = filter.get();
+        let _ = (filter.get(), workspace.get());
         load_files();
     });
 
     // Toggle a file's selection, then refresh the list state + the budget.
     let toggle = move |path: String, selected: bool| {
         let Some(tok) = token.get_value() else { return };
+        let ws = workspace.get_untracked();
         let op = if selected { "remove" } else { "add" };
         leptos::task::spawn_local(async move {
-            let _ = selection_op(&tok, op, vec![path]).await;
+            let _ = selection_op(&tok, op, vec![path], &ws).await;
             load_files();
             refresh();
         });

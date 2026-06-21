@@ -99,51 +99,102 @@ pub async fn fetch_context(
     token: &str,
     recipe: &str,
     git_diff: Option<String>,
+    workspace: &str,
 ) -> Option<(String, Value)> {
     let mut args = json!({ "recipe": recipe });
     if let Some(diff) = git_diff {
         args["git_diff"] = json!(diff);
     }
-    tool_job_full(token, "workspace_context", args).await.ok()
+    tool_job_full(token, "workspace_context", with_ws(args, workspace))
+        .await
+        .ok()
 }
 
 /// Run a `manage_selection` op (get/add/remove/clear); returns its
 /// `structuredContent` (the selection summary with per-file token counts).
-pub async fn selection_op(token: &str, op: &str, paths: Vec<String>) -> Option<Value> {
+pub async fn selection_op(
+    token: &str,
+    op: &str,
+    paths: Vec<String>,
+    workspace: &str,
+) -> Option<Value> {
     tool_job(
         token,
         "manage_selection",
-        json!({ "op": op, "paths": paths }),
+        with_ws(json!({ "op": op, "paths": paths }), workspace),
     )
     .await
     .ok()
 }
 
-/// The default workspace name + first root, via `manage_workspaces {op:get}`.
-pub async fn fetch_workspace(token: &str) -> Option<(String, String)> {
-    let sc = tool_job(
+/// Attach the active `workspace` selector to a tool's arguments so the dispatch
+/// routes the call to that workspace (see `workspace_arg`); a blank name leaves
+/// the call on the default workspace.
+fn with_ws(mut args: Value, workspace: &str) -> Value {
+    if !workspace.is_empty() {
+        args["workspace"] = json!(workspace);
+    }
+    args
+}
+
+/// One row of a `manage_workspaces` response: `(name, first-root)`.
+fn parse_workspaces(sc: &Value) -> Vec<(String, String)> {
+    sc.get("workspaces")
+        .and_then(|w| w.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ws| {
+                    let name = ws.get("name")?.as_str()?.to_string();
+                    let root = ws
+                        .get("roots")
+                        .and_then(|r| r.as_array())
+                        .and_then(|r| r.first())
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    Some((name, root))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// All registered workspaces as `(name, first-root)`, via `manage_workspaces {op:list}`.
+pub async fn list_workspaces(token: &str) -> Vec<(String, String)> {
+    match tool_job(token, "manage_workspaces", json!({"op":"list"})).await {
+        Ok(sc) => parse_workspaces(&sc),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Register a workspace root (`manage_workspaces {op:add}`); returns the new list.
+pub async fn add_workspace(token: &str, name: &str, root: &str) -> Vec<(String, String)> {
+    let _ = tool_job(
         token,
         "manage_workspaces",
-        json!({"op":"get","name":"default"}),
+        json!({"op":"add","name":name,"roots":[root]}),
     )
-    .await
-    .ok()?;
-    let ws = sc.get("workspaces")?.as_array()?.first()?;
-    let name = ws.get("name")?.as_str()?.to_string();
-    let root = ws
-        .get("roots")
-        .and_then(|r| r.as_array())
-        .and_then(|r| r.first())
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    Some((name, root))
+    .await;
+    list_workspaces(token).await
+}
+
+/// Remove a registered workspace (`manage_workspaces {op:remove}`); returns the new list.
+pub async fn remove_workspace(token: &str, name: &str) -> Vec<(String, String)> {
+    let _ = tool_job(
+        token,
+        "manage_workspaces",
+        json!({"op":"remove","name":name}),
+    )
+    .await;
+    list_workspaces(token).await
 }
 
 /// The current git branch, parsed from the `git {op:status}` porcelain header
 /// (`## <branch>...origin/<branch> [ahead N]`).
-pub async fn fetch_branch(token: &str) -> Option<String> {
-    let sc = tool_job(token, "git", json!({"op":"status"})).await.ok()?;
+pub async fn fetch_branch(token: &str, workspace: &str) -> Option<String> {
+    let sc = tool_job(token, "git", with_ws(json!({"op":"status"}), workspace))
+        .await
+        .ok()?;
     let output = sc.get("output")?.as_str()?;
     let header = output.lines().next()?.strip_prefix("## ")?;
     let branch = header
@@ -157,17 +208,23 @@ pub async fn fetch_branch(token: &str) -> Option<String> {
 }
 
 /// The repo file tree (ASCII), via `get_file_tree`.
-pub async fn fetch_file_tree(token: &str) -> Option<String> {
-    let sc = tool_job(token, "get_file_tree", json!({"mode":"auto","max_depth":3}))
-        .await
-        .ok()?;
+pub async fn fetch_file_tree(token: &str, workspace: &str) -> Option<String> {
+    let sc = tool_job(
+        token,
+        "get_file_tree",
+        with_ws(json!({"mode":"auto","max_depth":3}), workspace),
+    )
+    .await
+    .ok()?;
     sc.get("tree")?.as_str().map(str::to_string)
 }
 
 /// The working-tree diff (unified), via `git {op:diff}`. Returns the diff text,
 /// or a short note when the tree is clean.
-pub async fn fetch_diff(token: &str) -> Option<String> {
-    let sc = tool_job(token, "git", json!({"op":"diff"})).await.ok()?;
+pub async fn fetch_diff(token: &str, workspace: &str) -> Option<String> {
+    let sc = tool_job(token, "git", with_ws(json!({"op":"diff"}), workspace))
+        .await
+        .ok()?;
     let out = sc.get("output")?.as_str()?.trim();
     Some(if out.is_empty() {
         "No changes in the working tree.".to_string()
@@ -185,12 +242,17 @@ pub struct FileRow {
 }
 
 /// Structured, selection-aware file list for the picker; returns `(rows, truncated)`.
-pub async fn list_files(token: &str, query: &str, limit: usize) -> (Vec<FileRow>, bool) {
+pub async fn list_files(
+    token: &str,
+    query: &str,
+    limit: usize,
+    workspace: &str,
+) -> (Vec<FileRow>, bool) {
     let mut args = json!({ "limit": limit });
     if !query.is_empty() {
         args["query"] = json!(query);
     }
-    match tool_job(token, "list_files", args).await {
+    match tool_job(token, "list_files", with_ws(args, workspace)).await {
         Ok(sc) => {
             let rows = sc
                 .get("files")
