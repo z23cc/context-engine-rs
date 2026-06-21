@@ -1,19 +1,17 @@
-//! Chat surface (G2) + approvals & model picker (G3): a multi-turn `session.*`
-//! chat over `/rpc` + `/events`.
+//! Chat surface + approvals + model picker + a sidebar conversation list.
 //!
-//! The composer starts a session on first send, streams the assistant turn from
-//! the SSE `/events` stream (deserialized into the EXACT `nerve_proto` types —
-//! the single protocol authority), renders markdown + reasoning + tool cards,
-//! routes the agent's `approval_requested` through a modal (`session.respond`),
-//! and exposes a provider/model picker (`session.set_model` on a live session).
-//! Original styling; the full Codex polish + the flip to `/` are G4.
+//! In-memory multi-chat: the sidebar lists the conversations started this
+//! browser session; switching swaps the active transcript + session. Each chat
+//! drives the `session.*` family over `/rpc` + `/events`, streaming assistant
+//! turns from the SSE stream (deserialized into the EXACT `nerve_proto` types —
+//! the single protocol authority), with an approval modal (`session.respond`).
+//! Original styling — a refined dark chat aesthetic, no proprietary assets.
 
 use crate::rpc::{daemon_token, open_events, start_job};
 use leptos::prelude::*;
 use nerve_proto::{AgentEventKind, RuntimeEvent};
 use serde_json::json;
 
-/// Defaults for `session.start` (editable in the picker).
 const DEFAULT_PROVIDER: &str = "claude";
 const DEFAULT_MODEL: &str = "claude-opus-4-8";
 
@@ -23,7 +21,6 @@ enum Role {
     Assistant,
 }
 
-/// A single tool call rendered inline in an assistant turn.
 #[derive(Clone)]
 struct ToolCard {
     tool: String,
@@ -31,7 +28,6 @@ struct ToolCard {
     output: String,
 }
 
-/// One conversation turn. Assistant turns stream as `SessionAgent` events arrive.
 #[derive(Clone)]
 struct Turn {
     role: Role,
@@ -43,28 +39,33 @@ struct Turn {
 
 impl Turn {
     fn user(text: String) -> Self {
-        Self {
-            role: Role::User,
-            text,
-            reasoning: String::new(),
-            tools: Vec::new(),
-            streaming: false,
-        }
+        Self { role: Role::User, text, reasoning: String::new(), tools: Vec::new(), streaming: false }
     }
     fn assistant_streaming() -> Self {
-        Self {
-            role: Role::Assistant,
-            text: String::new(),
-            reasoning: String::new(),
-            tools: Vec::new(),
-            streaming: true,
-        }
+        Self { role: Role::Assistant, text: String::new(), reasoning: String::new(), tools: Vec::new(), streaming: true }
     }
 }
 
-/// A pending tool-permission decision surfaced by the agent.
+/// One conversation in the sidebar list (in-memory for this browser session).
+#[derive(Clone)]
+struct Chat {
+    title: String,
+    session: Option<String>,
+    turns: Vec<Turn>,
+    streaming: bool,
+}
+
+impl Chat {
+    fn new() -> Self {
+        Self { title: "New chat".into(), session: None, turns: Vec::new(), streaming: false }
+    }
+}
+
+/// A pending tool-permission decision (carries its own session_id so the reply
+/// targets the right chat even if the user has switched conversations).
 #[derive(Clone)]
 struct ApprovalReq {
+    session_id: String,
     request_id: String,
     tool: String,
     preview: String,
@@ -74,68 +75,74 @@ struct ApprovalReq {
 #[component]
 pub fn App() -> impl IntoView {
     let token = StoredValue::new(daemon_token());
-    let conversation = RwSignal::new(Vec::<Turn>::new());
-    let session = RwSignal::new(None::<String>);
-    let streaming = RwSignal::new(false);
+    let chats = RwSignal::new(vec![Chat::new()]);
+    let active = RwSignal::new(0usize);
     let input = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
     let approval = RwSignal::new(None::<ApprovalReq>);
     let provider = RwSignal::new(DEFAULT_PROVIDER.to_string());
     let model = RwSignal::new(DEFAULT_MODEL.to_string());
 
-    // Open the SSE stream once (app lifetime); route events into the signals.
     Effect::new(move |_| {
         if let Some(tok) = token.get_value() {
-            let _ = open_events(&tok, move |event| {
-                route_event(event, session, conversation, streaming, approval);
-            });
+            let _ = open_events(&tok, move |event| route_event(event, chats, approval));
         } else {
-            error.set(Some(
-                "no daemon token — open the daemon's /app URL (or append #token=…)".into(),
-            ));
+            error.set(Some("no daemon token — open the daemon's URL (or append #token=…)".into()));
         }
     });
+
+    // Whether the active chat is mid-turn (drives Send⇄Stop).
+    let active_busy = move || chats.with(|cs| cs.get(active.get()).is_some_and(|c| c.streaming));
 
     let send = move || {
         let Some(tok) = token.get_value() else { return };
         let text = input.get_untracked().trim().to_string();
-        if text.is_empty() || streaming.get_untracked() {
+        if text.is_empty() || active_busy() {
             return;
         }
         input.set(String::new());
         error.set(None);
-        conversation.update(|c| {
-            c.push(Turn::user(text.clone()));
-            c.push(Turn::assistant_streaming());
+        let idx = active.get_untracked();
+        chats.update(|cs| {
+            if let Some(c) = cs.get_mut(idx) {
+                if c.turns.is_empty() {
+                    c.title = truncate_title(&text);
+                }
+                c.turns.push(Turn::user(text.clone()));
+                c.turns.push(Turn::assistant_streaming());
+                c.streaming = true;
+            }
         });
-        streaming.set(true);
         let (prov, mdl) = (provider.get_untracked(), model.get_untracked());
         leptos::task::spawn_local(async move {
-            let session_id = match ensure_session(&tok, session, &prov, &mdl).await {
+            let session_id = match ensure_session(&tok, chats, idx, &prov, &mdl).await {
                 Ok(id) => id,
-                Err(err) => return finish_with_error(conversation, streaming, error, err),
+                Err(err) => return fail_chat(chats, idx, error, err),
             };
             let cmd = json!({"kind": "session.message", "session_id": session_id, "text": text});
             if let Err(err) = start_job(&tok, cmd).await {
-                finish_with_error(conversation, streaming, error, format!("session.message: {err}"));
+                fail_chat(chats, idx, error, format!("session.message: {err}"));
             }
         });
     };
 
     let stop = move || {
         let Some(tok) = token.get_value() else { return };
-        let Some(session_id) = session.get_untracked() else {
+        let idx = active.get_untracked();
+        let Some(session_id) = chats.with_untracked(|cs| cs.get(idx).and_then(|c| c.session.clone()))
+        else {
             return;
         };
         leptos::task::spawn_local(async move {
-            let _ = start_job(&tok, json!({"kind": "session.interrupt", "session_id": session_id}))
-                .await;
+            let _ = start_job(&tok, json!({"kind": "session.interrupt", "session_id": session_id})).await;
         });
     };
 
     let apply_model = move || {
         let Some(tok) = token.get_value() else { return };
-        let Some(session_id) = session.get_untracked() else {
+        let idx = active.get_untracked();
+        let Some(session_id) = chats.with_untracked(|cs| cs.get(idx).and_then(|c| c.session.clone()))
+        else {
             return;
         };
         let (prov, mdl) = (provider.get_untracked(), model.get_untracked());
@@ -146,52 +153,71 @@ pub fn App() -> impl IntoView {
     };
 
     let new_chat = move |_| {
-        conversation.set(Vec::new());
-        session.set(None);
-        streaming.set(false);
+        let mut idx = 0;
+        chats.update(|cs| {
+            cs.push(Chat::new());
+            idx = cs.len() - 1;
+        });
+        active.set(idx);
+        input.set(String::new());
         error.set(None);
-        approval.set(None);
     };
 
     view! {
         <div id="nerve-shell">
             <aside class="sidebar">
-                <div class="brand"><span class="spark">"◆"</span>" Nerve Console"</div>
-                <div class="tagline">"chat · session.* · protocol v4"</div>
-                <button class="newchat" on:click=new_chat>"＋ New chat"</button>
+                <div class="brand"><span class="spark">"◆"</span>" Nerve"</div>
+                <button class="newchat" on:click=new_chat>
+                    <span class="plus">"＋"</span>" New chat"
+                </button>
+                <div class="rail-label">"Conversations"</div>
+                <div class="rail">
+                    {move || {
+                        let cur = active.get();
+                        chats.get().into_iter().enumerate().map(|(i, c)| {
+                            let cls = if i == cur { "rail-row on" } else { "rail-row" };
+                            let live = c.session.is_some();
+                            let title = c.title;
+                            view! {
+                                <button class=cls on:click=move |_| active.set(i)>
+                                    <span class="rail-dot" class:live=live></span>
+                                    <span class="rail-title">{title}</span>
+                                </button>
+                            }
+                        }).collect_view()
+                    }}
+                </div>
                 <div class="spacer"></div>
                 <div class="status-row">
-                    {move || match (session.get(), streaming.get()) {
-                        (Some(_), true) => view! { <span class="dot busy"></span>"streaming" }.into_any(),
-                        (Some(_), false) => view! { <span class="dot ok"></span>"session live" }.into_any(),
-                        (None, _) => view! { <span class="dot idle"></span>"no session" }.into_any(),
+                    {move || if active_busy() {
+                        view! { <span class="dot busy"></span>"streaming" }.into_any()
+                    } else {
+                        view! { <span class="dot idle"></span>"protocol v4" }.into_any()
                     }}
                 </div>
             </aside>
             <main class="main chat">
                 <div class="topbar">
+                    <div class="topbar-title">
+                        {move || chats.with(|cs| cs.get(active.get()).map(|c| c.title.clone()).unwrap_or_default())}
+                    </div>
                     <div class="picker">
                         <input class="pick-in" prop:value=move || provider.get()
                             on:input=move |ev| provider.set(event_target_value(&ev)) title="provider" />
                         <span class="pick-sep">"/"</span>
                         <input class="pick-in wide" prop:value=move || model.get()
                             on:input=move |ev| model.set(event_target_value(&ev)) title="model" />
-                        {move || session.get().map(|_| view! {
-                            <button class="pick-apply" title="apply to live session (session.set_model)"
-                                on:click=move |_| apply_model()>"set"</button>
-                        })}
-                    </div>
-                    <div class="topbar-id">
-                        {move || session.get().map(|id| view! { <span class="sid">"#"{id}</span> })}
+                        <button class="pick-apply" title="apply to live session (session.set_model)"
+                            on:click=move |_| apply_model()>"set"</button>
                     </div>
                 </div>
                 <div class="transcript">
                     {move || {
-                        let turns = conversation.get();
+                        let turns = chats.with(|cs| cs.get(active.get()).map(|c| c.turns.clone()).unwrap_or_default());
                         if turns.is_empty() {
                             view! { <div class="empty">
                                 <div class="empty-spark">"◆"</div>
-                                <div class="empty-title">"Nerve Console"</div>
+                                <div class="empty-title">"Nerve"</div>
                                 <div class="empty-sub">"Ask anything — the agent runs over the runtime protocol."</div>
                             </div> }.into_any()
                         } else {
@@ -201,43 +227,43 @@ pub fn App() -> impl IntoView {
                     {move || error.get().map(|e| view! { <div class="turn-error">{e}</div> })}
                 </div>
                 <div class="composer">
-                    <textarea
-                        class="input"
-                        rows="1"
-                        prop:value=move || input.get()
-                        on:input=move |ev| input.set(event_target_value(&ev))
-                        on:keydown=move |ev| {
-                            if ev.key() == "Enter" && !ev.shift_key() {
-                                ev.prevent_default();
-                                send();
+                    <div class="composer-inner">
+                        <textarea
+                            class="input"
+                            rows="1"
+                            prop:value=move || input.get()
+                            on:input=move |ev| input.set(event_target_value(&ev))
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" && !ev.shift_key() {
+                                    ev.prevent_default();
+                                    send();
+                                }
                             }
-                        }
-                        placeholder="Message Nerve…  (Enter to send · Shift+Enter for newline)"
-                    ></textarea>
-                    {move || if streaming.get() {
-                        view! { <button class="send stop" title="Stop" on:click=move |_| stop()>"■"</button> }.into_any()
-                    } else {
-                        view! { <button class="send" title="Send" on:click=move |_| send()>"↑"</button> }.into_any()
-                    }}
+                            placeholder="Message Nerve…"
+                        ></textarea>
+                        {move || if active_busy() {
+                            view! { <button class="send stop" title="Stop" on:click=move |_| stop()>"■"</button> }.into_any()
+                        } else {
+                            view! { <button class="send" title="Send" on:click=move |_| send()>"↑"</button> }.into_any()
+                        }}
+                    </div>
+                    <div class="composer-hint">"Enter to send · Shift+Enter for a newline"</div>
                 </div>
             </main>
             {move || approval.get().map(|req| view! {
-                <ApprovalModal req=req token=token session=session approval=approval />
+                <ApprovalModal req=req token=token approval=approval />
             })}
         </div>
     }
 }
 
-/// The approval overlay: shows the pending tool call and routes the decision
-/// back via `session.respond`.
 #[component]
 fn ApprovalModal(
     req: ApprovalReq,
     token: StoredValue<Option<String>>,
-    session: RwSignal<Option<String>>,
     approval: RwSignal<Option<ApprovalReq>>,
 ) -> impl IntoView {
-    let decide = move |decision: &'static str| respond(token, session, approval, decision);
+    let decide = move |decision: &'static str| respond(token, approval, decision);
     view! {
         <div class="modal-scrim">
             <div class="modal">
@@ -257,24 +283,21 @@ fn ApprovalModal(
     }
 }
 
-/// Send a `session.respond` decision and clear the modal.
+/// Send a `session.respond` decision (to the approval's own session) and clear the modal.
 fn respond(
     token: StoredValue<Option<String>>,
-    session: RwSignal<Option<String>>,
     approval: RwSignal<Option<ApprovalReq>>,
     decision: &'static str,
 ) {
     let req = approval.get_untracked();
     approval.set(None);
-    let (Some(tok), Some(session_id), Some(req)) =
-        (token.get_value(), session.get_untracked(), req)
-    else {
+    let (Some(tok), Some(req)) = (token.get_value(), req) else {
         return;
     };
     leptos::task::spawn_local(async move {
         let cmd = json!({
             "kind": "session.respond",
-            "session_id": session_id,
+            "session_id": req.session_id,
             "request_id": req.request_id,
             "decision": decision,
         });
@@ -282,20 +305,19 @@ fn respond(
     });
 }
 
-/// Return the live session id, starting one (`session.start`) if needed.
+/// Return the chat's live session id, starting one (`session.start`) if needed.
 async fn ensure_session(
     token: &str,
-    session: RwSignal<Option<String>>,
+    chats: RwSignal<Vec<Chat>>,
+    idx: usize,
     provider: &str,
     model: &str,
 ) -> Result<String, String> {
-    if let Some(id) = session.get_untracked() {
+    if let Some(id) = chats.with_untracked(|cs| cs.get(idx).and_then(|c| c.session.clone())) {
         return Ok(id);
     }
     let cmd = json!({"kind": "session.start", "provider": provider, "model": model});
-    let result = start_job(token, cmd)
-        .await
-        .map_err(|err| format!("session.start: {err}"))?;
+    let result = start_job(token, cmd).await.map_err(|err| format!("session.start: {err}"))?;
     let id = result
         .get("job")
         .and_then(|j| j.get("result"))
@@ -303,21 +325,20 @@ async fn ensure_session(
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .ok_or_else(|| "session.start returned no session_id".to_string())?;
-    session.set(Some(id.clone()));
+    chats.update(|cs| {
+        if let Some(c) = cs.get_mut(idx) {
+            c.session = Some(id.clone());
+        }
+    });
     Ok(id)
 }
 
-/// Mark the in-flight turn failed and surface the error.
-fn finish_with_error(
-    conversation: RwSignal<Vec<Turn>>,
-    streaming: RwSignal<bool>,
-    error: RwSignal<Option<String>>,
-    message: String,
-) {
-    streaming.set(false);
-    conversation.update(|c| {
-        if let Some(turn) = c.last_mut() {
-            if turn.role == Role::Assistant {
+/// Mark the chat's in-flight turn failed and surface the error.
+fn fail_chat(chats: RwSignal<Vec<Chat>>, idx: usize, error: RwSignal<Option<String>>, message: String) {
+    chats.update(|cs| {
+        if let Some(c) = cs.get_mut(idx) {
+            c.streaming = false;
+            if let Some(turn) = c.turns.last_mut() {
                 turn.streaming = false;
             }
         }
@@ -325,52 +346,24 @@ fn finish_with_error(
     error.set(Some(message));
 }
 
-/// Route one `RuntimeEvent` from the SSE stream, scoped to the active session.
-fn route_event(
-    event: RuntimeEvent,
-    session: RwSignal<Option<String>>,
-    conversation: RwSignal<Vec<Turn>>,
-    streaming: RwSignal<bool>,
-    approval: RwSignal<Option<ApprovalReq>>,
-) {
-    let current = session.get_untracked();
-    let matches = |sid: &str| current.as_deref() == Some(sid);
+/// Route one `RuntimeEvent` from the SSE stream into the chat owning its session.
+fn route_event(event: RuntimeEvent, chats: RwSignal<Vec<Chat>>, approval: RwSignal<Option<ApprovalReq>>) {
     match event {
-        RuntimeEvent::SessionStarted { session_id } => {
-            if current.is_none() {
-                session.set(Some(session_id));
+        RuntimeEvent::SessionIdle { session_id } => with_session(chats, &session_id, |c| {
+            c.streaming = false;
+            if let Some(turn) = c.turns.last_mut() {
+                turn.streaming = false;
             }
-        }
-        RuntimeEvent::SessionIdle { session_id } => {
-            if matches(&session_id) {
-                streaming.set(false);
-                conversation.update(|c| {
-                    if let Some(turn) = c.last_mut() {
-                        turn.streaming = false;
-                    }
-                });
-            }
-        }
-        RuntimeEvent::SessionClosed { session_id } => {
-            if matches(&session_id) {
-                streaming.set(false);
-            }
-        }
+        }),
+        RuntimeEvent::SessionClosed { session_id } => with_session(chats, &session_id, |c| c.streaming = false),
         RuntimeEvent::SessionAgent { session_id, event } => {
-            if matches(&session_id) {
-                apply_agent_event(event, conversation, streaming);
-            }
+            with_session(chats, &session_id, |c| apply_agent_event(event, c));
         }
-        RuntimeEvent::ApprovalRequested {
-            session_id,
-            request_id,
-            tool,
-            preview,
-            tier,
-            ..
-        } => {
-            if matches(&session_id) {
+        RuntimeEvent::ApprovalRequested { session_id, request_id, tool, preview, tier, .. } => {
+            // Only surface approvals for a session we own.
+            if chats.with_untracked(|cs| cs.iter().any(|c| c.session.as_deref() == Some(session_id.as_str()))) {
                 approval.set(Some(ApprovalReq {
+                    session_id,
                     request_id,
                     tool,
                     preview,
@@ -382,58 +375,57 @@ fn route_event(
     }
 }
 
-/// Fold a single `AgentEventKind` into the current (streaming) assistant turn.
-fn apply_agent_event(
-    event: AgentEventKind,
-    conversation: RwSignal<Vec<Turn>>,
-    streaming: RwSignal<bool>,
-) {
-    let mut interrupted = false;
-    conversation.update(|c| {
-        let needs_turn = !matches!(c.last(), Some(t) if t.role == Role::Assistant && t.streaming);
-        if needs_turn {
-            c.push(Turn::assistant_streaming());
-        }
-        let Some(turn) = c.last_mut() else { return };
-        match event {
-            AgentEventKind::Message { text } => turn.text.push_str(&text),
-            AgentEventKind::Reasoning { text } => turn.reasoning.push_str(&text),
-            AgentEventKind::ToolStarted { tool, .. } => turn.tools.push(ToolCard {
-                tool,
-                ok: None,
-                output: String::new(),
-            }),
-            AgentEventKind::ToolFinished { tool, ok, output } => {
-                match turn
-                    .tools
-                    .iter_mut()
-                    .rev()
-                    .find(|card| card.tool == tool && card.ok.is_none())
-                {
-                    Some(card) => {
-                        card.ok = Some(ok);
-                        card.output = output;
-                    }
-                    None => turn.tools.push(ToolCard {
-                        tool,
-                        ok: Some(ok),
-                        output,
-                    }),
-                }
-            }
-            AgentEventKind::Interrupted { .. } => {
-                turn.streaming = false;
-                interrupted = true;
-            }
-            AgentEventKind::TurnStarted { .. } | AgentEventKind::Usage { .. } => {}
+/// Apply `f` to the chat whose session matches `session_id`, if any.
+fn with_session(chats: RwSignal<Vec<Chat>>, session_id: &str, f: impl FnOnce(&mut Chat)) {
+    chats.update(|cs| {
+        if let Some(c) = cs.iter_mut().find(|c| c.session.as_deref() == Some(session_id)) {
+            f(c);
         }
     });
-    if interrupted {
-        streaming.set(false);
+}
+
+/// Fold a single `AgentEventKind` into the chat's current (streaming) assistant turn.
+fn apply_agent_event(event: AgentEventKind, chat: &mut Chat) {
+    let needs_turn = !matches!(chat.turns.last(), Some(t) if t.role == Role::Assistant && t.streaming);
+    if needs_turn {
+        chat.turns.push(Turn::assistant_streaming());
+    }
+    let Some(turn) = chat.turns.last_mut() else { return };
+    match event {
+        AgentEventKind::Message { text } => turn.text.push_str(&text),
+        AgentEventKind::Reasoning { text } => turn.reasoning.push_str(&text),
+        AgentEventKind::ToolStarted { tool, .. } => turn.tools.push(ToolCard { tool, ok: None, output: String::new() }),
+        AgentEventKind::ToolFinished { tool, ok, output } => {
+            match turn.tools.iter_mut().rev().find(|card| card.tool == tool && card.ok.is_none()) {
+                Some(card) => {
+                    card.ok = Some(ok);
+                    card.output = output;
+                }
+                None => turn.tools.push(ToolCard { tool, ok: Some(ok), output }),
+            }
+        }
+        AgentEventKind::Interrupted { .. } => {
+            turn.streaming = false;
+            chat.streaming = false;
+        }
+        AgentEventKind::TurnStarted { .. } | AgentEventKind::Usage { .. } => {}
     }
 }
 
-/// Render one conversation turn.
+/// A short sidebar title from the first user message.
+fn truncate_title(text: &str) -> String {
+    let line = text.lines().next().unwrap_or(text).trim();
+    let mut title: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "New chat".into()
+    } else {
+        title
+    }
+}
+
 fn render_turn(turn: Turn) -> AnyView {
     match turn.role {
         Role::User => view! {
@@ -463,7 +455,6 @@ fn render_turn(turn: Turn) -> AnyView {
     }
 }
 
-/// Render one tool-call card (run / ok / error).
 fn render_tool(card: ToolCard) -> AnyView {
     let status = match card.ok {
         None => "run",
@@ -487,9 +478,8 @@ fn render_tool(card: ToolCard) -> AnyView {
     .into_any()
 }
 
-/// Render markdown to sanitized HTML: raw inline/block HTML in model output is
-/// downgraded to escaped text (no script injection); code is escaped by the
-/// writer. Loopback-only, but defense-in-depth regardless.
+/// Markdown → sanitized HTML: raw inline/block HTML in model output is downgraded
+/// to escaped text (no script injection); code is escaped by the writer.
 fn markdown_to_html(src: &str) -> String {
     use pulldown_cmark::{Event, Options, Parser, html};
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
