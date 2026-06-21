@@ -52,7 +52,10 @@ fn attach(app: &AppHandle) -> Result<(), String> {
 
 fn start_local_and_attach(app: &AppHandle) -> Result<(), String> {
     let root = config::resolve_root(app).ok_or("no workspace folder was selected")?;
-    let port = free_port().map_err(|err| format!("could not find a free port: {err}"))?;
+    let port = pick_port(app).map_err(|err| format!("could not find a free port: {err}"))?;
+    // Remember the port so the next launch reuses it (stable origin → persistent
+    // localStorage: theme, settings, conversation history).
+    config::save_port(app, port);
     let binary = resolve_binary()?;
     let child = Command::new(&binary)
         .arg("daemon")
@@ -117,6 +120,18 @@ pub fn shutdown(app: &AppHandle) {
 fn free_port() -> io::Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
+}
+
+/// Pick the daemon port: reuse the persisted one when it is still free (so the
+/// webview origin — and its localStorage — stays stable across launches);
+/// otherwise grab a fresh free port.
+fn pick_port(app: &AppHandle) -> io::Result<u16> {
+    if let Some(saved) = config::saved_port(app) {
+        if TcpListener::bind(("127.0.0.1", saved)).is_ok() {
+            return Ok(saved);
+        }
+    }
+    free_port()
 }
 
 /// Poll the loopback port until the daemon's HTTP listener accepts a connection.

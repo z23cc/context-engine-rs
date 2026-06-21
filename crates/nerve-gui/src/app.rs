@@ -16,6 +16,7 @@
 // the function it generates.
 #![allow(clippy::too_many_lines)]
 
+use crate::approval::ApprovalModal;
 use crate::context_view::ContextView;
 use crate::events::route_event;
 use crate::render::render_turn;
@@ -25,25 +26,29 @@ use crate::sidebar::Sidebar;
 use leptos::prelude::*;
 use serde_json::json;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Role {
     User,
     Assistant,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ToolCard {
     pub(crate) tool: String,
     pub(crate) ok: Option<bool>,
     pub(crate) output: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Turn {
     pub(crate) role: Role,
     pub(crate) text: String,
+    #[serde(default)]
     pub(crate) reasoning: String,
+    #[serde(default)]
     pub(crate) tools: Vec<ToolCard>,
+    // Runtime-only: a restored turn is never mid-stream.
+    #[serde(skip)]
     pub(crate) streaming: bool,
 }
 
@@ -71,15 +76,23 @@ impl Turn {
 /// One conversation in the sidebar list (in-memory for this browser session).
 /// `session` is the delegate session id (the `delegate.start` job id); `turn_job`
 /// is the in-flight turn's job id (start or steer), used to cancel/stop it.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Chat {
     pub(crate) title: String,
+    // Runtime-only (server-side session + in-flight job + streaming flag): never
+    // persisted. A restored chat is offline history until the next message, which
+    // opens a fresh delegate session under the same thread.
+    #[serde(skip)]
     pub(crate) session: Option<String>,
+    #[serde(skip)]
     pub(crate) turn_job: Option<String>,
+    #[serde(default)]
     pub(crate) turns: Vec<Turn>,
+    #[serde(skip)]
     pub(crate) streaming: bool,
     /// Epoch-ms of the last activity (created / last message). Drives the rail's
     /// relative timestamp and recency sort.
+    #[serde(default)]
     pub(crate) updated_ms: f64,
 }
 
@@ -110,7 +123,16 @@ pub(crate) struct ApprovalReq {
 #[component]
 pub fn App() -> impl IntoView {
     let token = StoredValue::new(daemon_token());
-    let chats = RwSignal::new(vec![Chat::new()]);
+    // Restore persisted conversation history (offline: server-side sessions don't
+    // survive a restart — a restored thread continues as a fresh session).
+    let chats = RwSignal::new({
+        let restored = crate::settings::load_chats();
+        if restored.is_empty() {
+            vec![Chat::new()]
+        } else {
+            restored
+        }
+    });
     let active = RwSignal::new(0usize);
     let input = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
@@ -208,6 +230,17 @@ pub fn App() -> impl IntoView {
         if !ok {
             model.set(String::new());
         }
+    });
+
+    // Persist conversation history whenever the chats settle (no stream in flight),
+    // so a restart restores them. Tracks chats but only WRITES on a settled state —
+    // during streaming it just runs the cheap any-streaming check.
+    Effect::new(move |_| {
+        chats.with(|cs| {
+            if !cs.iter().any(|c| c.streaming) {
+                crate::settings::save_chats(cs);
+            }
+        });
     });
 
     // Whether the active chat is mid-turn (drives Send⇄Stop).
@@ -498,55 +531,6 @@ pub fn App() -> impl IntoView {
             })}
         </div>
     }
-}
-
-#[component]
-fn ApprovalModal(
-    req: ApprovalReq,
-    token: StoredValue<Option<String>>,
-    approval: RwSignal<Option<ApprovalReq>>,
-) -> impl IntoView {
-    let decide = move |decision: &'static str| respond(token, approval, decision);
-    view! {
-        <div class="modal-scrim">
-            <div class="modal">
-                <div class="modal-head">
-                    <span class="modal-title">"Allow "<b>{req.tool.clone()}</b></span>
-                    <span class=format!("tier {}", req.tier.to_lowercase())>{req.tier.clone()}</span>
-                </div>
-                {(!req.preview.is_empty()).then(|| view! { <pre class="modal-preview">{req.preview.clone()}</pre> })}
-                <div class="modal-actions">
-                    <button class="btn allow" on:click=move |_| decide("allow")>"Allow"</button>
-                    <button class="btn" on:click=move |_| decide("allow_always")>"Always"</button>
-                    <button class="btn" on:click=move |_| decide("deny")>"Deny"</button>
-                    <button class="btn danger" on:click=move |_| decide("deny_always")>"Deny always"</button>
-                </div>
-            </div>
-        </div>
-    }
-}
-
-/// Send a `session.respond` decision (delegate approvals share the same hub) and
-/// clear the modal.
-fn respond(
-    token: StoredValue<Option<String>>,
-    approval: RwSignal<Option<ApprovalReq>>,
-    decision: &'static str,
-) {
-    let req = approval.get_untracked();
-    approval.set(None);
-    let (Some(tok), Some(req)) = (token.get_value(), req) else {
-        return;
-    };
-    leptos::task::spawn_local(async move {
-        let cmd = json!({
-            "kind": "session.respond",
-            "session_id": req.session_id,
-            "request_id": req.request_id,
-            "decision": decision,
-        });
-        let _ = start_job(&tok, cmd).await;
-    });
 }
 
 /// Drop a chat's optimistic session id (rollback after a failed `delegate.start`).

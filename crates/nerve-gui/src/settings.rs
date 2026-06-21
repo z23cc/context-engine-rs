@@ -27,7 +27,7 @@ pub(crate) struct Settings {
     pub(crate) model: String,
 }
 
-fn local_storage() -> Option<web_sys::Storage> {
+pub(crate) fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
 
@@ -82,6 +82,26 @@ pub(crate) fn apply_theme(choice: &str) {
             let _ = el.remove_attribute("data-theme");
         }
     }
+}
+
+/// localStorage key for persisted conversation history.
+const CHATS_KEY: &str = "nerve.chats";
+
+/// Persist the conversation list (titles + turns + timestamps) so history survives
+/// a restart. serde skips the runtime fields (session/turn_job/streaming); a
+/// best-effort write (quota errors are ignored).
+pub(crate) fn save_chats(chats: &[crate::app::Chat]) {
+    if let (Some(store), Ok(json)) = (local_storage(), serde_json::to_string(chats)) {
+        let _ = store.set_item(CHATS_KEY, &json);
+    }
+}
+
+/// Load persisted conversation history (empty when none / unparseable).
+pub(crate) fn load_chats() -> Vec<crate::app::Chat> {
+    local_storage()
+        .and_then(|s| s.get_item(CHATS_KEY).ok().flatten())
+        .and_then(|raw| serde_json::from_str::<Vec<crate::app::Chat>>(&raw).ok())
+        .unwrap_or_default()
 }
 
 /// A segmented (radio-style) picker bound to a string signal.

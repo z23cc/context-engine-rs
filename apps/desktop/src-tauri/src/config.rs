@@ -14,6 +14,8 @@ pub const REMOTE_URL_ENV: &str = "NERVE_REMOTE_URL";
 struct Persisted {
     last_root: Option<String>,
     remote_url: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
 }
 
 fn config_path(app: &AppHandle) -> Option<PathBuf> {
@@ -48,6 +50,20 @@ pub fn last_root(app: &AppHandle) -> Option<PathBuf> {
 pub fn save_last_root(app: &AppHandle, root: &Path) {
     let mut persisted = read_persisted(app).unwrap_or_default();
     persisted.last_root = Some(root.display().to_string());
+    write_persisted(app, &persisted);
+}
+
+/// The persisted daemon port, reused across launches so the served GUI keeps a
+/// STABLE origin (`http://127.0.0.1:<port>/`) — and thus its `localStorage`
+/// (theme, settings, conversation history), which is per-origin.
+pub fn saved_port(app: &AppHandle) -> Option<u16> {
+    read_persisted(app)?.port
+}
+
+/// Persist the daemon `port` (best effort).
+pub fn save_port(app: &AppHandle, port: u16) {
+    let mut persisted = read_persisted(app).unwrap_or_default();
+    persisted.port = Some(port);
     write_persisted(app, &persisted);
 }
 
