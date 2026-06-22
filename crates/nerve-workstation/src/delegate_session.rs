@@ -212,7 +212,7 @@ impl DelegateSession {
     /// Wrap an already-spawned [`PersistentChild`] without running a turn — used by
     /// tests that need a live `DelegateSession` over a fake child (e.g. to assert
     /// [`Self::close`] reaps the process group rather than leaking it).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn from_child_for_test(child: PersistentChild) -> Self {
         Self {
             child,
@@ -223,7 +223,7 @@ impl DelegateSession {
 
     /// The child's process-group id (its pid), for tests that assert the child is
     /// reaped (no leaked process) after [`Self::close`].
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn child_pid(&self) -> u32 {
         self.child.pid()
     }

@@ -42,6 +42,7 @@ fn runtime_with_file() -> RuntimeFixture {
 /// `.nerve/{workers,workflows}` defs), so the C6 worker-as-data / named-workflow
 /// discovery resolves project defs. The temp dir is OWNED by the caller (kept alive
 /// for the test's duration).
+#[cfg(unix)]
 fn runtime_over_root(root: &std::path::Path) -> Arc<tools::NerveRuntime> {
     let runtime = tools::runtime(
         registry(&args_with(vec![root.to_path_buf()], Vec::new())).expect("registry"),
@@ -112,6 +113,7 @@ fn response_with_id(output: &[Value], id: Value) -> &Value {
 /// `job_cancelled` / `job_failed`), returning the terminal event. Used where the
 /// exact terminal kind depends on a runtime decision (e.g. a budget-cancelled flow
 /// may complete not-ok or cancel).
+#[cfg(unix)]
 fn wait_for_job_terminal(output: &Arc<Mutex<Vec<Value>>>, job_id: &str) -> Value {
     for _ in 0..600 {
         let found = output
