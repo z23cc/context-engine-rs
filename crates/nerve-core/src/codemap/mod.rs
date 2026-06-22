@@ -16,7 +16,9 @@ use tree_sitter::StreamingIterator;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 mod ast;
 mod block;
+mod imports;
 mod language;
+mod markdown;
 mod selection;
 mod summarize;
 mod summary_cache;
@@ -31,12 +33,10 @@ pub use types::{
 };
 
 pub(crate) use ast::{
-    ast_language_supported, ast_rewrite, ast_rewrite_pattern, ast_search, ast_search_pattern,
-    path_language_name,
+    ast_language_supported, ast_rewrite, ast_rewrite_pattern, ast_search, ast_search_language,
+    ast_search_pattern, ast_search_pattern_language, path_language_name,
 };
-pub(crate) use block::{
-    ContainingBlockError, block_span, containing_block_span, syntax_diagnostics,
-};
+pub(crate) use block::{ContainingBlockError, block_span, containing_block_span};
 pub(crate) use summarize::{render_summary, summarize_source};
 #[cfg(fuzzing)]
 pub use symbols::fuzz_symbols_for_path;
@@ -44,6 +44,120 @@ pub(crate) use symbols::symbols_for_path;
 
 use language::*;
 use selection::*;
+
+pub(crate) fn path_supports_codemap(path: &str) -> bool {
+    Language::from_path(path).is_some() || markdown::is_markdown_path(path)
+}
+
+pub(crate) fn source_language_name(path: &str, source: &str) -> Option<&'static str> {
+    Language::from_path_or_source(path, source).map(Language::name)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmbeddedSource {
+    pub(crate) language: &'static str,
+    pub(crate) start_line_offset: usize,
+    pub(crate) source: String,
+}
+
+pub(crate) fn path_supports_embedded_sources(path: &str) -> bool {
+    markdown::is_markdown_path(path)
+}
+
+pub(crate) fn embedded_sources(path: &str, source: &str) -> Vec<EmbeddedSource> {
+    if !markdown::is_markdown_path(path) {
+        return Vec::new();
+    }
+    let lines = split_line_segments(source);
+    markdown::supported_fences(&lines)
+        .into_iter()
+        .map(|fence| EmbeddedSource {
+            language: fence.language.name(),
+            start_line_offset: fence.body.start,
+            source: markdown::fence_source(&lines, &fence),
+        })
+        .collect()
+}
+
+pub(crate) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
+    if !markdown::is_markdown_path(path) {
+        return block::syntax_diagnostics(path, source);
+    }
+    let lines = split_line_segments(source);
+    let mut issues = Vec::new();
+    for fence in markdown::supported_fences(&lines) {
+        let local_source = markdown::fence_source(&lines, &fence);
+        issues.extend(block::syntax_diagnostics_for_language(
+            fence.language,
+            &local_source,
+            fence.body.start,
+            Some(&format!("{} fenced code", fence.language.name())),
+        ));
+        if issues.len() >= block::MAX_SYNTAX_ISSUES {
+            break;
+        }
+    }
+    issues.sort_by_key(|issue| issue.line);
+    issues.dedup();
+    issues.truncate(block::MAX_SYNTAX_ISSUES);
+    issues
+}
+
+pub(crate) fn embedded_block_span(
+    path: &str,
+    source: &str,
+    first_line: usize,
+    last_line: usize,
+) -> Result<Option<(usize, usize)>, ContainingBlockError> {
+    if !markdown::is_markdown_path(path) {
+        return Ok(None);
+    }
+    let lines = split_line_segments(source);
+    for fence in markdown::supported_fences(&lines) {
+        if !range_is_inside_fence(first_line, last_line, &fence.body) {
+            continue;
+        }
+        let local_source = markdown::fence_source(&lines, &fence);
+        let local_first = first_line - fence.body.start;
+        let local_last = last_line - fence.body.start;
+        if let Some(span) =
+            block::block_span_for_language(fence.language, &local_source, local_first)
+            && span.1 > span.0
+        {
+            return Ok(Some(host_span(span, fence.body.start)));
+        }
+        return block::containing_block_span_for_language(
+            fence.language,
+            &local_source,
+            local_first,
+            local_last,
+        )
+        .map(|span| span.map(|span| host_span(span, fence.body.start)));
+    }
+    Ok(None)
+}
+
+fn range_is_inside_fence(
+    first_line: usize,
+    last_line: usize,
+    body: &std::ops::Range<usize>,
+) -> bool {
+    let host_first = body.start + 1;
+    let host_last = body.end;
+    first_line >= host_first && last_line <= host_last
+}
+
+fn host_span((first, last): (usize, usize), offset: usize) -> (usize, usize) {
+    (first + offset, last + offset)
+}
+
+fn split_line_segments(source: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = source.split_inclusive('\n').collect();
+    if lines.is_empty() && !source.is_empty() {
+        lines.push(source);
+    }
+    lines
+}
 
 #[cfg(test)]
 mod tests {
@@ -323,6 +437,172 @@ mod tests {
         assert_eq!(parsed.language, "ruby");
         assert!(has_symbol(&parsed, "Greeter"));
         assert!(has_symbol(&parsed, "greet"));
+    }
+
+    #[test]
+    fn reference_columns_are_one_based_byte_columns() {
+        let parsed = parse(
+            "pub fn helper() {}\n\npub fn caller() { let café = 1; helper(); }\n",
+            "lib.rs",
+        );
+        let helper_ref = parsed
+            .references
+            .iter()
+            .find(|reference| reference.name == "helper")
+            .expect("helper reference");
+
+        assert_eq!(helper_ref.line, 3);
+        assert_eq!(helper_ref.column, 34);
+    }
+
+    #[test]
+    fn shebang_python_without_extension_is_supported() {
+        let parsed = parse(
+            "#!/usr/bin/env python3\nclass ScriptThing:\n    pass\n\ndef main():\n    return ScriptThing()\n",
+            "script",
+        );
+        assert_eq!(parsed.language, "python");
+        assert!(has_symbol(&parsed, "ScriptThing"));
+        assert!(has_symbol(&parsed, "main"));
+    }
+
+    #[test]
+    fn shebang_language_detection_covers_supported_script_interpreters() {
+        for (source, expected) in [
+            (
+                "#!/usr/bin/env node\nfunction main() {}\n",
+                Some("javascript"),
+            ),
+            (
+                "#!/usr/bin/env deno\nfunction main(): void {}\n",
+                Some("typescript"),
+            ),
+            ("#!/usr/bin/env ruby\ndef main\nend\n", Some("ruby")),
+            (
+                "#!/usr/bin/env php\n<?php function main() {}\n",
+                Some("php"),
+            ),
+            ("#!/usr/bin/env bash -c 'python3 tool'\n", None),
+        ] {
+            assert_eq!(source_language_name("script", source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_rust_fence_extracts_symbols_on_host_lines() {
+        let parsed = parse(
+            "# Docs\n\n```rust\npub fn documented() {}\n```\n",
+            "README.md",
+        );
+        assert_eq!(parsed.language, "markdown");
+        let symbol = parsed
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "documented")
+            .expect("documented symbol");
+        assert_eq!(symbol.line, 4);
+        assert_eq!(symbol.signature.as_deref(), Some("pub fn documented()"));
+    }
+
+    #[test]
+    fn markdown_fence_aliases_and_unsupported_fences_are_deterministic() {
+        let parsed = parse(
+            "```text\nfn ignored() {}\n```\n\n```rs\npub struct Alias;\n```\n",
+            "notes.markdown",
+        );
+        assert_eq!(parsed.language, "markdown");
+        assert!(has_symbol(&parsed, "Alias"));
+        assert!(!has_symbol(&parsed, "ignored"));
+    }
+
+    #[test]
+    fn markdown_fences_follow_commonmark_indentation() {
+        assert!(
+            symbols_for_path("    ```rust\n    fn ignored() {}\n    ```\n", "notes.md")
+                .expect("ok")
+                .is_none()
+        );
+        let parsed = parse(
+            "   ```rust\n   pub fn accepted() { helper(); }\n   pub fn helper() {}\n   ```\n",
+            "notes.md",
+        );
+        let accepted = parsed
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "accepted")
+            .expect("accepted");
+        let helper_ref = parsed
+            .references
+            .iter()
+            .find(|reference| reference.name == "helper")
+            .expect("helper reference");
+        assert_eq!(accepted.column, 11);
+        assert_eq!(helper_ref.column, 24);
+    }
+
+    #[test]
+    fn markdown_embedded_references_carry_source_language() {
+        let parsed = parse(
+            "```python\nclass Alias:\n    pass\n\ndef make():\n    return Alias()\n```\n",
+            "notes.md",
+        );
+        assert!(has_symbol(&parsed, "Alias"));
+        assert!(has_symbol(&parsed, "make"));
+        let alias_ref = parsed
+            .references
+            .iter()
+            .find(|reference| reference.name == "Alias")
+            .expect("Alias reference");
+        assert_eq!(alias_ref.language.as_deref(), Some("python"));
+        assert_eq!(alias_ref.line, 6);
+    }
+
+    #[test]
+    fn markdown_reference_only_fence_is_retained() {
+        let parsed = parse("```python\nAlias()\n```\n", "notes.md");
+        assert!(parsed.symbols.is_empty());
+        let alias_ref = parsed
+            .references
+            .iter()
+            .find(|reference| reference.name == "Alias")
+            .expect("Alias reference");
+        assert_eq!(alias_ref.language.as_deref(), Some("python"));
+        assert_eq!(alias_ref.line, 2);
+    }
+
+    #[test]
+    fn markdown_unterminated_supported_fence_is_parsed_to_eof() {
+        let parsed = parse("intro\n```python\ndef loose():\n    return 1\n", "notes.md");
+        let symbol = parsed
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "loose")
+            .expect("loose symbol");
+        assert_eq!(symbol.line, 3);
+    }
+
+    #[test]
+    fn markdown_fenced_code_syntax_diagnostics_use_host_lines() {
+        let issues = syntax_diagnostics(
+            "notes.md",
+            "# Notes\n\n```rust\npub fn broken() {\n    let = 1;\n}\n```\n",
+        );
+
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.line == 5 && issue.message.starts_with("rust fenced code: ")),
+            "issues: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_without_supported_fences_returns_none() {
+        assert!(
+            symbols_for_path("```text\nfn ignored() {}\n```\n", "notes.md")
+                .expect("ok")
+                .is_none()
+        );
     }
 
     #[test]

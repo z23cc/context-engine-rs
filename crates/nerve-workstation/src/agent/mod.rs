@@ -9,7 +9,7 @@
 mod sessions;
 
 use crate::capabilities::{Capabilities, ResolvedAgent};
-use crate::checkpoint::Checkpoint;
+use crate::checkpoint::{Checkpoint, checkpoint_snapshot};
 use crate::providers::ProviderRegistry;
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{AgentRunOutput, DEFAULT_MAX_DEPTH, SubAgentSpawner};
@@ -404,13 +404,27 @@ pub(crate) fn run_agent(
     match result {
         Ok(output) => {
             if let Some(store) = store {
-                persist_run_record(store, &output, &provider, &model, &task);
+                persist_run_record(
+                    store,
+                    &output,
+                    &provider,
+                    &model,
+                    &task,
+                    checkpoint_snapshot(&checkpoint),
+                );
             }
             Ok(output.outcome)
         }
         Err(err) => {
             if let Some(store) = store {
-                persist_partial_record(store, &partial_events, &provider, &model, &task);
+                persist_partial_record(
+                    store,
+                    &partial_events,
+                    &provider,
+                    &model,
+                    &task,
+                    checkpoint_snapshot(&checkpoint),
+                );
             }
             Err(err)
         }
@@ -458,12 +472,14 @@ fn persist_run_record(
     provider: &str,
     model: &str,
     task: &str,
+    checkpoint: Option<String>,
 ) {
     let mut record = SessionRecord::begin(provider, model, task);
     for event in &output.events {
         record.push_event(event);
     }
     record.set_history(output.history.clone());
+    record.set_checkpoint(checkpoint);
     record.finish(Some(&output.outcome));
     write_record(store, &record);
 }
@@ -474,11 +490,13 @@ fn persist_partial_record(
     provider: &str,
     model: &str,
     task: &str,
+    checkpoint: Option<String>,
 ) {
     let mut record = SessionRecord::begin(provider, model, task);
     for event in events {
         record.push_event(event);
     }
+    record.set_checkpoint(checkpoint);
     record.finish(None);
     write_record(store, &record);
 }
@@ -559,8 +577,10 @@ pub(crate) fn install_interrupt_handler(_cancel: &CancelToken) {}
 
 #[cfg(test)]
 mod tests {
-    use super::tag_sub_agent_event;
-    use nerve_agent::AgentEvent;
+    use super::{persist_partial_record, persist_run_record, tag_sub_agent_event};
+    use crate::session::SessionStore;
+    use crate::subagent::AgentRunOutput;
+    use nerve_agent::{AgentEvent, Message, RunOutcome, Usage};
 
     #[test]
     fn tagging_prefixes_textual_events_with_sub_id() {
@@ -597,5 +617,61 @@ mod tests {
             }
             other => panic!("usage must pass through as Usage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn completed_run_persists_checkpoint_note() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let output = AgentRunOutput {
+            outcome: RunOutcome {
+                reason: "stop".into(),
+                turns: 1,
+                final_text: "done".into(),
+                usage: Usage::default(),
+            },
+            history: vec![Message::user("task")],
+            events: Vec::new(),
+        };
+
+        persist_run_record(
+            &store,
+            &output,
+            "provider",
+            "model",
+            "task",
+            Some("next: inspect session persistence".into()),
+        );
+
+        let records = store.list().expect("records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].checkpoint.as_deref(),
+            Some("next: inspect session persistence")
+        );
+    }
+
+    #[test]
+    fn partial_run_persists_checkpoint_note() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let events = vec![AgentEvent::AssistantText("partial".into())];
+
+        persist_partial_record(
+            &store,
+            &events,
+            "provider",
+            "model",
+            "task",
+            Some("resume: src/main.rs:10".into()),
+        );
+
+        let records = store.list().expect("records");
+        assert_eq!(records.len(), 1);
+        assert!(records[0].outcome.is_none());
+        assert_eq!(
+            records[0].checkpoint.as_deref(),
+            Some("resume: src/main.rs:10")
+        );
     }
 }

@@ -61,10 +61,43 @@ impl WorkflowRegistry {
         Ok(def)
     }
 
-    /// Whether a named workflow `workflow_ref` exists (used by the cycle check to
-    /// follow a reference only when it resolves). A malformed file counts as absent.
+    /// Resolve `workflow_ref` only when a workflow definition is actually present.
+    ///
+    /// Missing refs return `Ok(None)`: the same name may still be a valid plain
+    /// worker leaf. Invalid names and load/read/parse failures return `Err`, so
+    /// broken workflow data cannot be silently treated as a leaf during cycle
+    /// validation.
+    pub(crate) fn resolve_if_present(
+        &self,
+        workflow_ref: &str,
+    ) -> anyhow::Result<Option<WorkflowDef>> {
+        if !self.has_definition(workflow_ref)? {
+            return Ok(None);
+        }
+        self.resolve(workflow_ref).map(Some)
+    }
+
+    /// Whether a named workflow `workflow_ref` exists and parses. Used only for
+    /// catalog-style probes where malformed files should behave as absent.
     pub(crate) fn contains(&self, workflow_ref: &str) -> bool {
-        self.resolve(workflow_ref).is_ok()
+        self.resolve_if_present(workflow_ref)
+            .is_ok_and(|def| def.is_some())
+    }
+
+    fn has_definition(&self, workflow_ref: &str) -> anyhow::Result<bool> {
+        crate::discovery::validate_name(workflow_ref)?;
+        for (_source, base) in self.bases.bases() {
+            if base
+                .join("workflows")
+                .join(format!("{workflow_ref}.json"))
+                .is_file()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(BUILTIN_WORKFLOWS
+            .iter()
+            .any(|(name, _raw)| *name == workflow_ref))
     }
 }
 
@@ -149,6 +182,101 @@ mod tests {
         let reg = WorkflowRegistry::from_sources(None, None);
         let err = reg.resolve("nope").expect_err("no such workflow");
         assert!(err.to_string().contains("unknown workflows 'nope'"));
+        assert!(reg.resolve_if_present("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_if_present_errors_on_malformed_existing_workflow() {
+        let dir = tempdir().unwrap();
+        workflow_file(
+            dir.path(),
+            "bad",
+            r#"{ "schema_version": 1, "name": "bad" }"#,
+        );
+        let reg = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let err = reg
+            .resolve_if_present("bad")
+            .expect_err("malformed workflow should not be hidden as absent");
+        assert!(err.to_string().contains("failed to parse"), "{err}");
+        assert!(!reg.contains("bad"));
+    }
+
+    #[test]
+    fn resolve_if_present_keeps_discovery_precedence_visible() {
+        let project = tempdir().unwrap();
+        let global = tempdir().unwrap();
+        workflow_file(
+            project.path(),
+            "shadowed",
+            r#"{ "schema_version": 1, "name": "shadowed" }"#,
+        );
+        workflow_file(
+            global.path(),
+            "shadowed",
+            r#"{
+                "schema_version": 1,
+                "name": "shadowed",
+                "strategy": {
+                    "type": "single",
+                    "step": { "worker": { "kind": "cli", "name": "claude" }, "task": "review" }
+                }
+            }"#,
+        );
+        let reg = WorkflowRegistry::from_sources(
+            Some(project.path().to_path_buf()),
+            Some(global.path().to_path_buf()),
+        );
+        let err = reg
+            .resolve_if_present("shadowed")
+            .expect_err("malformed project workflow should shadow valid global workflow");
+        assert!(err.to_string().contains("failed to parse"), "{err}");
+    }
+
+    #[test]
+    fn resolve_if_present_ignores_malformed_lower_priority_workflow() {
+        let project = tempdir().unwrap();
+        let global = tempdir().unwrap();
+        workflow_file(
+            project.path(),
+            "shadowed",
+            r#"{
+                "schema_version": 1,
+                "name": "shadowed",
+                "strategy": {
+                    "type": "single",
+                    "step": { "worker": { "kind": "cli", "name": "claude" }, "task": "project" }
+                }
+            }"#,
+        );
+        workflow_file(
+            global.path(),
+            "shadowed",
+            r#"{ "schema_version": 1, "name": "shadowed" }"#,
+        );
+        let reg = WorkflowRegistry::from_sources(
+            Some(project.path().to_path_buf()),
+            Some(global.path().to_path_buf()),
+        );
+        let def = reg
+            .resolve_if_present("shadowed")
+            .expect("valid project workflow should win")
+            .expect("workflow present");
+        assert_eq!(def.name, "shadowed");
+    }
+
+    #[test]
+    fn resolve_if_present_reports_malformed_global_when_no_project_override() {
+        let global = tempdir().unwrap();
+        workflow_file(
+            global.path(),
+            "bad_global",
+            r#"{ "schema_version": 1, "name": "bad_global" }"#,
+        );
+        let reg = WorkflowRegistry::from_sources(None, Some(global.path().to_path_buf()));
+        let err = reg
+            .resolve_if_present("bad_global")
+            .expect_err("malformed global workflow should be reported when visible");
+        assert!(err.to_string().contains("failed to parse"), "{err}");
     }
 
     #[test]

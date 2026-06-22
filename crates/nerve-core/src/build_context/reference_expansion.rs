@@ -1,4 +1,7 @@
-use super::{BuildContextExcludedFile, format_score};
+use super::{
+    BuildContextAllocationAttempt, BuildContextAllocationTrace, BuildContextExcludedFile,
+    BuildContextScoreBreakdown, format_score,
+};
 use crate::{
     CancelToken, CatalogEntry, CatalogProvider, CatalogSnapshot, NerveError, Selection,
     SelectionMode, WorkspaceContextInclude, WorkspaceContextRequest,
@@ -10,6 +13,12 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 const REFERENCE_EXPANSION_LIMIT: usize = 8;
+
+#[derive(Debug, Default)]
+pub(super) struct ReferenceExpansionOutcome {
+    pub(super) excluded: Vec<BuildContextExcludedFile>,
+    pub(super) allocation_trace: Vec<BuildContextAllocationTrace>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ExpansionCandidate {
@@ -24,39 +33,50 @@ pub(super) fn expand_reference_codemap_selection<P: CatalogProvider + Sync>(
     token_budget: usize,
     cancel: &CancelToken,
     render_cache: &mut RenderCache,
-) -> Result<Vec<BuildContextExcludedFile>, NerveError> {
+) -> Result<ReferenceExpansionOutcome, NerveError> {
     if selection.files.is_empty() || token_budget == 0 {
-        return Ok(Vec::new());
+        return Ok(ReferenceExpansionOutcome::default());
     }
 
     let indexed_files = indexed_files_cancellable(provider, snapshot, cancel)?;
     let selected_paths = selected_paths(selection);
     let candidate_paths = candidate_paths(expansion_candidates(&indexed_files, &selected_paths));
     let entries_by_path = entries_by_path(snapshot);
-    let mut excluded = Vec::new();
+    let mut outcome = ReferenceExpansionOutcome::default();
 
     for path in candidate_paths.into_iter().take(REFERENCE_EXPANSION_LIMIT) {
         cancel.check_cancelled()?;
         let Some(entry) = entries_by_path.get(path.as_str()) else {
             continue;
         };
-        if !try_add_codemap(
+        let attempt = try_add_codemap(
             provider,
             snapshot,
             selection,
             entry,
             token_budget,
             render_cache,
-        )? {
-            excluded.push(expansion_excluded_file(
+        )?;
+        let (result, reason) = if attempt.accepted {
+            ("included", "reference_expansion")
+        } else {
+            outcome.excluded.push(expansion_excluded_file(
                 provider,
                 entry,
                 "reference_expansion_over_budget",
             ));
-        }
+            ("excluded", "reference_expansion_over_budget")
+        };
+        outcome.allocation_trace.push(expansion_trace(
+            provider,
+            entry,
+            vec![attempt],
+            result,
+            reason,
+        ));
     }
 
-    Ok(excluded)
+    Ok(outcome)
 }
 
 fn selected_paths(selection: &Selection) -> BTreeSet<String> {
@@ -140,7 +160,7 @@ fn referenced_names(
         }
         for reference in &file.references {
             references.insert((
-                language_family(&file.language).to_string(),
+                language_family(reference.effective_language(&file.language)).to_string(),
                 reference.name.clone(),
             ));
         }
@@ -155,10 +175,14 @@ fn try_add_codemap<P: CatalogProvider>(
     entry: &CatalogEntry,
     token_budget: usize,
     render_cache: &mut RenderCache,
-) -> Result<bool, NerveError> {
+) -> Result<BuildContextAllocationAttempt, NerveError> {
     let key = selection_key(entry);
     if selection.files.contains_key(&key) {
-        return Ok(true);
+        return Ok(BuildContextAllocationAttempt {
+            mode: "codemap_only".to_string(),
+            total_tokens: 0,
+            accepted: true,
+        });
     }
 
     let mut next_selection = selection.clone();
@@ -178,11 +202,15 @@ fn try_add_codemap<P: CatalogProvider>(
         render_cache,
     )?;
 
-    if workspace.tokens.total_tokens <= token_budget {
+    let accepted = workspace.tokens.total_tokens <= token_budget;
+    if accepted {
         *selection = next_selection;
-        return Ok(true);
     }
-    Ok(false)
+    Ok(BuildContextAllocationAttempt {
+        mode: "codemap_only".to_string(),
+        total_tokens: workspace.tokens.total_tokens,
+        accepted,
+    })
 }
 
 fn selection_key(entry: &CatalogEntry) -> SelectionKey {
@@ -201,6 +229,25 @@ fn expansion_excluded_file<P: CatalogProvider>(
         path: entry.rel_path.clone(),
         display_path: provider.display_path(&entry.abs_path),
         score: format_score(0.0),
+        score_breakdown: BuildContextScoreBreakdown::zero(),
+        reason: reason.to_string(),
+    }
+}
+
+fn expansion_trace<P: CatalogProvider>(
+    provider: &P,
+    entry: &CatalogEntry,
+    attempts: Vec<BuildContextAllocationAttempt>,
+    result: &str,
+    reason: &str,
+) -> BuildContextAllocationTrace {
+    BuildContextAllocationTrace {
+        path: entry.rel_path.clone(),
+        display_path: provider.display_path(&entry.abs_path),
+        score: format_score(0.0),
+        score_breakdown: BuildContextScoreBreakdown::zero(),
+        attempts,
+        result: result.to_string(),
         reason: reason.to_string(),
     }
 }

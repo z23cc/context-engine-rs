@@ -205,6 +205,25 @@
       ],
       "type": "string"
     },
+    "AuthStartFlow": {
+      "description": "Login flow requested by `auth.start`.",
+      "oneOf": [
+        {
+          "description": "Browser authorization-code + PKCE flow over loopback/manual paste.",
+          "enum": [
+            "browser"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "OAuth 2.0 device authorization flow for remote/mobile clients.",
+          "enum": [
+            "device_code"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "BudgetSpec": {
       "description": "The fleet budget envelope (design §6). C1 threads it as a placeholder; C3 wires the deterministic debit/cancel loop. All fields optional — an omitted budget caps nothing (the engine still bounds concurrency separately).",
       "properties": {
@@ -1085,8 +1104,16 @@
           "type": "object"
         },
         {
-          "description": "Start a host-managed OAuth login and return an authorization URL.",
+          "description": "Start a host-managed OAuth login.",
           "properties": {
+            "flow": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/AuthStartFlow"
+                }
+              ],
+              "description": "Requested login flow. Defaults to browser authorization-code flow."
+            },
             "kind": {
               "enum": [
                 "auth.start"
@@ -1140,6 +1167,34 @@
             "kind": {
               "enum": [
                 "auth.status"
+              ],
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "provider"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the trusted host to mint OAuth lease metadata and, for trusted native clients, optionally include a short-lived access token. The stored refresh token is never returned.",
+          "properties": {
+            "force_refresh": {
+              "default": false,
+              "description": "Force the broker to refresh before returning a lease.",
+              "type": "boolean"
+            },
+            "include_token": {
+              "description": "Include the short-lived access token in the response. Defaults to true for backwards-compatible native clients; browser clients should pass false.",
+              "type": "boolean"
+            },
+            "kind": {
+              "enum": [
+                "auth.lease"
               ],
               "type": "string"
             },

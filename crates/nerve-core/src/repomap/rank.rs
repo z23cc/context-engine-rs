@@ -1,7 +1,7 @@
 use crate::{cancel::CancelToken, models::NerveError};
 use std::{cmp::Ordering, collections::BTreeSet, path::Path};
 
-use super::analysis::IndexedFile;
+use super::{analysis::IndexedFile, query::text_matches_terms};
 
 pub(super) const DAMPING: f64 = 0.85;
 pub(super) const ITERATIONS: usize = 30;
@@ -69,14 +69,29 @@ pub(super) fn personalization(n: usize, seed_indices: &BTreeSet<usize>) -> Vec<f
     vector
 }
 
-pub(super) fn seed_indices(files: &[IndexedFile], seed_paths: &[String]) -> BTreeSet<usize> {
+pub(super) fn seed_indices(
+    files: &[IndexedFile],
+    seed_paths: &[String],
+    query_terms: &BTreeSet<String>,
+) -> BTreeSet<usize> {
     let mut seeds = BTreeSet::new();
     for (idx, file) in files.iter().enumerate() {
-        if file.query_match || seed_paths.iter().any(|seed| path_matches_seed(file, seed)) {
+        if file.query_match
+            || seed_paths.iter().any(|seed| path_matches_seed(file, seed))
+            || (seed_paths.is_empty() && file_matches_query_terms(file, query_terms))
+        {
             seeds.insert(idx);
         }
     }
     seeds
+}
+
+fn file_matches_query_terms(file: &IndexedFile, query_terms: &BTreeSet<String>) -> bool {
+    text_matches_terms(&file.path, query_terms)
+        || file
+            .symbols
+            .iter()
+            .any(|symbol| text_matches_terms(&symbol.name, query_terms))
 }
 
 fn path_matches_seed(file: &IndexedFile, seed: &str) -> bool {

@@ -5,13 +5,14 @@ expression: response
 {
   "content": [
     {
-      "text": "shapes.rs:1 class pub struct Point\n",
+      "text": "shapes.rs:1:12 class pub struct Point\n",
       "type": "text"
     }
   ],
   "structuredContent": {
     "definitions": [
       {
+        "column": 12,
         "display_path": "shapes.rs",
         "kind": "class",
         "language": "rust",

@@ -30,6 +30,7 @@ pub fn goto_definition_cancellable<P: CatalogProvider + Sync>(
                     path: file.path.clone(),
                     display_path: file.display_path.clone(),
                     line: symbol.line,
+                    column: symbol.column,
                     kind: symbol.kind.clone(),
                     language: file.language.clone(),
                     signature: symbol.signature.clone(),

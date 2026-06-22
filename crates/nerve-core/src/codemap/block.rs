@@ -24,7 +24,15 @@ pub(super) fn first_descendant_kind<'a>(
 /// the language is unsupported or nothing begins there — callers then fall back
 /// to a brace/indentation heuristic.
 pub(crate) fn block_span(path: &str, source: &str, start_line: usize) -> Option<(usize, usize)> {
-    let language = Language::from_path(path)?;
+    let language = Language::from_path_or_source(path, source)?;
+    block_span_for_language(language, source, start_line)
+}
+
+pub(super) fn block_span_for_language(
+    language: Language,
+    source: &str,
+    start_line: usize,
+) -> Option<(usize, usize)> {
     let target_row = start_line.checked_sub(1)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language.ts_language()).ok()?;
@@ -78,7 +86,17 @@ pub(crate) fn containing_block_span(
     first_line: usize,
     last_line: usize,
 ) -> Result<Option<(usize, usize)>, ContainingBlockError> {
-    let language = Language::from_path(path).ok_or(ContainingBlockError::UnsupportedLanguage)?;
+    let language = Language::from_path_or_source(path, source)
+        .ok_or(ContainingBlockError::UnsupportedLanguage)?;
+    containing_block_span_for_language(language, source, first_line, last_line)
+}
+
+pub(super) fn containing_block_span_for_language(
+    language: Language,
+    source: &str,
+    first_line: usize,
+    last_line: usize,
+) -> Result<Option<(usize, usize)>, ContainingBlockError> {
     if first_line == 0 || last_line < first_line || line_text(source, first_line).is_none() {
         return Ok(None);
     }
@@ -202,6 +220,16 @@ mod tests {
         let span = containing_block_span("lib.rs", source, 99, 99).expect("parse");
         assert_eq!(span, None);
     }
+
+    #[test]
+    fn shebang_python_block_span_without_extension() {
+        let source = "#!/usr/bin/env python3\ndef main():\n    print('x')\n";
+        assert_eq!(block_span("script", source, 2), Some((2, 3)));
+        let containing = containing_block_span("script", source, 3, 3)
+            .expect("parse")
+            .expect("span");
+        assert_eq!(containing, (2, 3));
+    }
 }
 
 /// A tree-sitter syntax problem in a file (used to flag broken edits).
@@ -211,14 +239,24 @@ pub struct SyntaxIssue {
     pub message: String,
 }
 
+pub(super) const MAX_SYNTAX_ISSUES: usize = 20;
+
 /// Re-parse `source` and report tree-sitter `ERROR` / missing nodes as syntax
 /// diagnostics. Empty for unsupported languages or a clean parse. Syntax-level
 /// only — this is not type checking or a language server.
-pub(crate) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
-    const MAX_ISSUES: usize = 20;
-    let Some(language) = Language::from_path(path) else {
+pub(super) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
+    let Some(language) = Language::from_path_or_source(path, source) else {
         return Vec::new();
     };
+    syntax_diagnostics_for_language(language, source, 0, None)
+}
+
+pub(super) fn syntax_diagnostics_for_language(
+    language: Language,
+    source: &str,
+    line_offset: usize,
+    message_prefix: Option<&str>,
+) -> Vec<SyntaxIssue> {
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&language.ts_language()).is_err() {
         return Vec::new();
@@ -235,13 +273,13 @@ pub(crate) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
     while let Some(node) = stack.pop() {
         if node.is_missing() {
             issues.push(SyntaxIssue {
-                line: node.start_position().row + 1,
-                message: format!("missing {}", node.kind()),
+                line: node.start_position().row + 1 + line_offset,
+                message: diagnostic_message(format!("missing {}", node.kind()), message_prefix),
             });
         } else if node.is_error() {
             issues.push(SyntaxIssue {
-                line: node.start_position().row + 1,
-                message: "syntax error".to_string(),
+                line: node.start_position().row + 1 + line_offset,
+                message: diagnostic_message("syntax error", message_prefix),
             });
         }
         let mut cursor = node.walk();
@@ -253,6 +291,11 @@ pub(crate) fn syntax_diagnostics(path: &str, source: &str) -> Vec<SyntaxIssue> {
     }
     issues.sort_by_key(|issue| issue.line);
     issues.dedup();
-    issues.truncate(MAX_ISSUES);
+    issues.truncate(MAX_SYNTAX_ISSUES);
     issues
+}
+
+fn diagnostic_message(message: impl Into<String>, prefix: Option<&str>) -> String {
+    let message = message.into();
+    prefix.map_or(message.clone(), |prefix| format!("{prefix}: {message}"))
 }

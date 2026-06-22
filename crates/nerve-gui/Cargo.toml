@@ -40,6 +40,8 @@ web-sys = { version = "0.3", features = [
   # Theme (data-theme on <html>) + settings persistence (localStorage).
   "Document",
   "Element",
+  "HtmlElement",
+  "CssStyleDeclaration",
   "Storage",
   "MediaQueryList",
 ] }

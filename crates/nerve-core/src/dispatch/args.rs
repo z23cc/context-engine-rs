@@ -1,6 +1,9 @@
 use super::{DispatchError, edit};
 use crate::edit::EditRequest;
-use crate::{ReadFileRequest, ReadFileSnapMode, RepoMapRequest, SearchMode, SearchRequest};
+use crate::{
+    Diagnostic, NerveError, ReadFileRequest, ReadFileSnapMode, RepoMapRequest, SearchMode,
+    SearchRequest,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -30,6 +33,11 @@ pub(super) fn default_true() -> bool {
     true
 }
 
+#[cfg(not(all(feature = "semantic", not(target_arch = "wasm32"))))]
+pub(super) fn default_true() -> bool {
+    true
+}
+
 #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
 impl SemanticSearchArgs {
     pub(super) fn into_request(self) -> crate::SemanticSearchRequest {
@@ -42,6 +50,56 @@ impl SemanticSearchArgs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RegexFallback {
+    Error,
+    Literal,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ToolSearchArgs {
+    pub(super) query: String,
+    #[serde(
+        default = "default_tool_search_max_results",
+        deserialize_with = "lenient_usize"
+    )]
+    pub(super) max_results: usize,
+}
+
+pub(super) fn default_tool_search_max_results() -> usize {
+    8
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct SymbolSearchArgs {
+    pub(super) query: String,
+    #[serde(default)]
+    pub(super) language: Option<String>,
+    #[serde(default)]
+    pub(super) kind: Option<String>,
+    #[serde(
+        default = "default_symbol_search_max_results",
+        deserialize_with = "lenient_usize"
+    )]
+    pub(super) max_results: usize,
+}
+
+impl SymbolSearchArgs {
+    pub(super) fn into_request(self) -> crate::navigate::SymbolSearchRequest {
+        crate::navigate::SymbolSearchRequest {
+            query: self.query,
+            language: self.language,
+            kind: self.kind,
+            max_results: self.max_results,
+        }
+    }
+}
+
+pub(super) fn default_symbol_search_max_results() -> usize {
+    50
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct FileSearchArgs {
     pub(super) pattern: String,
@@ -49,6 +107,8 @@ pub(super) struct FileSearchArgs {
     pub(super) mode: String,
     #[serde(default)]
     pub(super) regex: bool,
+    #[serde(default = "default_regex_fallback")]
+    pub(super) regex_fallback: RegexFallback,
     #[serde(default = "default_max_results", deserialize_with = "lenient_usize")]
     pub(super) max_results: usize,
     #[serde(default = "default_context_lines", deserialize_with = "lenient_usize")]
@@ -83,7 +143,37 @@ pub(super) fn default_output_mode() -> String {
     "content".to_string()
 }
 
+pub(super) fn default_regex_fallback() -> RegexFallback {
+    RegexFallback::Error
+}
+
 impl FileSearchArgs {
+    pub(super) fn into_request_and_diagnostics(
+        mut self,
+    ) -> Result<(SearchRequest, Vec<Diagnostic>), NerveError> {
+        let diagnostics = self.normalize_regex()?;
+        Ok((self.into_request(), diagnostics))
+    }
+
+    fn normalize_regex(&mut self) -> Result<Vec<Diagnostic>, NerveError> {
+        if !self.regex {
+            return Ok(Vec::new());
+        }
+        match regex::Regex::new(&self.pattern) {
+            Ok(_) => Ok(Vec::new()),
+            Err(err) if self.regex_fallback == RegexFallback::Literal => {
+                self.regex = false;
+                Ok(vec![Diagnostic {
+                    path: None,
+                    message: format!(
+                        "invalid regex; fell back to literal search because regex_fallback=literal: {err}"
+                    ),
+                }])
+            }
+            Err(err) => Err(NerveError::InvalidRegex(err)),
+        }
+    }
+
     pub(super) fn into_request(self) -> SearchRequest {
         SearchRequest {
             pattern: self.pattern,
@@ -268,10 +358,18 @@ pub(super) struct GitArgs {
     pub(super) count: usize,
     #[serde(default)]
     pub(super) lines: Option<String>,
+    #[serde(default)]
+    pub(super) detail: Option<String>,
+    #[serde(default = "default_git_max_chars", deserialize_with = "lenient_usize")]
+    pub(super) max_chars: usize,
 }
 
 pub(super) fn default_git_count() -> usize {
     20
+}
+
+pub(super) fn default_git_max_chars() -> usize {
+    20_000
 }
 
 #[derive(Debug, Deserialize)]

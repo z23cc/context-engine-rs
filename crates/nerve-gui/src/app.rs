@@ -23,6 +23,7 @@ use crate::render::render_turn;
 use crate::rpc::{cancel_job, daemon_token, new_job_id, open_events, start_job, start_job_with_id};
 use crate::settings::SettingsModal;
 use crate::sidebar::Sidebar;
+use crate::topbar::Topbar;
 use leptos::prelude::*;
 use serde_json::json;
 
@@ -147,14 +148,18 @@ pub fn App() -> impl IntoView {
     // Optional model override passed to delegate.start (empty = the CLI's default).
     let model = RwSignal::new(saved.model);
     let theme = RwSignal::new(saved.theme);
+    let theme_accent = RwSignal::new(saved.accent);
+    let theme_bg = RwSignal::new(saved.bg);
+    let theme_fg = RwSignal::new(saved.fg);
+    let theme_font_ui = RwSignal::new(saved.font_ui);
+    let theme_font_code = RwSignal::new(saved.font_code);
+    let sidebar_vibrancy = RwSignal::new(saved.sidebar_vibrancy);
     let search = RwSignal::new(String::new());
     let settings_open = RwSignal::new(false);
     let inspector_open = RwSignal::new(false);
     // Top-level surface: the delegate chat, or the Context builder.
     let mode = RwSignal::new("chat");
-    // Multi-project: `workspaces` is every registered workspace `(name, root)`;
-    // `workspace` is the ACTIVE one's name (the routing key threaded into every
-    // tool call + delegate cwd + reveal). Switching projects re-points all of it.
+    // Multi-project: active `workspace` routes tool calls, delegate cwd, and reveal.
     let workspaces = RwSignal::new(Vec::<(String, String)>::new());
     let workspace = RwSignal::new(String::new());
     let branch = RwSignal::new("—".to_string());
@@ -209,11 +214,17 @@ pub fn App() -> impl IntoView {
     Effect::new(move |_| {
         let s = crate::settings::Settings {
             theme: theme.get(),
+            accent: theme_accent.get(),
+            bg: theme_bg.get(),
+            fg: theme_fg.get(),
+            font_ui: theme_font_ui.get(),
+            font_code: theme_font_code.get(),
+            sidebar_vibrancy: sidebar_vibrancy.get(),
             agent: agent.get(),
             autonomy: autonomy.get(),
             model: model.get(),
         };
-        crate::settings::apply_theme(&s.theme);
+        crate::settings::apply_theme(&s);
         crate::settings::save(&s);
     });
 
@@ -265,7 +276,7 @@ pub fn App() -> impl IntoView {
         chats.update(|cs| {
             if let Some(c) = cs.get_mut(idx) {
                 if c.turns.is_empty() {
-                    c.title = truncate_title(&text);
+                    c.title = crate::data::truncate_title(&text);
                 }
                 c.turns.push(Turn::user(text.clone()));
                 c.turns.push(Turn::assistant_streaming());
@@ -347,7 +358,7 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    let toggle_inspector = move |_| {
+    let toggle_inspector = move || {
         let opening = !inspector_open.get_untracked();
         inspector_open.set(opening);
         if opening {
@@ -373,53 +384,76 @@ pub fn App() -> impl IntoView {
         view! {
             <div class="composer-stack">
                 <div class="composer-box">
-                    <textarea
-                        id="message"
-                        name="message"
-                        class="input"
-                        rows="1"
-                        prop:value=move || input.get()
-                        on:input=move |ev| input.set(event_target_value(&ev))
-                        on:keydown=move |ev| {
-                            if ev.key() == "Enter" && !ev.shift_key() {
-                                ev.prevent_default();
-                                send();
+                    <div class="composer-bar">
+                        <div class="composer-modes" aria-label="Execution mode">
+                            <span
+                                class="composer-mode on"
+                                aria-current="true"
+                                title="Run against the local workspace"
+                            >"Local"</span>
+                            <span
+                                class="composer-mode"
+                                aria-disabled="true"
+                                title="Worktree mode — coming soon"
+                            >"Worktree"</span>
+                            <span
+                                class="composer-mode"
+                                aria-disabled="true"
+                                title="Cloud mode — coming soon"
+                            >"Cloud"</span>
+                        </div>
+                        <div class="composer-affordances">
+                            <button class="tool-btn" title="Attach — coming soon" aria-label="Attach" disabled>"+"</button>
+                            <button class="tool-btn" title="Dictate (⌘M) — coming soon" aria-label="Dictate" disabled>"⌘M"</button>
+                        </div>
+                    </div>
+                    <div class="composer-input-row">
+                        <textarea
+                            id="message"
+                            name="message"
+                            class="input"
+                            rows="1"
+                            prop:value=move || input.get()
+                            on:input=move |ev| input.set(event_target_value(&ev))
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" && !ev.shift_key() {
+                                    ev.prevent_default();
+                                    send();
+                                }
                             }
-                        }
-                        placeholder="Ask the agent to build…"
-                    ></textarea>
-                    <div class="composer-tools">
-                        <button class="tool-btn" title="Attach — coming soon" disabled>"+"</button>
-                        <select
-                            class="access-pill"
-                            title="Autonomy"
-                            prop:value=move || autonomy.get()
-                            on:change=move |ev| autonomy.set(event_target_value(&ev))
-                        >
-                            <option value="full">"Full access"</option>
-                            <option value="edit">"Auto-edit"</option>
-                            <option value="read_only">"Read-only"</option>
-                        </select>
-                        <span class="tool-spacer"></span>
-                        <select
-                            class="effort"
-                            title="Model"
-                            prop:value=move || model.get()
-                            on:change=move |ev| model.set(event_target_value(&ev))
-                        >
-                            {move || {
-                                let ag = agent.get();
-                                crate::data::AGENT_MODELS.iter()
-                                    .filter(move |(a, _, _)| *a == ag)
-                                    .map(|(_, id, label)| view! { <option value=*id>{*label}</option> })
-                                    .collect_view()
+                            placeholder="Describe a task…  /  for commands"
+                        ></textarea>
+                        <div class="composer-tools">
+                            <select
+                                class="access-pill"
+                                title="Autonomy"
+                                prop:value=move || autonomy.get()
+                                on:change=move |ev| autonomy.set(event_target_value(&ev))
+                            >
+                                <option value="full">"Full access"</option>
+                                <option value="edit">"Auto-edit"</option>
+                                <option value="read_only">"Read-only"</option>
+                            </select>
+                            <select
+                                class="effort"
+                                title="Model"
+                                prop:value=move || model.get()
+                                on:change=move |ev| model.set(event_target_value(&ev))
+                            >
+                                {move || {
+                                    let ag = agent.get();
+                                    crate::data::AGENT_MODELS.iter()
+                                        .filter(move |(a, _, _)| *a == ag)
+                                        .map(|(_, id, label)| view! { <option value=*id>{*label}</option> })
+                                        .collect_view()
+                                }}
+                            </select>
+                            {move || if active_busy() {
+                                view! { <button class="send stop" title="Stop" on:click=move |_| stop()>"■"</button> }.into_any()
+                            } else {
+                                view! { <button class="send" title="Send" on:click=move |_| send()>"↑"</button> }.into_any()
                             }}
-                        </select>
-                        {move || if active_busy() {
-                            view! { <button class="send stop" title="Stop" on:click=move |_| stop()>"■"</button> }.into_any()
-                        } else {
-                            view! { <button class="send" title="Send" on:click=move |_| send()>"↑"</button> }.into_any()
-                        }}
+                        </div>
                     </div>
                 </div>
                 <div class="context-pills">
@@ -447,37 +481,39 @@ pub fn App() -> impl IntoView {
             <Sidebar chats active input error token search workspace workspaces settings_open
                 busy=Signal::derive(active_busy) />
             <main class="main chat">
-                <div class="topbar">
-                    <div class="picker">
-                        <select
-                            class="model-pill"
-                            title="Agent CLI"
-                            prop:value=move || agent.get()
-                            on:change=move |ev| agent.set(event_target_value(&ev))
-                        >
-                            {crate::data::AGENTS.iter().map(|(id, label)| view! {
-                                <option value=*id>{*label}</option>
-                            }).collect_view()}
-                        </select>
-                        <button class="mode-toggle" title="Context builder"
-                            on:click=move |_| mode.update(|m| *m = if *m == "context" { "chat" } else { "context" })>
-                            {move || if mode.get() == "context" { "← Chat" } else { "Context" }}
-                        </button>
-                        <button class="icon-btn" title="Task pane" on:click=toggle_inspector>"⊞"</button>
-                    </div>
-                </div>
+                <Topbar
+                    agent=agent
+                    model=model
+                    mode=mode
+                    toggle_inspector=Callback::new(move |_| toggle_inspector())
+                />
                 {move || error.get().map(|e| view! { <div class="shell-error">{e}</div> })}
                 {move || if mode.get() == "context" {
                     view! { <ContextView token=token workspace=workspace/> }.into_any()
                 } else if empty.get() {
                     view! {
                         <div class="hero">
-                            <h1 class="hero-title">"What should we build?"</h1>
+                            <div class="hero-copy">
+                                <h1 class="hero-title">"What should we work on?"</h1>
+                                <p class="hero-sub">{move || {
+                                    let name = workspace.get();
+                                    if name.is_empty() { "No workspace selected".to_string() } else { name }
+                                }}</p>
+                            </div>
                             <div class="hero-composer">{composer()}</div>
-                            <div class="hero-chips">
-                                <button class="hero-chip" on:click=move |_| input.set("Explain how this repository is organized.".into())>"Explain this repo"</button>
-                                <button class="hero-chip" on:click=move |_| input.set("Make a step-by-step plan for the next change.".into())>"Make a plan"</button>
-                                <button class="hero-chip" on:click=move |_| input.set("Find and fix a bug in this codebase.".into())>"Find a bug"</button>
+                            <div class="hero-chips" role="group" aria-label="Suggestions">
+                                <button class="hero-chip" on:click=move |_| {
+                                    input.set("Make a step-by-step plan for the next change.".into());
+                                    crate::dom::focus_message_input();
+                                }>"Plan"</button>
+                                <button class="hero-chip" on:click=move |_| {
+                                    input.set("Answer a question about this repository: ".into());
+                                    crate::dom::focus_message_input();
+                                }>"Ask"</button>
+                                <button class="hero-chip" on:click=move |_| {
+                                    input.set("Explain how this repository is organized.".into());
+                                    crate::dom::focus_message_input();
+                                }>"Explain this repo"</button>
                             </div>
                         </div>
                     }.into_any()
@@ -523,9 +559,7 @@ pub fn App() -> impl IntoView {
                     </div>
                 </aside>
             })}
-            {move || settings_open.get().then(|| view! {
-                <SettingsModal open=settings_open theme=theme agent=agent autonomy=autonomy model=model />
-            })}
+                <SettingsModal open=settings_open token=token theme=theme accent=theme_accent bg=theme_bg fg=theme_fg font_ui=theme_font_ui font_code=theme_font_code sidebar_vibrancy=sidebar_vibrancy agent=agent autonomy=autonomy model=model />
             {move || approval.get().map(|req| view! {
                 <ApprovalModal req=req token=token approval=approval />
             })}
@@ -559,18 +593,4 @@ fn fail_chat(
         }
     });
     error.set(Some(message));
-}
-
-/// A short sidebar title from the first user message.
-fn truncate_title(text: &str) -> String {
-    let line = text.lines().next().unwrap_or(text).trim();
-    let mut title: String = line.chars().take(40).collect();
-    if line.chars().count() > 40 {
-        title.push('…');
-    }
-    if title.is_empty() {
-        "New thread".into()
-    } else {
-        title
-    }
 }

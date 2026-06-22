@@ -33,7 +33,7 @@ use crate::{
 };
 use analysis::{FileAnalysisResult, analyze_files_cancellable};
 use graph::ReferenceGraph;
-use query::{normalize_seed_paths, normalized_query};
+use query::{normalize_seed_paths, normalized_query, query_terms};
 use rank::{DAMPING, ITERATIONS, page_rank_cancellable, personalization, score_cmp, seed_indices};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -127,6 +127,7 @@ pub fn get_repo_map_cancellable<P: CatalogProvider + Sync>(
 ) -> Result<RepoMapResponse, NerveError> {
     cancel.check_cancelled()?;
     let query = normalized_query(request.query.as_deref());
+    let query_terms = query_terms(query.as_deref());
     let seed_paths = normalize_seed_paths(&request.seed_paths);
     let max_files = request.max_files.max(1);
 
@@ -146,7 +147,7 @@ pub fn get_repo_map_cancellable<P: CatalogProvider + Sync>(
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let graph = ReferenceGraph::build(&files);
-    let seed_indices = seed_indices(&files, &seed_paths);
+    let seed_indices = seed_indices(&files, &seed_paths, &query_terms);
     let seed_count = seed_indices.len();
     let personalization = personalization(files.len(), &seed_indices);
     let scores = page_rank_cancellable(&graph.edges, &personalization, cancel)?;

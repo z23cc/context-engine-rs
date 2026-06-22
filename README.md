@@ -8,19 +8,22 @@ semantic retrieval over a codebase — no language server or GUI required.
 
 ## Highlights
 
-- **29 MCP tools**: search, read, tree, codemap, repo-map, symbol nav, call
-  hierarchy, structural AST search/rewrite, a 4-mode edit engine, read-only git,
-  semantic search, context assembly, plus optional xAI/Grok tools when OAuth is configured.
+- **38 MCP tools**: tool discovery, search, read, tree, codemap, repo-map,
+  fuzzy symbol search, impact analysis, symbol body reads/replace/insert/import-backed rename, symbol nav, call hierarchy, structural AST search/rewrite, selection preview/promote/demote,
+  a 4-mode edit engine, read-only git, semantic search, context assembly, plus optional xAI/Grok tools when OAuth is configured.
 - **Codemap over 11 languages** (tree-sitter): signatures **with return types**,
-  struct/class **fields**, and full nested symbols — Rust, Python, JS, TS/TSX, Go,
-  Java, C, C++, C#, Ruby, PHP.
+  class/struct members, references, shebang-based script detection, Markdown fenced-code extraction,
+  and deterministic repo-map ranking — Rust, Python, JS, TS/TSX, Go, Java, C, C++, C#, Ruby, PHP.
 - **Deterministic** by design: snapshot-centered, golden-tested, reproducible
-  (the lexical/structural tools give the same output for the same input).
+  (the lexical/structural tools give the same output for the same input), with
+  context/file hashes for downstream prompt-cache and dedupe keys.
 - **Hybrid search**: ripgrep-style path/content (BM25) **plus** a built-in
   semantic engine — local ONNX embeddings + ANN + cross-encoder rerank, fused via
   RRF (on by default; see below).
-- **Symbol navigation** (`goto_definition` / `find_references` / `call_hierarchy`)
-  with confidence scoring — the structured layer agentic coders otherwise lack.
+- **Symbol intelligence** (`symbol_search` / `analyze_impact` / `find_referencing_symbols` / `read_symbol` /
+  `replace_symbol_body` / `insert_before_symbol` / `insert_after_symbol` / `rename_symbol` / `goto_definition` / `find_references` / `call_hierarchy`) with partial-name discovery,
+  bounded impact analysis, referencing-symbol context, one-shot body reads, conservative symbolic edits (including import-backed rename that preserves local aliases), confidence scoring, and line:column locations — the structured layer agentic coders otherwise have to approximate with grep.
+- **Agent sessions with working memory**: `update_checkpoint` keeps a bounded replace-only plan/decision note pinned into every provider request, survives compaction, and is persisted with session transcripts for stale-marked resume.
 - **Cross-platform single binary**: Homebrew bottle, Scoop, or `cargo install`.
 
 ## Install
@@ -155,11 +158,11 @@ Grok/API entitlement.
 
 | Group | Tools |
 |---|---|
-| Search / read | `file_search` (path+content, BM25, smart-case, glob `include`/`exclude`/`extensions`, `output_mode`, asymmetric context; per-file cap + round-robin so one file can't monopolize results), `read_file` (line ranges, hashline view, **structural `summary` view** — signatures kept, bodies elided, with concrete re-read ranges), `get_file_tree` (budgeted ASCII tree) |
-| Code intelligence | `get_code_structure` (codemap + signatures/fields + per-file `token_count`), `get_repo_map` (deterministic PageRank), `goto_definition` / `find_references` (confidence-scored) / `call_hierarchy` |
+| Search / read | `file_search` (path+content, BM25, smart-case, glob `include`/`exclude`/`extensions`, `output_mode`, asymmetric context, optional invalid-regex literal fallback (`regex_fallback="literal"`); per-file cap + round-robin so one file can't monopolize results), `read_file` (line ranges, hashline view, **structural `summary` view** — signatures kept, bodies elided, supported Markdown fences summarized on host lines, with concrete re-read ranges), `get_file_tree` (budgeted ASCII tree, `mode="selected"` ignores depth so selected files stay visible, with `*` selected / `+` codemap-capable markers) |
+| Code intelligence | `get_code_structure` (codemap + signatures/fields + per-file `token_count`, including no-extension scripts with supported shebangs and supported Markdown fenced code), `get_repo_map`, `symbol_search`, `read_symbol`, `analyze_impact`, `find_referencing_symbols`, `goto_definition`, `find_references`, `call_hierarchy`; navigation structuredContent includes line:column locations for definitions/references |
 | Semantic | `semantic_search` (hybrid dense + BM25 + rerank; structured `index_state` = `ready`/`warming`/`bm25_only` + snapshot `generation` for freshness) |
-| Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` — root-gated, with unified diff (configurable context, optional ignore-whitespace) + syntax diagnostics; `ast_search` / `ast_edit` (structural — raw tree-sitter `query` mode **plus a `$META` pattern mode**) |
-| Context / ops | `manage_selection`, `workspace_context`, `build_context`, `git` (read-only), `manage_workspaces` |
+| Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` / `replace_symbol_body` / `insert_before_symbol` / `insert_after_symbol` / `rename_symbol` (conservative same-file + import-backed symbol rename) — root-gated, with unified diff (configurable context, optional ignore-whitespace), syntax diagnostics, atomic batch preflight, stale-hash rejection, and selection rebase metadata |
+| Context / ops | `tool_search` (intent search over the built-in tool catalog; works without workspace routing), `manage_selection` (full/slices/codemap-only; root-prefixed paths; preview/promote/demote; optional `auto_codemap`; slice `label`/`description` preserved through rebase), `workspace_context` (optional selected `tree` + `code` sections), `build_context` (ranked context + per-signal score breakdowns + allocation/budget trace + structured sensitive-content diagnostics), `git` (read-only; diff `detail="summary"|"files"|"patches"|"bundle"|"full"`, with churn-sorted bounded patches and structured bundle handoff metadata), `manage_workspaces` |
 | xAI / Grok | `xai_models`, `xai_responses`, `x_search` (preferred), `xai_x_search`, `web_search` (preferred), `xai_web_search`, `xai_image_generate`, `xai_tts`, `xai_transcribe`, `xai_video_generate` |
 
 ## Semantic search (built in, on by default)
@@ -180,6 +183,9 @@ full hybrid (embeddings + ANN + rerank).
 - `build_context` automatically folds semantic candidates into its ranking when a
   warm index is available, then does a deterministic 1-hop type-reference expansion:
   files defining symbols the seed files reference are pulled in as codemap-only context.
+  Its manifest also reports per-signal score breakdowns, allocation/budget trace
+  entries, and sensitive-content findings for included full/slice content without
+  echoing matched secret values.
 - Structural summaries (`read_file view="summary"`) are memoized by content hash + fold options.
 
 `build_context` / `read_file` etc. fall back gracefully when the index is cold.

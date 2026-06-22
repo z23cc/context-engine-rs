@@ -6,8 +6,10 @@ use super::{
     LITERAL_PREFIX, META_PREFIX, PatternQuery, PatternShape, PatternShapeChild, WrappedPattern,
 };
 
-pub(super) fn compile_pattern_query(path: &str, pattern: &str) -> Result<PatternQuery, String> {
-    let language = Language::from_path(path).ok_or_else(|| "unsupported language".to_string())?;
+pub(super) fn compile_pattern_query_for_language(
+    language: Language,
+    pattern: &str,
+) -> Result<PatternQuery, String> {
     let prepared = replace_metavars(pattern)?;
     let wrapped = wrap_pattern(language, &prepared);
     let Some(tree) = super::parse_source(language, &wrapped.source)? else {

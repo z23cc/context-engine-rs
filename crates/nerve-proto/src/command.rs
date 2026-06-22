@@ -23,6 +23,7 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "auth.start",
     "auth.complete",
     "auth.status",
+    "auth.lease",
     "auth.logout",
     "delegate.start",
     "delegate.steer",
@@ -36,6 +37,18 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "flow.respond",
     "workspace.reveal",
 ];
+
+/// Login flow requested by `auth.start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStartFlow {
+    /// Browser authorization-code + PKCE flow over loopback/manual paste.
+    #[default]
+    Browser,
+    /// OAuth 2.0 device authorization flow for remote/mobile clients.
+    DeviceCode,
+}
 
 /// Transport-neutral command understood by human-facing runtime adapters.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -136,9 +149,14 @@ pub enum RuntimeCommand {
         session_id: String,
         mode: ApprovalMode,
     },
-    /// Start a host-managed OAuth login and return an authorization URL.
+    /// Start a host-managed OAuth login.
     #[serde(rename = "auth.start")]
-    AuthStart { provider: String },
+    AuthStart {
+        provider: String,
+        /// Requested login flow. Defaults to browser authorization-code flow.
+        #[serde(default, skip_serializing_if = "AuthStartFlow::is_default")]
+        flow: AuthStartFlow,
+    },
     /// Complete a host-managed OAuth login with a code or pasted callback URL.
     #[serde(rename = "auth.complete")]
     AuthComplete {
@@ -151,6 +169,23 @@ pub enum RuntimeCommand {
     /// Return stored OAuth/API-key credential status without secrets.
     #[serde(rename = "auth.status")]
     AuthStatus { provider: String },
+    /// Ask the trusted host to mint OAuth lease metadata and, for trusted native
+    /// clients, optionally include a short-lived access token. The stored refresh
+    /// token is never returned.
+    #[serde(rename = "auth.lease")]
+    AuthLease {
+        provider: String,
+        /// Force the broker to refresh before returning a lease.
+        #[serde(default)]
+        force_refresh: bool,
+        /// Include the short-lived access token in the response. Defaults to true
+        /// for backwards-compatible native clients; browser clients should pass false.
+        #[serde(
+            default = "default_auth_lease_include_token",
+            skip_serializing_if = "is_true"
+        )]
+        include_token: bool,
+    },
     /// Remove stored credentials for a provider.
     #[serde(rename = "auth.logout")]
     AuthLogout { provider: String },
@@ -426,6 +461,21 @@ impl ApprovalMode {
 }
 
 impl RuntimeCommand {
+    /// Construct a browser-flow `auth.start` command with the wire-compatible default flow.
+    #[must_use]
+    pub fn auth_start(provider: impl Into<String>) -> Self {
+        Self::auth_start_with_flow(provider, AuthStartFlow::Browser)
+    }
+
+    /// Construct an `auth.start` command with an explicit login flow.
+    #[must_use]
+    pub fn auth_start_with_flow(provider: impl Into<String>, flow: AuthStartFlow) -> Self {
+        Self::AuthStart {
+            provider: provider.into(),
+            flow,
+        }
+    }
+
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
@@ -445,6 +495,7 @@ impl RuntimeCommand {
             Self::AuthStart { .. } => "auth.start",
             Self::AuthComplete { .. } => "auth.complete",
             Self::AuthStatus { .. } => "auth.status",
+            Self::AuthLease { .. } => "auth.lease",
             Self::AuthLogout { .. } => "auth.logout",
             Self::DelegateStart { .. } => "delegate.start",
             Self::DelegateSteer { .. } => "delegate.steer",
@@ -479,6 +530,7 @@ impl RuntimeCommand {
             | Self::AuthStart { .. }
             | Self::AuthComplete { .. }
             | Self::AuthStatus { .. }
+            | Self::AuthLease { .. }
             | Self::AuthLogout { .. }
             | Self::DelegateStart { .. }
             | Self::DelegateSteer { .. }
@@ -497,6 +549,20 @@ impl RuntimeCommand {
 
 fn default_arguments() -> BTreeMap<String, Value> {
     BTreeMap::new()
+}
+
+fn default_auth_lease_include_token() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+impl AuthStartFlow {
+    fn is_default(value: &Self) -> bool {
+        *value == Self::default()
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +613,92 @@ mod tests {
             other => panic!("unexpected variant: {}", other.name()),
         }
         assert!(RUNTIME_COMMAND_NAMES.contains(&"session.set_mode"));
+    }
+
+    #[test]
+    fn auth_start_round_trips_with_default_browser_flow() {
+        assert!(matches!(
+            RuntimeCommand::auth_start("chatgpt"),
+            RuntimeCommand::AuthStart {
+                flow: AuthStartFlow::Browser,
+                ..
+            }
+        ));
+        assert!(matches!(
+            RuntimeCommand::auth_start_with_flow("chatgpt", AuthStartFlow::DeviceCode),
+            RuntimeCommand::AuthStart {
+                flow: AuthStartFlow::DeviceCode,
+                ..
+            }
+        ));
+
+        let value = serde_json::json!({
+            "kind": "auth.start",
+            "provider": "chatgpt",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse auth.start");
+        assert_eq!(command.name(), "auth.start");
+        match command {
+            RuntimeCommand::AuthStart { provider, flow } => {
+                assert_eq!(provider, "chatgpt");
+                assert_eq!(flow, AuthStartFlow::Browser);
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+
+        let value = serde_json::json!({
+            "kind": "auth.start",
+            "provider": "chatgpt",
+            "flow": "device_code",
+        });
+        let command: RuntimeCommand =
+            serde_json::from_value(value).expect("parse device auth.start");
+        assert!(matches!(
+            command,
+            RuntimeCommand::AuthStart {
+                flow: AuthStartFlow::DeviceCode,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn auth_lease_round_trips_with_default_force_refresh() {
+        let value = serde_json::json!({
+            "kind": "auth.lease",
+            "provider": "chatgpt",
+        });
+        let command: RuntimeCommand = serde_json::from_value(value).expect("parse auth.lease");
+        assert_eq!(command.name(), "auth.lease");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::AuthLease {
+                provider,
+                force_refresh,
+                include_token,
+            } => {
+                assert_eq!(provider, "chatgpt");
+                assert!(!force_refresh);
+                assert!(include_token);
+            }
+            other => panic!("unexpected variant: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"auth.lease"));
+
+        let metadata_only = serde_json::json!({
+            "kind": "auth.lease",
+            "provider": "chatgpt",
+            "include_token": false,
+        });
+        let command: RuntimeCommand =
+            serde_json::from_value(metadata_only).expect("metadata lease");
+        assert!(matches!(
+            command,
+            RuntimeCommand::AuthLease {
+                include_token: false,
+                ..
+            }
+        ));
     }
 
     #[test]

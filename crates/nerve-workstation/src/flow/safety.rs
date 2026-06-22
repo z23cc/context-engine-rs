@@ -54,6 +54,9 @@ pub(crate) enum WorkflowError {
     /// declared fork-loop (design §8, the ancestor-instruction-hash guard). `depth` is
     /// the nesting level the repeat was found at.
     PlannerForkLoop { depth: u32 },
+    /// A `Named` ref also has a workflow definition file, but that workflow file is
+    /// malformed. Broken loaded data must fail loudly, not be treated as a leaf worker.
+    NamedWorkflowInvalid { name: String, reason: String },
     /// A genuine reference cycle (C6): a named workflow whose `Named` references
     /// resolve (transitively) back to itself. `cycle` is the workflow-name chain.
     ReferenceCycle { cycle: Vec<String> },
@@ -75,6 +78,9 @@ impl std::fmt::Display for WorkflowError {
                 "hierarchical planner at depth {depth} repeats an ancestor planner's \
                  instruction (a fork-loop); each nesting level needs a distinct plan"
             ),
+            Self::NamedWorkflowInvalid { name, reason } => {
+                write!(f, "named workflow `{name}` is invalid: {reason}")
+            }
             Self::ReferenceCycle { cycle } => write!(
                 f,
                 "named-workflow reference cycle: {} (a workflow cannot reference itself, \
@@ -114,7 +120,7 @@ pub(crate) fn validate_workflow_refs(
     let mut on_stack = vec![def.name.clone()];
     let mut seen = HashSet::new();
     seen.insert(def.name.clone());
-    detect_reference_cycle(def, workflows, &mut on_stack, &mut seen)
+    detect_reference_cycle(def, workflows, workers, &mut on_stack, &mut seen)
 }
 
 /// Every `Named` worker in `def` must resolve through the registry (C6 turns C5's
@@ -139,32 +145,36 @@ fn resolve_named_workers(def: &WorkflowDef, workers: &WorkerRegistry) -> Result<
 fn detect_reference_cycle(
     def: &WorkflowDef,
     workflows: &WorkflowRegistry,
+    workers: &WorkerRegistry,
     on_stack: &mut Vec<String>,
     seen: &mut HashSet<String>,
 ) -> Result<(), WorkflowError> {
     for name in reachable_named_workers(def) {
         // Only a Named reference that resolves to a WORKFLOW can recurse; a plain
-        // worker def is a leaf (workers do not reference other workflows).
-        if !workflows.contains(&name) {
+        // worker def is a leaf (workers do not reference other workflows). However,
+        // if a workflow file exists but is malformed, fail loudly instead of hiding
+        // the broken data as a leaf.
+        let Some(child) = workflows.resolve_if_present(&name).map_err(|err| {
+            WorkflowError::NamedWorkflowInvalid {
+                name: name.clone(),
+                reason: err.to_string(),
+            }
+        })?
+        else {
             continue;
-        }
+        };
         if on_stack.contains(&name) {
             let mut cycle = on_stack.clone();
             cycle.push(name);
             return Err(WorkflowError::ReferenceCycle { cycle });
         }
         if !seen.insert(name.clone()) {
-            continue; // already cleared this subtree on another path
+            continue; // already validated and cleared this subtree on another path
         }
-        let child =
-            workflows
-                .resolve(&name)
-                .map_err(|err| WorkflowError::NamedWorkerUnresolvable {
-                    name: name.clone(),
-                    reason: err.to_string(),
-                })?;
+        validate_workflow(&child)?;
+        resolve_named_workers(&child, workers)?;
         on_stack.push(name);
-        detect_reference_cycle(&child, workflows, on_stack, seen)?;
+        detect_reference_cycle(&child, workflows, workers, on_stack, seen)?;
         on_stack.pop();
     }
     Ok(())
@@ -400,6 +410,116 @@ mod tests {
             }
             other => panic!("expected a reference cycle, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn refs_validation_rejects_a_malformed_named_workflow_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path().join("workers").join("bad.json"),
+            r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+        );
+        write(
+            dir.path().join("workflows").join("bad.json"),
+            r#"{ "schema_version": 1, "name": "bad" }"#,
+        );
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named { name: "bad".into() }),
+            },
+            2,
+        );
+        let workers = WorkerRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let workflows = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        match validate_workflow_refs(&d, &workflows, &workers) {
+            Err(WorkflowError::NamedWorkflowInvalid { name, reason }) => {
+                assert_eq!(name, "bad");
+                assert!(reason.contains("failed to parse"), "{reason}");
+            }
+            other => panic!("expected invalid named workflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refs_validation_rejects_child_workflow_with_unresolvable_named_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path().join("workers").join("child.json"),
+            r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+        );
+        write(
+            dir.path().join("workflows").join("child.json"),
+            r#"{
+                "schema_version": 1,
+                "name": "child",
+                "strategy": {
+                    "type": "single",
+                    "step": {
+                        "worker": { "kind": "named", "name": "ghost" },
+                        "task": "delegate"
+                    }
+                }
+            }"#,
+        );
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "child".into(),
+                }),
+            },
+            2,
+        );
+        let workers = WorkerRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let workflows = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        match validate_workflow_refs(&d, &workflows, &workers) {
+            Err(WorkflowError::NamedWorkerUnresolvable { name, .. }) => assert_eq!(name, "ghost"),
+            other => panic!("expected child workflow's unresolved worker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refs_validation_rejects_child_workflow_with_invalid_structure() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path().join("workers").join("child.json"),
+            r#"{ "kind": { "type": "cli", "name": "claude" } }"#,
+        );
+        write(
+            dir.path().join("workflows").join("child.json"),
+            r#"{
+                "schema_version": 1,
+                "name": "child",
+                "max_depth": 0,
+                "strategy": {
+                    "type": "hierarchical",
+                    "planner": {
+                        "worker": { "kind": "cli", "name": "claude" },
+                        "task": "plan"
+                    },
+                    "child": {
+                        "type": "single",
+                        "step": {
+                            "worker": { "kind": "cli", "name": "claude" },
+                            "task": "do"
+                        }
+                    }
+                }
+            }"#,
+        );
+        let d = def(
+            Strategy::Single {
+                step: step(WorkerRef::Named {
+                    name: "child".into(),
+                }),
+            },
+            2,
+        );
+        let workers = WorkerRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        let workflows = WorkflowRegistry::from_sources(Some(dir.path().to_path_buf()), None);
+        assert_eq!(
+            validate_workflow_refs(&d, &workflows, &workers),
+            Err(WorkflowError::ZeroDepthHierarchy)
+        );
     }
 
     #[test]

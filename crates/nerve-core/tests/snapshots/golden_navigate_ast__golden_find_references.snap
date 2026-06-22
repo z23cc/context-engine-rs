@@ -5,7 +5,7 @@ expression: response
 {
   "content": [
     {
-      "text": "definitions:\n  shapes.rs:6 interface\nreferences:\n  shapes.rs:10 implementation\n",
+      "text": "definitions:\n  shapes.rs:6:11 interface\nreferences:\n  shapes.rs:10:6 implementation\n",
       "type": "text"
     }
   ],
@@ -13,6 +13,7 @@ expression: response
     "definition_count": 1,
     "definitions": [
       {
+        "column": 11,
         "display_path": "shapes.rs",
         "kind": "interface",
         "language": "rust",
@@ -25,6 +26,7 @@ expression: response
     "note": "syntax-level name match across the catalog; not a scope/type resolver, so results may include unrelated same-name symbols and miss aliases or re-exports",
     "references": [
       {
+        "column": 6,
         "confidence": "high",
         "display_path": "shapes.rs",
         "kind": "implementation",

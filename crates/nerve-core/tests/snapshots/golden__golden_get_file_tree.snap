@@ -1,11 +1,12 @@
 ---
 source: crates/nerve-core/tests/golden.rs
+assertion_line: 250
 expression: value
 ---
 {
   "omitted": 0,
   "roots_count": 1,
-  "tree": "<fixture-root>\n├── nested/\n│   ├── beta.rs\n│   └── info.txt\n├── repo_map/\n│   ├── js_consumer.js\n│   ├── py_lib.py\n│   ├── python_consumer.py\n│   ├── rust_consumer.rs\n│   ├── rust_lib.rs\n│   └── shared.js\n├── alpha.rs\n├── delta.js\n├── gamma.py\n└── notes.txt",
-  "uses_legend": false,
+  "tree": "<fixture-root>\n├── nested/\n│   ├── beta.rs +\n│   └── info.txt\n├── repo_map/\n│   ├── js_consumer.js +\n│   ├── py_lib.py +\n│   ├── python_consumer.py +\n│   ├── rust_consumer.rs +\n│   ├── rust_lib.rs +\n│   └── shared.js +\n├── alpha.rs +\n├── delta.js +\n├── gamma.py +\n└── notes.txt",
+  "uses_legend": true,
   "was_truncated": false
 }

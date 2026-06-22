@@ -12,6 +12,7 @@ expression: response
           "kind": "class",
           "name": "Alpha",
           "line": 1,
+          "column": 12,
           "signature": "pub struct Alpha",
           "members": [
             {
@@ -24,6 +25,7 @@ expression: response
           "kind": "class",
           "name": "Mode",
           "line": 5,
+          "column": 10,
           "signature": "pub enum Mode",
           "members": [
             {
@@ -40,24 +42,28 @@ expression: response
           "kind": "interface",
           "name": "Runnable",
           "line": 10,
+          "column": 11,
           "signature": "pub trait Runnable"
         },
         {
           "kind": "method",
           "name": "new",
           "line": 15,
+          "column": 12,
           "signature": "pub fn new(value: i32) -> Self"
         },
         {
           "kind": "method",
           "name": "run",
           "line": 21,
+          "column": 8,
           "signature": "fn run(&self)"
         },
         {
           "kind": "function",
           "name": "alpha_needle",
           "line": 24,
+          "column": 8,
           "signature": "pub fn alpha_needle() -> &'static str"
         }
       ],
@@ -71,48 +77,56 @@ expression: response
           "kind": "function",
           "name": "jsEntry",
           "line": 1,
+          "column": 17,
           "signature": "function jsEntry()"
         },
         {
           "kind": "class",
           "name": "Widget",
           "line": 5,
+          "column": 7,
           "signature": "class Widget"
         },
         {
           "kind": "method",
           "name": "method",
           "line": 6,
+          "column": 3,
           "signature": "method()"
         },
         {
           "kind": "function",
           "name": "runTask",
           "line": 9,
+          "column": 7,
           "signature": "const runTask = async () => 42"
         },
         {
           "kind": "function",
           "name": "exportedArrow",
           "line": 10,
+          "column": 14,
           "signature": "export const exportedArrow = () => \"exported\""
         },
         {
           "kind": "function",
           "name": "makeThing",
           "line": 11,
+          "column": 5,
           "signature": "let makeThing = () => new Widget()"
         },
         {
           "kind": "function",
           "name": "nestedSkip",
           "line": 14,
+          "column": 12,
           "signature": "function nestedSkip()"
         },
         {
           "kind": "class",
           "name": "ExportedThing",
           "line": 17,
+          "column": 14,
           "signature": "class ExportedThing"
         }
       ],
@@ -126,30 +140,35 @@ expression: response
           "kind": "class",
           "name": "PyAlpha",
           "line": 1,
+          "column": 7,
           "signature": "class PyAlpha"
         },
         {
           "kind": "function",
           "name": "method",
           "line": 2,
+          "column": 9,
           "signature": "def method(self)"
         },
         {
           "kind": "function",
           "name": "py_helper",
           "line": 6,
+          "column": 5,
           "signature": "def py_helper()"
         },
         {
           "kind": "function",
           "name": "async_worker",
           "line": 10,
+          "column": 11,
           "signature": "async def async_worker()"
         },
         {
           "kind": "function",
           "name": "nested_skip",
           "line": 15,
+          "column": 9,
           "signature": "def nested_skip()"
         }
       ],
@@ -163,18 +182,21 @@ expression: response
           "kind": "class",
           "name": "BetaCount",
           "line": 1,
+          "column": 10,
           "signature": "pub type BetaCount = usize"
         },
         {
           "kind": "module",
           "name": "inner",
           "line": 7,
+          "column": 5,
           "signature": "mod inner"
         },
         {
           "kind": "macro",
           "name": "beta_macro",
           "line": 9,
+          "column": 14,
           "signature": "macro_rules! beta_macro"
         }
       ],
@@ -188,6 +210,7 @@ expression: response
           "kind": "function",
           "name": "jsConsumer",
           "line": 1,
+          "column": 17,
           "signature": "function jsConsumer()"
         }
       ],
@@ -201,6 +224,7 @@ expression: response
           "kind": "function",
           "name": "shared_py_helper",
           "line": 1,
+          "column": 5,
           "signature": "def shared_py_helper()"
         }
       ],
@@ -214,6 +238,7 @@ expression: response
           "kind": "function",
           "name": "python_consumer",
           "line": 1,
+          "column": 5,
           "signature": "def python_consumer()"
         }
       ],
@@ -227,6 +252,7 @@ expression: response
           "kind": "function",
           "name": "rust_consumer",
           "line": 1,
+          "column": 8,
           "signature": "pub fn rust_consumer() -> usize"
         }
       ],
@@ -240,6 +266,7 @@ expression: response
           "kind": "function",
           "name": "shared_rust_helper",
           "line": 1,
+          "column": 8,
           "signature": "pub fn shared_rust_helper() -> usize"
         }
       ],
@@ -253,12 +280,14 @@ expression: response
           "kind": "class",
           "name": "SharedThing",
           "line": 1,
+          "column": 14,
           "signature": "class SharedThing"
         },
         {
           "kind": "function",
           "name": "sharedFactory",
           "line": 7,
+          "column": 17,
           "signature": "function sharedFactory()"
         }
       ],

@@ -144,6 +144,47 @@ mod tests {
         assert!(!is_app_path("/application"));
     }
 
+    fn bytes_contain(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    fn assert_gui_auth_lease_source_contract(settings: &str, auth: &str, styles: &str) {
+        assert!(settings.contains("Broker OAuth"));
+        assert!(settings.contains("BrokerOAuthControls token=token"));
+        assert!(auth.contains("auth.status"));
+        assert!(auth.contains("Check status"));
+        assert!(auth.contains("Ok(result) => format_auth_status(&result)"));
+        assert!(auth.contains("auth.start"));
+        assert!(auth.contains("Start browser login"));
+        assert!(auth.contains("auth.complete"));
+        assert!(auth.contains("Complete login"));
+        assert!(auth.contains("Paste callback URL or code"));
+        assert!(auth.contains("Open authorization URL"));
+        assert!(
+            auth.contains(
+                "disabled=move || auth_busy.get() || login_busy.get() || lease_busy.get()"
+            )
+        );
+        assert!(auth.contains("Device-code login"));
+        assert!(auth.contains("Runtime bearer: not exposed through runtime"));
+        assert!(auth.contains("auth.lease"));
+        assert!(auth.contains("\"include_token\": false"));
+        assert!(auth.contains("Access token: not returned to Web GUI"));
+        assert!(auth.contains("Access token: stored by daemon; not returned to Web GUI"));
+        assert!(auth.contains("role=\"status\""));
+        assert!(auth.contains("aria-live=\"polite\""));
+        assert!(auth.contains("lease-status"));
+        assert!(auth.contains("auth-status"));
+        assert!(auth.contains("login-status"));
+        assert!(styles.contains(".lease-status"));
+        assert!(styles.contains(".auth-status"));
+        assert!(styles.contains(".login-status"));
+        assert!(styles.contains(".auth-callback"));
+        assert!(styles.contains(".auth-link"));
+    }
+
     #[test]
     fn embedded_bundle_is_present_and_is_a_protocol_client() {
         // The committed dist must actually be embedded (non-empty) and the app
@@ -155,6 +196,200 @@ mod tests {
         assert!(!APP_WASM.is_empty());
         // The wasm bytes begin with the `\0asm` magic.
         assert_eq!(&APP_WASM[..4], b"\0asm");
+    }
+
+    fn assert_gui_composer_source_contract(source: &str) {
+        assert!(source.contains("composer-modes"));
+        assert!(source.contains("\"Local\""));
+        assert!(source.contains("Worktree mode — coming soon"));
+        assert!(source.contains("Cloud mode — coming soon"));
+        assert!(source.contains("Describe a task…  /  for commands"));
+        assert!(source.contains("What should we work on?"));
+        assert!(source.contains("hero-sub"));
+        assert!(source.contains("No workspace selected"));
+        assert!(source.contains("role=\"group\" aria-label=\"Suggestions\""));
+        assert!(source.contains("focus_message_input();"));
+        assert!(source.contains("inspector_open"));
+        assert!(source.contains("class:with-inspector"));
+        assert!(source.contains("<aside class=\"inspector\">"));
+        assert!(source.contains(">\"Plan\"</button>"));
+        assert!(source.contains(">\"Files\"</button>"));
+        assert!(source.contains(">\"Changes\"</button>"));
+        assert!(source.contains("No tool activity in this thread yet."));
+        assert!(source.contains("fetch_file_tree"));
+        assert!(source.contains("fetch_diff"));
+        assert!(source.contains(">\"Ask\"</button>"));
+        assert!(source.contains(">\"Explain this repo\"</button>"));
+    }
+
+    fn assert_gui_chrome_source_contract(topbar: &str, sidebar: &str, render: &str) {
+        assert!(topbar.contains("model-menu"));
+        assert!(topbar.contains("model-popover"));
+        assert!(topbar.contains("Model picker"));
+        assert!(topbar.contains("agent.set(event_target_value(&ev))"));
+        assert!(topbar.contains("model.set(event_target_value(&ev))"));
+        assert!(topbar.contains("Terminal — coming soon"));
+        assert!(topbar.contains("Pop out — coming soon"));
+        assert!(topbar.contains("aria-disabled=\"true\""));
+        assert!(sidebar.contains("aria-label=\"Workspace navigation\""));
+        assert!(sidebar.contains(">\"Chats\"</span>"));
+        assert!(sidebar.contains(">\"Projects\"</span>"));
+        assert!(sidebar.contains(">\"Threads\"</div>"));
+        assert!(sidebar.contains("thread-rail-wrap"));
+        assert!(sidebar.contains("rail-sub"));
+        assert!(sidebar.contains("nav-svg"));
+        assert!(render.contains("Thought for this step"));
+        assert!(render.contains("tool-dot"));
+        assert!(!render.contains("tool-badge"));
+    }
+
+    fn assert_gui_settings_source_contract(
+        settings: &str,
+        settings_auth: &str,
+        index: &str,
+        styles: &str,
+    ) {
+        assert!(settings.contains("accent: RwSignal<String>"));
+        assert!(settings.contains("set_var(&style, \"--accent\""));
+        assert!(settings.contains("set_var(&style, \"--font-code\""));
+        assert!(settings.contains("token_input(font_ui"));
+        assert!(settings.contains("font_code"));
+        assert!(settings.contains("sidebar_vibrancy: RwSignal<bool>"));
+        assert!(settings.contains("bool_toggle(sidebar_vibrancy"));
+        assert!(settings.contains("Vibrant sidebar"));
+        assert_gui_auth_lease_source_contract(settings, settings_auth, styles);
+        assert!(index.contains("font_code: \"--font-code\""));
+        assert!(index.contains("el.style.setProperty(vars[key], value)"));
+        assert!(index.contains("data-vibrancy"));
+        assert!(index.contains("sidebar_vibrancy"));
+    }
+
+    fn assert_gui_style_source_contract(styles: &str) {
+        assert!(styles.contains("--bg: #fbfbfa;"));
+        assert!(styles.contains("--border: #e7e7e3;"));
+        assert!(styles.contains("--sidebar-width: 260px;"));
+        assert!(styles.contains("--r-card: 12px;"));
+        assert!(styles.contains("font-size: var(--fs-label);"));
+        assert!(styles.contains("letter-spacing: 0.04em;"));
+        assert!(styles.contains("text-transform: uppercase;"));
+        assert!(styles.contains("background: var(--inspector);"));
+        assert!(styles.contains(".thread-rail-wrap"));
+        assert!(styles.contains(".rail-sub"));
+        assert!(styles.contains("stroke-linecap: round;"));
+        assert!(styles.contains("gap: 28px;"));
+        assert!(styles.contains("border-radius: var(--r-card);"));
+        assert!(styles.contains(".tool-dot"));
+        assert!(styles.contains("font-family: var(--font-code);"));
+        assert!(styles.contains("#nerve-shell.with-inspector"));
+        assert!(styles.contains(".inspector-tab"));
+        assert!(styles.contains(".plan-step"));
+        assert!(styles.contains(".set-input"));
+        assert!(styles.contains(".set-toggle"));
+        assert!(styles.contains(":root[data-vibrancy='sidebar'] .sidebar"));
+        assert!(styles.contains("backdrop-filter: saturate(180%) blur(20px);"));
+    }
+
+    fn assert_gui_dist_contract() {
+        assert!(APP_INDEX_HTML.contains("font_code: \"--font-code\""));
+        assert!(APP_INDEX_HTML.contains("el.style.setProperty(vars[key], value)"));
+        assert!(APP_INDEX_HTML.contains("data-vibrancy"));
+        assert!(APP_CSS.contains("--bg: #fbfbfa;"));
+        assert!(APP_CSS.contains("--sidebar-width: 260px;"));
+        assert!(APP_CSS.contains("background: var(--inspector);"));
+        assert!(APP_CSS.contains("text-transform: uppercase;"));
+        assert!(APP_CSS.contains(".thread-rail-wrap"));
+        assert!(APP_CSS.contains(".rail-sub"));
+        assert!(APP_CSS.contains(".tool-dot"));
+        assert!(APP_CSS.contains("gap: 28px;"));
+        assert!(APP_CSS.contains("#nerve-shell.with-inspector"));
+        assert!(APP_CSS.contains(".inspector-tab"));
+        assert!(APP_CSS.contains(".set-input"));
+        assert!(APP_CSS.contains(".set-toggle"));
+        assert!(APP_CSS.contains(".lease-status"));
+        assert!(APP_CSS.contains(".auth-status"));
+        assert!(APP_CSS.contains(":root[data-vibrancy='sidebar'] .sidebar"));
+        assert!(APP_CSS.contains("backdrop-filter: saturate(180%) blur(20px);"));
+    }
+
+    #[test]
+    fn gui_source_declares_codex_composer_modes() {
+        // The source surface should keep the Codex-style execution-mode affordance
+        // close to the composer. Worktree/Cloud are deliberately disabled until
+        // their execution semantics exist, but the visual shell is present.
+        let source = include_str!("../../../nerve-gui/src/app.rs");
+        let topbar = include_str!("../../../nerve-gui/src/topbar.rs");
+        let sidebar = include_str!("../../../nerve-gui/src/sidebar.rs");
+        let render = include_str!("../../../nerve-gui/src/render.rs");
+        let settings = include_str!("../../../nerve-gui/src/settings.rs");
+        let settings_auth = include_str!("../../../nerve-gui/src/settings_auth.rs");
+        let index = include_str!("../../../nerve-gui/index.html");
+        let styles = include_str!("../../../nerve-gui/styles.css");
+
+        assert_gui_composer_source_contract(source);
+        assert_gui_chrome_source_contract(topbar, sidebar, render);
+        assert_gui_settings_source_contract(settings, settings_auth, index, styles);
+        assert_gui_style_source_contract(styles);
+        assert_gui_dist_contract();
+    }
+
+    #[test]
+    fn embedded_bundle_exposes_sticky_approval_decisions() {
+        // The committed dist must stay in sync with the source approval modal:
+        // sticky allow/deny decisions are a Protocol-v4 UX feature, not TUI-only.
+        assert!(bytes_contain(APP_WASM, "Allow for session"));
+        assert!(bytes_contain(APP_WASM, "Always deny"));
+        assert!(bytes_contain(APP_WASM, "allow_always"));
+        assert!(bytes_contain(APP_WASM, "deny_always"));
+    }
+
+    #[test]
+    fn embedded_bundle_exposes_codex_composer_modes() {
+        // Dist-sync guard for the primary `/app` bundle: the daemon-served WASM
+        // must carry the visible composer mode shell, not just the Rust source.
+        // Use distinctive UI strings instead of generic words like "Local".
+        assert!(bytes_contain(APP_WASM, "Execution mode"));
+        assert!(bytes_contain(APP_WASM, "Worktree mode"));
+        assert!(bytes_contain(APP_WASM, "Cloud mode"));
+        assert!(bytes_contain(APP_WASM, "Describe a task"));
+        assert!(bytes_contain(APP_WASM, "What should we work on?"));
+        assert!(bytes_contain(APP_WASM, "No workspace selected"));
+        assert!(bytes_contain(APP_WASM, "Suggestions"));
+        assert!(bytes_contain(APP_WASM, "Explain this repo"));
+        assert!(bytes_contain(APP_WASM, "Model picker"));
+        assert!(bytes_contain(APP_WASM, "Terminal"));
+        assert!(bytes_contain(APP_WASM, "Pop out"));
+        assert!(bytes_contain(APP_WASM, "Threads"));
+        assert!(bytes_contain(APP_WASM, "Chats"));
+        assert!(bytes_contain(APP_WASM, "Workspace navigation"));
+        assert!(bytes_contain(APP_WASM, "Thought for this step"));
+        assert!(bytes_contain(APP_WASM, "Inspector"));
+        assert!(bytes_contain(APP_WASM, "Files"));
+        assert!(bytes_contain(APP_WASM, "Changes"));
+        assert!(bytes_contain(APP_WASM, "No tool activity"));
+        assert!(bytes_contain(APP_WASM, "Accent"));
+        assert!(bytes_contain(APP_WASM, "UI font"));
+        assert!(bytes_contain(APP_WASM, "Code font"));
+        assert!(bytes_contain(APP_WASM, "Sidebar material"));
+        assert!(bytes_contain(APP_WASM, "Vibrant sidebar"));
+        assert!(bytes_contain(APP_WASM, "Broker OAuth"));
+        assert!(bytes_contain(APP_WASM, "Check status"));
+        assert!(bytes_contain(APP_WASM, "Start browser login"));
+        assert!(bytes_contain(APP_WASM, "Complete login"));
+        assert!(bytes_contain(APP_WASM, "Paste callback URL or code"));
+        assert!(bytes_contain(APP_WASM, "Open authorization URL"));
+        assert!(bytes_contain(APP_WASM, "Device-code login"));
+        assert!(bytes_contain(APP_WASM, "Runtime bearer:"));
+        assert!(bytes_contain(APP_WASM, "not exposed through runtime"));
+        assert!(bytes_contain(APP_WASM, "Check lease"));
+        assert!(bytes_contain(APP_WASM, "Force refresh lease"));
+        assert!(bytes_contain(
+            APP_WASM,
+            "Access token: not returned to Web GUI"
+        ));
+        assert!(bytes_contain(
+            APP_WASM,
+            "Access token: stored by daemon; not returned to Web GUI"
+        ));
     }
 
     #[test]

@@ -792,6 +792,20 @@ mod tests {
     }
 
     #[test]
+    fn legacy_gui_exposes_sticky_approval_decisions() {
+        // The fallback GUI should expose the full Protocol-v4 approval vocabulary,
+        // matching the TUI and Codex-style approval wording.
+        assert!(GUI_HTML.contains("Allow for session"));
+        assert!(GUI_HTML.contains("Always deny"));
+        assert!(GUI_HTML.contains("allow_always"));
+        assert!(GUI_HTML.contains("deny_always"));
+        assert!(GUI_HTML.contains("allowed for session"));
+        assert!(GUI_HTML.contains("always denied"));
+        assert!(GUI_HTML.contains(r#"respond(requestId, "allow_always""#));
+        assert!(GUI_HTML.contains(r#"respond(requestId, "deny_always""#));
+    }
+
+    #[test]
     fn route_rpc_body_reports_parse_error_with_null_id() {
         let (_root, router) = test_router();
         let response = route_rpc_body(&router, "not json").expect("parse-error response");

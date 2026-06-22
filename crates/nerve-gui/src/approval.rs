@@ -24,9 +24,9 @@ pub(crate) fn ApprovalModal(
                 {(!req.preview.is_empty()).then(|| view! { <pre class="modal-preview">{req.preview.clone()}</pre> })}
                 <div class="modal-actions">
                     <button class="btn allow" on:click=move |_| decide("allow")>"Allow"</button>
-                    <button class="btn" on:click=move |_| decide("allow_always")>"Always"</button>
+                    <button class="btn" on:click=move |_| decide("allow_always")>"Allow for session"</button>
                     <button class="btn" on:click=move |_| decide("deny")>"Deny"</button>
-                    <button class="btn danger" on:click=move |_| decide("deny_always")>"Deny always"</button>
+                    <button class="btn danger" on:click=move |_| decide("deny_always")>"Always deny"</button>
                 </div>
             </div>
         </div>

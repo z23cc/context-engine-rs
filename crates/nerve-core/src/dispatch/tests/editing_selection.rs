@@ -173,6 +173,36 @@ fn edit_reports_syntax_diagnostics_on_broken_rust() {
 }
 
 #[test]
+fn write_reports_syntax_diagnostics_for_markdown_fenced_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = provider_for(dir.path());
+    let content = "# Notes\n\n```rust\npub fn broken() {\n    let = 1;\n}\n```\n";
+
+    let result = handle_tool_call(
+        &provider,
+        &json!({ "name": "write", "arguments": { "path": "README.md", "content": content } }),
+    )
+    .expect("write");
+
+    let diagnostics = result["structuredContent"]["files"][0]["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        diagnostics.iter().any(|issue| issue["line"] == json!(5)
+            && issue["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("rust fenced code: "))),
+        "diagnostics: {diagnostics:?}"
+    );
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("README.md line 5: rust fenced code:"))
+    );
+}
+
+#[test]
 fn ast_search_and_edit_tools() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(dir.path().join("a.rs"), "fn main() { foo(); bar(); }\n").expect("seed");
@@ -203,6 +233,115 @@ fn ast_search_and_edit_tools() {
     assert_eq!(
         fs::read_to_string(dir.path().join("a.rs")).expect("read"),
         "fn main() { done(); done(); }\n"
+    );
+}
+
+#[test]
+fn ast_search_finds_markdown_fenced_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("README.md"),
+        "# Example\n\n```rust\npub fn fenced() {\n    foo();\n}\n```\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+
+    let res = handle_tool_call(
+        &provider,
+        &json!({ "name": "ast_search", "arguments": {
+            "language": "rust",
+            "query": "(function_item name: (identifier) @name) @match" } }),
+    )
+    .expect("ast_search");
+
+    assert_eq!(res["structuredContent"]["files_scanned"], json!(1));
+    assert_eq!(res["structuredContent"]["matches"][0]["path"], "README.md");
+    assert_eq!(res["structuredContent"]["matches"][0]["line"], json!(4));
+    assert_eq!(
+        res["structuredContent"]["matches"][0]["captures"]["name"],
+        "fenced"
+    );
+}
+
+#[test]
+fn ast_search_deindents_indented_markdown_fences() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("README.md"),
+        "   ```python\n   def accepted():\n       return 1\n   ```\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+
+    let res = handle_tool_call(
+        &provider,
+        &json!({ "name": "ast_search", "arguments": {
+            "language": "python",
+            "query": "(function_definition name: (identifier) @name) @match" } }),
+    )
+    .expect("ast_search");
+
+    assert_eq!(res["structuredContent"]["files_scanned"], json!(1));
+    assert_eq!(res["structuredContent"]["matches"][0]["line"], json!(2));
+    assert_eq!(
+        res["structuredContent"]["matches"][0]["captures"]["name"],
+        "accepted"
+    );
+}
+
+#[test]
+fn ast_search_ignores_supported_markers_inside_unsupported_fences() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("README.md"),
+        "```text\n```rust\npub fn ignored() {}\n```\n```\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+
+    let res = handle_tool_call(
+        &provider,
+        &json!({ "name": "ast_search", "arguments": {
+            "language": "rust",
+            "query": "(function_item name: (identifier) @name) @match" } }),
+    )
+    .expect("ast_search");
+
+    assert_eq!(res["structuredContent"]["files_scanned"], json!(0));
+    assert_eq!(
+        res["structuredContent"]["matches"]
+            .as_array()
+            .map(|matches| matches.len()),
+        Some(0)
+    );
+}
+
+#[test]
+fn ast_search_scoped_directory_skips_unsupported_non_markdown_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(dir.path().join("docs")).expect("docs");
+    fs::write(
+        dir.path().join("docs").join("notes.txt"),
+        "```rust\npub fn should_not_scan() {}\n```\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+
+    let res = handle_tool_call(
+        &provider,
+        &json!({ "name": "ast_search", "arguments": {
+            "language": "rust",
+            "paths": ["docs"],
+            "query": "(function_item name: (identifier) @name) @match" } }),
+    )
+    .expect("ast_search");
+
+    assert_eq!(res["structuredContent"]["files_scanned"], json!(0));
+    assert_eq!(
+        res["structuredContent"]["matches"]
+            .as_array()
+            .map(|matches| matches.len()),
+        Some(0)
     );
 }
 
@@ -252,35 +391,55 @@ fn ast_pattern_search_and_edit_tools() {
 
 #[test]
 fn git_tool_and_per_edit_diff() {
-    if std::process::Command::new("git")
+    if git_missing() {
+        return;
+    }
+    let dir = git_fixture();
+    let provider = provider_for(dir.path());
+
+    assert_clean_git_diff_bundle(&provider);
+    assert_edit_diff_and_raw_git_diff(&provider);
+    assert_legacy_git_structured_output(&provider);
+    fs::write(dir.path().join("b file.txt"), "ALPHA\nBETA\nGAMMA\nDELTA\n").expect("edit b");
+    assert_churn_sorted_git_diff_modes(&provider);
+    git_run(dir.path(), &["add", "a.txt"]);
+    assert_staged_git_diff(&provider);
+    assert_git_status_lists_file(&provider);
+}
+
+fn git_missing() -> bool {
+    std::process::Command::new("git")
         .arg("--version")
         .output()
         .is_err()
-    {
-        return; // git not installed; skip
-    }
-    let dir = tempfile::tempdir().expect("tempdir");
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t")
-            .output()
-            .expect("git");
-    };
-    git(&["init", "-q"]);
-    fs::write(dir.path().join("a.txt"), "one\ntwo\n").expect("seed");
-    git(&["add", "."]);
-    git(&["commit", "-q", "-m", "init"]);
-    let provider = provider_for(dir.path());
+}
 
-    // edit response carries a unified diff of exactly this change
+fn git_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git_run(dir.path(), &["init", "-q"]);
+    fs::write(dir.path().join("a.txt"), "one\ntwo\n").expect("seed");
+    fs::write(dir.path().join("b file.txt"), "alpha\nbeta\ngamma\ndelta\n").expect("seed b");
+    git_run(dir.path(), &["add", "."]);
+    git_run(dir.path(), &["commit", "-q", "-m", "init"]);
+    dir
+}
+
+fn git_run(root: &std::path::Path, args: &[&str]) {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .expect("git");
+}
+
+fn assert_edit_diff_and_raw_git_diff(provider: &FsCatalogProvider) {
     let res = handle_tool_call(
-        &provider,
+        provider,
         &json!({ "name": "edit", "arguments": { "mode": "replace", "path": "a.txt",
             "edits": [{ "old_text": "two", "new_text": "TWO" }] } }),
     )
@@ -293,9 +452,8 @@ fn git_tool_and_per_edit_diff() {
         "diff: {diff}"
     );
 
-    // git diff sees the working-tree change
     let g = handle_tool_call(
-        &provider,
+        provider,
         &json!({ "name": "git", "arguments": { "op": "diff" } }),
     )
     .expect("git diff");
@@ -303,20 +461,173 @@ fn git_tool_and_per_edit_diff() {
         g["content"][0]["text"]
             .as_str()
             .unwrap_or("")
-            .contains("+TWO"),
-        "git diff output"
+            .contains("+TWO")
     );
+}
 
-    // git status lists the modified file
-    let s = handle_tool_call(
-        &provider,
-        &json!({ "name": "git", "arguments": { "op": "status" } }),
-    )
-    .expect("git status");
+fn assert_clean_git_diff_bundle(provider: &FsCatalogProvider) {
+    let bundle = git_response(provider, json!({ "op": "diff", "detail": "bundle" }));
     assert!(
-        s["content"][0]["text"]
+        bundle["content"][0]["text"]
             .as_str()
             .unwrap_or("")
-            .contains("a.txt")
+            .contains("(no changes)")
     );
+    assert_eq!(bundle["structuredContent"]["detail"], json!("bundle"));
+    assert_eq!(
+        bundle["structuredContent"]["files"]
+            .as_array()
+            .expect("files")
+            .len(),
+        0
+    );
+    assert_eq!(bundle["structuredContent"]["truncated"], json!(false));
+}
+
+fn assert_churn_sorted_git_diff_modes(provider: &FsCatalogProvider) {
+    let files_text = git_text(provider, json!({ "op": "diff", "detail": "files" }));
+    assert!(files_text.contains("b file.txt (+4 -4)"), "{files_text}");
+    assert!(files_text.contains("a.txt (+1 -1)"), "{files_text}");
+    assert!(files_text.find("b file.txt").unwrap() < files_text.find("a.txt").unwrap());
+
+    let filtered_text = git_text(
+        provider,
+        json!({ "op": "diff", "detail": "files", "path": "a.txt" }),
+    );
+    assert!(filtered_text.contains("a.txt (+1 -1)"), "{filtered_text}");
+    assert!(!filtered_text.contains("b file.txt"), "{filtered_text}");
+
+    let zero_budget = handle_tool_call(
+        provider,
+        &json!({ "name": "git", "arguments": { "op": "diff", "detail": "patches", "max_chars": 0 } }),
+    );
+    assert!(zero_budget.is_err(), "max_chars=0 should be rejected");
+
+    let patch_text = git_text(
+        provider,
+        json!({ "op": "diff", "detail": "patches", "max_chars": 4000 }),
+    );
+    assert!(
+        patch_text.contains("# file: b file.txt (+4 -4)"),
+        "{patch_text}"
+    );
+    assert!(patch_text.contains("# file: a.txt (+1 -1)"), "{patch_text}");
+    assert!(
+        patch_text.find("# file: b file.txt").unwrap() < patch_text.find("# file: a.txt").unwrap()
+    );
+
+    let bundle = git_response(
+        provider,
+        json!({ "op": "diff", "detail": "bundle", "max_chars": 4000 }),
+    );
+    assert_eq!(bundle["structuredContent"]["detail"], json!("bundle"));
+    assert_eq!(
+        bundle["structuredContent"]["files"][0]["path"],
+        json!("b file.txt")
+    );
+    assert_eq!(bundle["structuredContent"]["files"][0]["churn"], json!(8));
+    assert_eq!(
+        bundle["structuredContent"]["files"][1]["path"],
+        json!("a.txt")
+    );
+    assert_eq!(
+        bundle["structuredContent"]["included_patch_count"],
+        json!(2)
+    );
+    assert_eq!(bundle["structuredContent"]["omitted_patch_count"], json!(0));
+    assert_eq!(bundle["structuredContent"]["truncated"], json!(false));
+    let full_payload_chars = bundle_patch_payload_chars(&bundle);
+    let exact = git_response(
+        provider,
+        json!({ "op": "diff", "detail": "bundle", "max_chars": full_payload_chars }),
+    );
+    assert_eq!(exact["structuredContent"]["truncated"], json!(false));
+    assert_eq!(exact["structuredContent"]["included_patch_count"], json!(2));
+    assert_eq!(bundle_patch_payload_chars(&exact), full_payload_chars);
+    let first_patch = bundle["structuredContent"]["patches"][0]["patch"]
+        .as_str()
+        .expect("patch");
+    assert!(first_patch.contains("+ALPHA"), "{first_patch}");
+    assert!(
+        bundle["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("patches: included 2/2")
+    );
+
+    let truncated = git_response(
+        provider,
+        json!({ "op": "diff", "detail": "bundle", "max_chars": 12 }),
+    );
+    assert_eq!(truncated["structuredContent"]["truncated"], json!(true));
+    assert_eq!(
+        truncated["structuredContent"]["files"]
+            .as_array()
+            .expect("files")
+            .len(),
+        2
+    );
+    assert!(bundle_patch_payload_chars(&truncated) <= 12);
+    assert!(
+        truncated["structuredContent"]["truncated_patch_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+            || truncated["structuredContent"]["omitted_patch_count"]
+                .as_u64()
+                .unwrap()
+                > 0
+    );
+    assert!(truncated["structuredContent"]["truncation"].is_object());
+}
+
+fn assert_legacy_git_structured_output(provider: &FsCatalogProvider) {
+    for arguments in [
+        json!({ "op": "diff" }),
+        json!({ "op": "diff", "detail": "summary" }),
+        json!({ "op": "diff", "detail": "files" }),
+        json!({ "op": "diff", "detail": "patches", "max_chars": 4000 }),
+        json!({ "op": "status" }),
+    ] {
+        let response = git_response(provider, arguments);
+        assert_eq!(
+            response["structuredContent"]["output"], response["content"][0]["text"],
+            "legacy git modes should keep structuredContent.output"
+        );
+    }
+}
+
+fn bundle_patch_payload_chars(response: &Value) -> usize {
+    response["structuredContent"]["patches"]
+        .as_array()
+        .expect("patches")
+        .iter()
+        .map(|patch| patch["patch"].as_str().unwrap_or("").chars().count())
+        .sum()
+}
+
+fn assert_staged_git_diff(provider: &FsCatalogProvider) {
+    let staged_text = git_text(
+        provider,
+        json!({ "op": "diff", "detail": "files", "staged": true }),
+    );
+    assert!(staged_text.contains("a.txt (+1 -1)"), "{staged_text}");
+    assert!(!staged_text.contains("b file.txt"), "{staged_text}");
+}
+
+fn assert_git_status_lists_file(provider: &FsCatalogProvider) {
+    let status = git_text(provider, json!({ "op": "status" }));
+    assert!(status.contains("a.txt"));
+}
+
+fn git_text(provider: &FsCatalogProvider, arguments: Value) -> String {
+    let response = git_response(provider, arguments);
+    response["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn git_response(provider: &FsCatalogProvider, arguments: Value) -> Value {
+    handle_tool_call(provider, &json!({ "name": "git", "arguments": arguments })).expect("git call")
 }

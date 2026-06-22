@@ -6,6 +6,9 @@ pub struct CodeSymbol {
     pub kind: String,
     pub name: String,
     pub line: usize,
+    /// 1-based byte column of the symbol name.
+    #[serde(default = "default_column")]
+    pub column: usize,
     /// Declaration signature (e.g. `pub fn foo(a: A) -> B`), body excluded.
     /// `None` when extraction yields nothing useful.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,7 +39,61 @@ pub struct CodeReference {
     pub kind: String,
     pub name: String,
     pub line: usize,
+    /// 1-based byte column of the referenced name.
+    #[serde(default = "default_column")]
+    pub column: usize,
+    /// Source language of this reference when it differs from the containing
+    /// file's display language (for example, a Rust fenced block in Markdown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import_path: Option<String>,
+}
+
+fn default_column() -> usize {
+    1
+}
+
+impl CodeReference {
+    /// Construct a reference occurrence with no embedded-language override or
+    /// import target metadata.
+    pub fn new(kind: impl Into<String>, name: impl Into<String>, line: usize) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+            line,
+            column: 1,
+            language: None,
+            import_path: None,
+        }
+    }
+
+    /// Attach 1-based byte-column metadata for this reference occurrence.
+    pub fn with_column(mut self, column: usize) -> Self {
+        self.column = column;
+        self
+    }
+
+    /// Attach source-language metadata for references extracted from embedded
+    /// source snippets, such as Markdown fenced code blocks.
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// Attach import-target metadata captured by language-specific tag queries.
+    pub fn with_import_path(mut self, import_path: impl Into<String>) -> Self {
+        self.import_path = Some(import_path.into());
+        self
+    }
+
+    pub(crate) fn effective_language<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.language.as_deref().unwrap_or(fallback)
+    }
+
+    pub(crate) fn has_embedded_language(&self) -> bool {
+        self.language.is_some()
+    }
 }
 
 /// Parsed code facts for one source file. Public codemap responses expose only

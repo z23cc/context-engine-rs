@@ -1,6 +1,6 @@
 use super::*;
-use crate::{FsCatalogProvider, RootPolicy, ScanOptions};
-use std::fs;
+use crate::{FsCatalogProvider, RootPolicy, ScanOptions, codemap::CodeReference};
+use std::{fs, path::PathBuf};
 
 fn temp_provider(
     files: &[(&str, &str)],
@@ -138,6 +138,48 @@ fn js_family_resolves_references_across_ts_and_tsx_display_languages() {
 }
 
 #[test]
+fn natural_language_query_terms_personalize_symbol_matches() {
+    let (_dir, provider, snapshot) = temp_provider(&[
+        ("auth.rs", "pub struct AuthService;\n"),
+        ("billing.rs", "pub struct PaymentGateway;\n"),
+    ]);
+    let response = get_repo_map(
+        &provider,
+        &snapshot,
+        &RepoMapRequest {
+            query: Some("payment gateway".to_string()),
+            seed_paths: vec![],
+            max_files: 2,
+        },
+    )
+    .expect("repo map");
+
+    assert_eq!(response.files[0].path, "billing.rs");
+    assert_eq!(response.totals.seed_files, 1);
+}
+
+#[test]
+fn explicit_seed_paths_take_precedence_over_query_terms() {
+    let (_dir, provider, snapshot) = temp_provider(&[
+        ("auth.rs", "pub struct AuthService;\n"),
+        ("billing.rs", "pub struct PaymentGateway;\n"),
+    ]);
+    let response = get_repo_map(
+        &provider,
+        &snapshot,
+        &RepoMapRequest {
+            query: Some("payment gateway".to_string()),
+            seed_paths: vec![PathBuf::from("auth.rs")],
+            max_files: 2,
+        },
+    )
+    .expect("repo map");
+
+    assert_eq!(response.files[0].path, "auth.rs");
+    assert_eq!(response.totals.seed_files, 1);
+}
+
+#[test]
 fn same_language_consumer_reference_ranks_definer_higher() {
     let (_dir, provider, snapshot) = temp_provider(&[
         (
@@ -223,6 +265,37 @@ fn javascript_import_require_calls_and_identifiers_build_edges() {
     let graph = ReferenceGraph::build(&files);
 
     assert!(edge_weight(&graph, &files, "caller.js", "target.js") > 0.0);
+}
+
+#[test]
+fn embedded_markdown_imports_do_not_resolve_relative_to_host_doc() {
+    let files = vec![
+        IndexedFile {
+            path: "README.md".to_string(),
+            display_path: "README.md".to_string(),
+            abs_path: PathBuf::from("README.md"),
+            language: "markdown".to_string(),
+            symbols: Vec::new(),
+            references: vec![
+                CodeReference::new("import", "target", 2)
+                    .with_language("javascript")
+                    .with_import_path("./target"),
+            ],
+            query_match: false,
+        },
+        IndexedFile {
+            path: "target.js".to_string(),
+            display_path: "target.js".to_string(),
+            abs_path: PathBuf::from("target.js"),
+            language: "javascript".to_string(),
+            symbols: Vec::new(),
+            references: Vec::new(),
+            query_match: false,
+        },
+    ];
+    let graph = ReferenceGraph::build(&files);
+
+    assert_eq!(edge_weight(&graph, &files, "README.md", "target.js"), 0.0);
 }
 
 #[test]

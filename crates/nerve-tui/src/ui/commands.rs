@@ -203,6 +203,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "how to authenticate",
     },
     CommandSpec {
+        name: "lease",
+        hint: "show broker OAuth lease metadata (token redacted)",
+    },
+    CommandSpec {
         name: "theme",
         hint: "cycle accent color",
     },
@@ -247,7 +251,8 @@ pub const HELP_TEXT: &str = "commands:\n  \
 /flow <strategy> <agents> <task>  run a fleet (parallel|vote|pipeline) · /flow --file <p.json>\n  \
 /flow close                cancel the running flow\n  \
 /new                       start a fresh session (clears history)\n  \
-/login [provider]          how to authenticate a provider\n  \
+/login [provider] [--device]  how to authenticate; --device is reserved/fail-closed for now\n  \
+/lease [provider] [--refresh]  show broker OAuth lease metadata; --refresh forces broker refresh; token redacted\n  \
 /theme                     cycle the accent color\n  \
 /help                      show this help\n  \
 /quit                      close the session and exit";
@@ -378,6 +383,13 @@ mod tests {
         assert!(match_commands("/flow").iter().any(|c| c.name == "flow"));
         assert!(HELP_TEXT.contains("/flow"));
         assert!(HELP_TEXT.contains("/flow close"));
+    }
+
+    #[test]
+    fn lease_is_in_palette_and_help() {
+        assert!(COMMANDS.iter().any(|c| c.name == "lease"));
+        assert!(match_commands("/lea").iter().any(|c| c.name == "lease"));
+        assert!(HELP_TEXT.contains("/lease [provider]"));
     }
 
     #[test]

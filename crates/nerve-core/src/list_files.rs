@@ -108,6 +108,7 @@ mod tests {
                 paths: vec![PathBuf::from("alpha.txt")],
                 mode: Some(ManageSelectionMode::Full),
                 slices: Vec::new(),
+                auto_codemap: false,
             },
         )
         .expect("select alpha");

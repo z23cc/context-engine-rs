@@ -374,7 +374,7 @@ fn tier_badge(tier: RiskTier) -> Span<'static> {
 ///   ⚠ allow  <tool>  [<tier>]
 ///   │ <preview line 1>
 ///   │ …
-///   [a]llow once · [A]lways · [d]eny · [D]eny always · Esc cancel
+///   [a] Allow · [A] Allow for session · [d] Deny · [D] Always deny · Esc cancel
 /// Falls back to a compact args view when the event carried no preview.
 #[must_use]
 fn approval_lines(approval: &ApprovalState, width: usize) -> Vec<Line<'static>> {
@@ -415,18 +415,19 @@ fn approval_lines(approval: &ApprovalState, width: usize) -> Vec<Line<'static>> 
     lines
 }
 
-/// The fixed approval options footer. Ports the TS options string.
+/// The fixed approval options footer. Uses explicit action labels so the
+/// uppercase "sticky" decisions are clear at the moment of risk.
 #[must_use]
 fn options_line() -> Line<'static> {
     Line::from(vec![
         Span::styled("[a]", palette::bold()),
-        Span::raw("llow once · "),
+        Span::raw(" Allow · "),
         Span::styled("[A]", palette::bold()),
-        Span::raw("lways · "),
+        Span::raw(" Allow for session · "),
         Span::styled("[d]", palette::bold()),
-        Span::raw("eny · "),
+        Span::raw(" Deny · "),
         Span::styled("[D]", palette::bold()),
-        Span::raw("eny always · "),
+        Span::raw(" Always deny · "),
         Span::styled("Esc cancel", palette::dim()),
     ])
 }
@@ -733,10 +734,10 @@ mod tests {
         assert!(text.contains("[edit]"), "{text}"); // tier badge
         assert!(text.contains("│ @@ -1 +1 @@"), "{text}"); // bordered preview
         assert!(text.contains("│ -old"), "{text}");
-        assert!(text.contains("[a]llow once"), "{text}");
-        assert!(text.contains("[A]lways"), "{text}");
-        assert!(text.contains("[d]eny"), "{text}");
-        assert!(text.contains("[D]eny always"), "{text}");
+        assert!(text.contains("[a] Allow"), "{text}");
+        assert!(text.contains("[A] Allow for session"), "{text}");
+        assert!(text.contains("[d] Deny"), "{text}");
+        assert!(text.contains("[D] Always deny"), "{text}");
         assert!(text.contains("Esc cancel"), "{text}");
     }
 
@@ -769,7 +770,7 @@ mod tests {
         let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
         // No preview → the compact args view is the body source.
         assert!(text.contains(r#"{"path":"a.rs"}"#), "{text}");
-        assert!(text.contains("[a]llow once"), "{text}");
+        assert!(text.contains("[a] Allow"), "{text}");
     }
 
     #[test]
@@ -863,7 +864,7 @@ mod tests {
             text.contains("│ codex: add tests (cwd .) [read-only]"),
             "{text}"
         );
-        assert!(text.contains("[a]llow once"), "{text}");
+        assert!(text.contains("[a] Allow"), "{text}");
     }
 
     #[test]

@@ -36,6 +36,23 @@ pub(super) const CSHARP_TAGS: &str = concat!(
     "(property_declaration name: (identifier) @name) @definition.method"
 );
 
+fn command_basename(token: &str) -> Option<&str> {
+    let command = token.rsplit('/').next().unwrap_or(token);
+    let command = command.trim_matches(['\'', '"']);
+    (!command.is_empty()).then_some(command)
+}
+
+fn env_resolved_language<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<Language> {
+    for token in tokens {
+        let command = command_basename(token)?;
+        if command.starts_with('-') || command.contains('=') {
+            continue;
+        }
+        return Language::from_command(command);
+    }
+    None
+}
+
 impl Language {
     pub(super) fn from_path(path: &str) -> Option<Self> {
         let lower = path.to_ascii_lowercase();
@@ -55,6 +72,59 @@ impl Language {
             "php" | "phtml" => Self::Php,
             _ => return None,
         })
+    }
+
+    pub(super) fn from_path_or_source(path: &str, source: &str) -> Option<Self> {
+        Self::from_path(path).or_else(|| Self::from_shebang(source))
+    }
+
+    fn from_shebang(source: &str) -> Option<Self> {
+        let first = source.lines().next()?.trim_start_matches('\u{feff}');
+        let shebang = first.strip_prefix("#!")?;
+        let mut tokens = shebang.split_whitespace();
+        let command = command_basename(tokens.next()?)?;
+        if command == "env" {
+            return env_resolved_language(tokens);
+        }
+        Self::from_command(command)
+    }
+
+    fn from_command(command: &str) -> Option<Self> {
+        let normalized = command
+            .trim_end_matches(|ch: char| ch.is_ascii_digit() || ch == '.')
+            .to_ascii_lowercase();
+        match normalized.as_str() {
+            "python" | "pypy" => Some(Self::Python),
+            "node" | "nodejs" | "bun" => Some(Self::JavaScript),
+            "deno" | "ts-node" | "tsx" => Some(Self::TypeScript),
+            "ruby" | "jruby" => Some(Self::Ruby),
+            "php" => Some(Self::Php),
+            _ => None,
+        }
+    }
+
+    pub(super) fn from_fence_info(info: &str) -> Option<Self> {
+        let tag = info
+            .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == '{')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        match tag.as_str() {
+            "rust" | "rs" => Some(Self::Rust),
+            "python" | "py" | "python3" => Some(Self::Python),
+            "javascript" | "js" | "jsx" | "node" => Some(Self::JavaScript),
+            "typescript" | "ts" => Some(Self::TypeScript),
+            "tsx" => Some(Self::Tsx),
+            "go" | "golang" => Some(Self::Go),
+            "java" => Some(Self::Java),
+            "c" => Some(Self::C),
+            "cpp" | "c++" | "cc" | "cxx" => Some(Self::Cpp),
+            "csharp" | "cs" | "c#" => Some(Self::CSharp),
+            "ruby" | "rb" => Some(Self::Ruby),
+            "php" => Some(Self::Php),
+            _ => None,
+        }
     }
 
     /// Display language tag for the response `language` field. Repo-map keeps

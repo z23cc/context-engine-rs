@@ -1,14 +1,19 @@
 //! Workspace-context snapshot assembly from the persistent selection.
 
+mod files;
+mod label;
+mod sections;
+
 use crate::{
-    codemap::FileCodeStructure,
     models::{CatalogEntry, NerveError},
     port::CatalogProvider,
     recipe::MetaPrompt,
-    selection::{LineRange, Selection, SelectionKey, SelectionMode},
+    selection::{Selection, SelectionKey, SelectionMode},
     snapshot::CatalogSnapshot,
     token::count_tokens,
 };
+use files::render_selected_file;
+use sections::{render_selected_code, render_selected_tree};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +25,8 @@ pub enum WorkspaceContextInclude {
     FileMap,
     Contents,
     Tokens,
+    Tree,
+    Code,
     #[serde(rename = "git-diff")]
     GitDiff,
     #[serde(rename = "meta-prompts")]
@@ -54,6 +61,8 @@ pub struct WorkspaceContextResponse {
     /// the payload. The token breakdown stays structured.
     #[serde(default, skip_serializing)]
     pub context: String,
+    /// Deterministic hash of the exact rendered `content[].text` payload.
+    pub context_hash: String,
     pub tokens: WorkspaceContextTokenBreakdown,
 }
 
@@ -65,6 +74,10 @@ pub struct WorkspaceContextTokenBreakdown {
     pub file_map_tokens: usize,
     pub instructions_tokens: usize,
     pub contents_tokens: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tree_tokens: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub code_tokens: usize,
     pub git_diff_tokens: usize,
     pub meta_prompts_tokens: usize,
     pub files: Vec<WorkspaceContextFileTokens>,
@@ -77,6 +90,8 @@ pub struct WorkspaceContextFileTokens {
     pub path: String,
     pub display_path: String,
     pub mode: String,
+    /// Deterministic hash of this file's rendered context block.
+    pub content_hash: String,
     pub token_count: usize,
     pub segments: Vec<WorkspaceContextSegmentTokens>,
 }
@@ -88,6 +103,10 @@ pub struct WorkspaceContextSegmentTokens {
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
     pub token_count: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Assemble the current provider selection into a context snapshot.
@@ -157,6 +176,20 @@ pub(crate) fn workspace_context_for_selection_cached<P: CatalogProvider>(
         0
     };
 
+    let file_tree = include
+        .tree
+        .then(|| render_selected_tree(snapshot, selection));
+    let tree_tokens = file_tree.as_ref().map_or(0, |section| section.token_count);
+
+    let code_structure = if include.code {
+        Some(render_selected_code(provider, snapshot, selection)?)
+    } else {
+        None
+    };
+    let code_tokens = code_structure
+        .as_ref()
+        .map_or(0, |section| section.token_count);
+
     let mut file_tokens = Vec::new();
     let mut rendered_files = Vec::new();
     for selected_file in selected {
@@ -193,11 +226,17 @@ pub(crate) fn workspace_context_for_selection_cached<P: CatalogProvider>(
     let instructions = request.instructions.as_deref().map(render_instructions);
     let instructions_tokens = instructions.as_deref().map_or(0, count_tokens);
 
-    // Ordered sections: file_map, file_contents, git_diff, meta_prompts,
-    // instructions (mirrors RepoPrompt's section order — instructions last).
+    // Ordered sections: file_map, file_tree, code_structure, file_contents,
+    // git_diff, meta_prompts, instructions (instructions last).
     let mut sections = Vec::new();
     if include.file_map {
         sections.push(file_map);
+    }
+    if let Some(file_tree) = file_tree {
+        sections.push(file_tree.text);
+    }
+    if let Some(code_structure) = code_structure {
+        sections.push(code_structure.text);
     }
     if include.contents && !contents_text.is_empty() {
         sections.push(contents_text);
@@ -216,11 +255,14 @@ pub(crate) fn workspace_context_for_selection_cached<P: CatalogProvider>(
     let total_tokens = count_tokens(&context);
     let mut response = WorkspaceContextResponse {
         context,
+        context_hash: String::new(),
         tokens: WorkspaceContextTokenBreakdown {
             total_tokens,
             file_map_tokens,
             instructions_tokens,
             contents_tokens,
+            tree_tokens,
+            code_tokens,
             git_diff_tokens,
             meta_prompts_tokens,
             files: file_tokens,
@@ -228,18 +270,36 @@ pub(crate) fn workspace_context_for_selection_cached<P: CatalogProvider>(
     };
 
     if include.tokens {
-        let token_report =
-            serde_json::to_string_pretty(&response.tokens).expect("token breakdown serializes");
-        if response.context.is_empty() {
-            response.context = format!("<tokens>\n{token_report}\n</tokens>");
-        } else {
-            response
-                .context
-                .push_str(&format!("\n\n<tokens>\n{token_report}\n</tokens>"));
-        }
+        append_token_report(&mut response);
     }
 
+    response.context_hash = content_hash(&response.context);
     Ok(response)
+}
+
+fn append_token_report(response: &mut WorkspaceContextResponse) {
+    let token_report =
+        serde_json::to_string_pretty(&response.tokens).expect("token breakdown serializes");
+    if response.context.is_empty() {
+        response.context = format!("<tokens>\n{token_report}\n</tokens>");
+    } else {
+        response
+            .context
+            .push_str(&format!("\n\n<tokens>\n{token_report}\n</tokens>"));
+    }
+}
+
+fn content_hash(text: &str) -> String {
+    let mut low = 0xcbf2_9ce4_8422_2325u64;
+    let mut high = 0x9e37_79b9_7f4a_7c15u64;
+    for byte in text.as_bytes() {
+        low ^= u64::from(*byte);
+        low = low.wrapping_mul(0x0000_0100_0000_01b3);
+        high ^= u64::from(byte.rotate_left(1));
+        high = high.wrapping_mul(0x0000_0001_0000_01b3);
+    }
+    let hash = (u128::from(high) << 64) | u128::from(low);
+    format!("{hash:032x}")
 }
 
 #[derive(Debug)]
@@ -249,11 +309,15 @@ struct IncludeSet {
     tokens: bool,
     git_diff: bool,
     meta_prompts: bool,
+    tree: bool,
+    code: bool,
 }
 
 impl IncludeSet {
     fn from_request(request: &WorkspaceContextRequest) -> Self {
-        use WorkspaceContextInclude::{Contents, FileMap, GitDiff, MetaPrompts, Tokens};
+        use WorkspaceContextInclude::{
+            Code, Contents, FileMap, GitDiff, MetaPrompts, Tokens, Tree,
+        };
         // A named recipe (except `manual`) fixes the section set, overriding `include`.
         if let Some(recipe) = request
             .recipe
@@ -267,6 +331,8 @@ impl IncludeSet {
                 contents: has(Contents),
                 git_diff: has(GitDiff),
                 meta_prompts: has(MetaPrompts),
+                tree: has(Tree),
+                code: has(Code),
                 tokens: has(Tokens),
             };
         }
@@ -277,6 +343,8 @@ impl IncludeSet {
                 tokens: false,
                 git_diff: false,
                 meta_prompts: false,
+                tree: false,
+                code: false,
             };
         }
         Self {
@@ -285,6 +353,8 @@ impl IncludeSet {
             tokens: request.include.contains(&Tokens),
             git_diff: request.include.contains(&GitDiff),
             meta_prompts: request.include.contains(&MetaPrompts),
+            tree: request.include.contains(&Tree),
+            code: request.include.contains(&Code),
         }
     }
 }
@@ -390,17 +460,6 @@ fn resolve_meta_prompts(request: &WorkspaceContextRequest) -> Vec<MetaPrompt> {
         .unwrap_or_default()
 }
 
-fn render_selected_file<P: CatalogProvider>(
-    provider: &P,
-    selected: &SelectedFile<'_>,
-) -> Result<RenderedFile, NerveError> {
-    match &selected.mode {
-        SelectionMode::Full => render_full_file(provider, selected),
-        SelectionMode::Slices(ranges) => render_slices_file(provider, selected, ranges),
-        SelectionMode::CodemapOnly => render_codemap_file(provider, selected),
-    }
-}
-
 fn render_selected_file_cached<P: CatalogProvider>(
     provider: &P,
     selected: &SelectedFile<'_>,
@@ -413,149 +472,6 @@ fn render_selected_file_cached<P: CatalogProvider>(
     let rendered = render_selected_file(provider, selected)?;
     cache.entries.insert(key, rendered.clone());
     Ok(rendered)
-}
-
-fn render_full_file<P: CatalogProvider>(
-    provider: &P,
-    selected: &SelectedFile<'_>,
-) -> Result<RenderedFile, NerveError> {
-    let bytes = provider.read_bytes(&selected.entry.abs_path)?;
-    let content = String::from_utf8_lossy(&bytes);
-    let segment_tokens = count_tokens(&content);
-    let text = format!(
-        "<file path=\"{}\" mode=\"full\">\n```text\n{}```\n</file>",
-        selected.display_path, content
-    );
-    let file_token_count = count_tokens(&text);
-    Ok(RenderedFile {
-        text,
-        tokens: file_tokens(
-            selected,
-            file_token_count,
-            vec![WorkspaceContextSegmentTokens {
-                label: "full".to_string(),
-                start_line: Some(1),
-                end_line: Some(total_lines(&content)),
-                token_count: segment_tokens,
-            }],
-        ),
-    })
-}
-
-fn render_slices_file<P: CatalogProvider>(
-    provider: &P,
-    selected: &SelectedFile<'_>,
-    ranges: &[LineRange],
-) -> Result<RenderedFile, NerveError> {
-    let bytes = provider.read_bytes(&selected.entry.abs_path)?;
-    let content = String::from_utf8_lossy(&bytes);
-    let mut text = format!(
-        "<file path=\"{}\" mode=\"slices\">\n",
-        selected.display_path
-    );
-    let mut segments = Vec::new();
-    for range in ranges {
-        let slice = slice_text(&content, range);
-        let label = format!("lines {}-{}", range.start_line, range.end_line);
-        let token_count = count_tokens(&slice);
-        text.push_str(&format!(
-            "<slice lines=\"{}-{}\" description=\"{}\">\n```text\n{}```\n</slice>\n",
-            range.start_line, range.end_line, label, slice
-        ));
-        segments.push(WorkspaceContextSegmentTokens {
-            label,
-            start_line: Some(range.start_line),
-            end_line: Some(range.end_line),
-            token_count,
-        });
-    }
-    text.push_str("</file>");
-    let token_count = count_tokens(&text);
-    Ok(RenderedFile {
-        text,
-        tokens: file_tokens(selected, token_count, segments),
-    })
-}
-
-fn render_codemap_file<P: CatalogProvider>(
-    provider: &P,
-    selected: &SelectedFile<'_>,
-) -> Result<RenderedFile, NerveError> {
-    let (codemap_text, segment_tokens) =
-        match provider.code_symbols_for_path(&selected.entry.abs_path, &selected.entry.rel_path)? {
-            Ok(Some(parsed)) => {
-                let structure = FileCodeStructure {
-                    path: selected.entry.rel_path.clone(),
-                    language: parsed.language.clone(),
-                    symbols: parsed.symbols.clone(),
-                    token_count: 0,
-                };
-                let text = render_codemap_signature(&structure);
-                let tokens = count_tokens(&text);
-                (text, tokens)
-            }
-            Ok(None) => ("unsupported file for codemap\n".to_string(), 0),
-            Err(message) => (format!("codemap error: {message}\n"), 0),
-        };
-    let text = format!(
-        "<file path=\"{}\" mode=\"codemap_only\">\n```text\n{}```\n</file>",
-        selected.display_path, codemap_text
-    );
-    let file_token_count = count_tokens(&text);
-    Ok(RenderedFile {
-        text,
-        tokens: file_tokens(
-            selected,
-            file_token_count,
-            vec![WorkspaceContextSegmentTokens {
-                label: "codemap".to_string(),
-                start_line: None,
-                end_line: None,
-                token_count: segment_tokens,
-            }],
-        ),
-    })
-}
-
-fn render_codemap_signature(structure: &FileCodeStructure) -> String {
-    let mut lines = vec![format!("language: {}", structure.language)];
-    for symbol in &structure.symbols {
-        lines.push(format!(
-            "- {} {} @ line {}",
-            symbol.kind, symbol.name, symbol.line
-        ));
-    }
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-fn slice_text(text: &str, range: &LineRange) -> String {
-    let line_segments: Vec<&str> = text.split_inclusive('\n').collect();
-    if line_segments.is_empty() {
-        return String::new();
-    }
-    let start = range.start_line.max(1).min(line_segments.len());
-    let end = range.end_line.max(start).min(line_segments.len());
-    line_segments[start - 1..end].concat()
-}
-
-fn total_lines(text: &str) -> usize {
-    text.split_inclusive('\n').count().max(1)
-}
-
-fn file_tokens(
-    selected: &SelectedFile<'_>,
-    token_count: usize,
-    segments: Vec<WorkspaceContextSegmentTokens>,
-) -> WorkspaceContextFileTokens {
-    WorkspaceContextFileTokens {
-        root_id: selected.key.root_id.clone(),
-        path: selected.key.path.clone(),
-        display_path: selected.display_path.clone(),
-        mode: mode_name(&selected.mode).to_string(),
-        token_count,
-        segments,
-    }
 }
 
 fn selection_key(entry: &CatalogEntry) -> SelectionKey {
@@ -577,8 +493,8 @@ fn mode_name(mode: &SelectionMode) -> &'static str {
 mod tests {
     use super::*;
     use crate::{
-        FsCatalogProvider, ManageSelectionMode, ManageSelectionOp, ManageSelectionRequest,
-        RootPolicy, ScanOptions, SelectionSliceArg, manage_selection,
+        FsCatalogProvider, LineRange, ManageSelectionMode, ManageSelectionOp,
+        ManageSelectionRequest, RootPolicy, ScanOptions, SelectionSliceArg, manage_selection,
     };
     use std::{fs, path::PathBuf};
 
@@ -601,6 +517,7 @@ mod tests {
                 paths: vec![PathBuf::from("full.txt")],
                 mode: Some(ManageSelectionMode::Full),
                 slices: Vec::new(),
+                auto_codemap: false,
             },
         )
         .expect("select full");
@@ -616,8 +533,10 @@ mod tests {
                     ranges: vec![LineRange {
                         start_line: 2,
                         end_line: 2,
+                        label: Some("key & \"<finding>\nnext".to_string()),
                     }],
                 }],
+                auto_codemap: false,
             },
         )
         .expect("replace with slice");
@@ -629,6 +548,7 @@ mod tests {
                 paths: vec![PathBuf::from("lib.rs")],
                 mode: Some(ManageSelectionMode::CodemapOnly),
                 slices: Vec::new(),
+                auto_codemap: false,
             },
         )
         .expect("select codemap");
@@ -653,10 +573,29 @@ mod tests {
         assert!(response.context.contains("<instructions>"));
         assert!(response.context.contains("mode=\"full\""));
         assert!(response.context.contains("mode=\"slices\""));
-        assert!(response.context.contains("description=\"lines 2-2\""));
+        assert!(
+            response
+                .context
+                .contains("description=\"key &amp; &quot;&lt;finding&gt; next\"")
+        );
+        assert!(response.tokens.files.iter().any(|file| {
+            file.mode == "slices"
+                && file
+                    .segments
+                    .iter()
+                    .any(|segment| segment.label == "key & \"<finding> next")
+        }));
         assert!(response.context.contains("mode=\"codemap_only\""));
         assert!(response.context.contains("- function alpha @ line 1"));
+        assert_eq!(response.context_hash.len(), 32);
         assert_eq!(response.tokens.files.len(), 3);
+        assert!(
+            response
+                .tokens
+                .files
+                .iter()
+                .all(|file| file.content_hash.len() == 32)
+        );
         assert!(response.tokens.total_tokens > 0);
         assert!(
             response
@@ -665,6 +604,38 @@ mod tests {
                 .iter()
                 .any(|file| file.mode == "slices" && !file.segments.is_empty())
         );
+    }
+
+    #[test]
+    fn content_hash_is_stable_and_changes_with_rendered_context() {
+        let (provider, snapshot) = provider_with_selection();
+        let request = WorkspaceContextRequest {
+            include: vec![
+                WorkspaceContextInclude::FileMap,
+                WorkspaceContextInclude::Contents,
+            ],
+            instructions: None,
+            ..Default::default()
+        };
+        let first = workspace_context(&provider, &snapshot, &request).expect("first context");
+        let second = workspace_context(&provider, &snapshot, &request).expect("second context");
+        assert_eq!(first.context_hash, second.context_hash);
+        assert_eq!(
+            first.tokens.files[0].content_hash,
+            second.tokens.files[0].content_hash
+        );
+
+        let file_map_only = workspace_context(
+            &provider,
+            &snapshot,
+            &WorkspaceContextRequest {
+                include: vec![WorkspaceContextInclude::FileMap],
+                instructions: None,
+                ..Default::default()
+            },
+        )
+        .expect("file map context");
+        assert_ne!(first.context_hash, file_map_only.context_hash);
     }
 
     #[test]
@@ -684,6 +655,82 @@ mod tests {
         assert!(response.context.contains("<file_map>"));
         assert!(!response.context.contains("<file path="));
         assert_eq!(response.tokens.contents_tokens, 0);
+    }
+
+    #[test]
+    fn include_tree_and_code_sections_for_selected_files() {
+        let (provider, snapshot) = provider_with_selection();
+        let response = workspace_context(
+            &provider,
+            &snapshot,
+            &WorkspaceContextRequest {
+                include: vec![WorkspaceContextInclude::Tree, WorkspaceContextInclude::Code],
+                instructions: None,
+                ..Default::default()
+            },
+        )
+        .expect("workspace context");
+
+        assert!(response.context.contains("<file_tree>"));
+        assert!(
+            response
+                .context
+                .contains("legend: * selected, + codemap-capable")
+        );
+        assert!(response.context.contains("lib.rs *+"));
+        assert!(response.context.contains("<code_structure>"));
+        assert!(response.context.contains("lib.rs"));
+        assert!(response.context.contains("function (1): pub fn alpha()"));
+        assert!(!response.context.contains("<file path="));
+        assert_eq!(response.tokens.contents_tokens, 0);
+        assert!(response.tokens.tree_tokens > 0);
+        assert!(response.tokens.code_tokens > 0);
+    }
+
+    #[test]
+    fn code_section_disambiguates_duplicate_relative_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let left = dir.path().join("left");
+        let right = dir.path().join("right");
+        fs::create_dir_all(&left).expect("left dir");
+        fs::create_dir_all(&right).expect("right dir");
+        fs::write(left.join("common.rs"), "pub fn left_api() {}\n").expect("left file");
+        fs::write(right.join("common.rs"), "pub fn right_api() {}\n").expect("right file");
+        let provider = FsCatalogProvider::new(
+            RootPolicy::new(vec![left, right]).expect("policy"),
+            ScanOptions::default(),
+        );
+        let snapshot = provider.snapshot().expect("snapshot");
+        manage_selection(
+            &provider,
+            &snapshot,
+            &ManageSelectionRequest {
+                op: ManageSelectionOp::Set,
+                paths: vec![
+                    PathBuf::from("root-0/common.rs"),
+                    PathBuf::from("root-1/common.rs"),
+                ],
+                mode: Some(ManageSelectionMode::Full),
+                slices: Vec::new(),
+                auto_codemap: false,
+            },
+        )
+        .expect("select both roots");
+
+        let response = workspace_context(
+            &provider,
+            &snapshot,
+            &WorkspaceContextRequest {
+                include: vec![WorkspaceContextInclude::Code],
+                ..Default::default()
+            },
+        )
+        .expect("workspace context");
+
+        assert!(response.context.contains("left/common.rs"));
+        assert!(response.context.contains("right/common.rs"));
+        assert!(response.context.contains("left_api"));
+        assert!(response.context.contains("right_api"));
     }
 
     #[test]

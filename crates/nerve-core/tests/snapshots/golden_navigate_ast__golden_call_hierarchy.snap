@@ -5,13 +5,14 @@ expression: response
 {
   "content": [
     {
-      "text": "callers (incoming):\n  main.rs:1 compute pub fn compute(x: i32) -> i32 {\n",
+      "text": "callers (incoming):\n  main.rs:1:8 compute pub fn compute(x: i32) -> i32 {\n",
       "type": "text"
     }
   ],
   "structuredContent": {
     "incoming": [
       {
+        "column": 8,
         "display_path": "main.rs",
         "kind": "function",
         "language": "rust",

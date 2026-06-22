@@ -373,18 +373,18 @@ Each item: **Codex** → **current `nerve-gui`** → **concrete change** (`app.r
 ## 10. Prioritized checklist
 
 **P0 — biggest fidelity-per-edit (pure CSS + small markup):**
-- [ ] Swap in the §3 token block (brighter white surface, hairline borders, larger radii).
-- [ ] Composer: add the **Local/Worktree/Cloud** segmented bar + attach/mic row; card radius + soft shadow (§6.4).
-- [ ] Top bar: collapse provider/model inputs into a **model-picker pill** + add terminal/pop-out icon-buttons (§6.2).
-- [ ] Empty state: greeting **"What should we work on?"** + suggestion chips; drop the `N` splash (§6.3).
-- [ ] Section labels uppercase+tracked; empty-title 26px/600 (§4).
+- [x] Swap in the §3 token block (brighter white surface, hairline borders, larger radii).
+- [x] Composer: add the **Local/Worktree/Cloud** segmented bar + attach/mic row; card radius + soft shadow (§6.4).
+- [x] Top bar: collapse provider/model inputs into a **model-picker pill** + add terminal/pop-out icon-buttons (§6.2).
+- [x] Empty state: greeting **"What should we work on?"** + suggestion chips; drop the `N` splash (§6.3).
+- [x] Section labels uppercase+tracked; empty-title 26px/600 (§4).
 
 **P1 — structure & icons:**
-- [ ] Replace sidebar letter-glyphs with inline SVG icons; add **Chats**; nest threads under the active project (§6.1).
-- [ ] Tool cards: status **dot** instead of word badge; user bubble → borderless `--surface-2`; inter-turn gap 28px (§6.5).
-- [ ] Approval modal: relabel to **Allow / Allow for session / Deny / Always deny**; card radius (§6.7).
+- [x] Replace sidebar letter-glyphs with inline SVG icons; add **Chats**; nest threads under the active project (§6.1).
+- [x] Tool cards: status **dot** instead of word badge; user bubble → borderless `--surface-2`; inter-turn gap 28px (§6.5).
+- [x] Approval modal: relabel to **Allow / Allow for session / Deny / Always deny**; card radius (§6.7).
 
 **P2 — the third pane & theming:**
-- [ ] Add the collapsible **inspector** (review/task) pane: ship shell + **Plan** tab; wire Sources/Artifacts/Changes as events land (§5).
-- [ ] Formalize the theme hook (`data-theme` + accent/bg/fg/font knobs) to mirror Codex Settings; keep monochrome accent default (§3).
-- [ ] Optional macOS vibrancy on the sidebar behind a capability flag (§6.1).
+- [x] Add the collapsible **inspector** (review/task) pane: ship shell + **Plan** tab; wire Sources/Artifacts/Changes as events land (§5).
+- [x] Formalize the theme hook (`data-theme` + accent/bg/fg/font knobs) to mirror Codex Settings; keep monochrome accent default (§3).
+- [x] Optional macOS vibrancy on the sidebar behind a capability flag (§6.1).

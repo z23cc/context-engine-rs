@@ -1145,6 +1145,7 @@ fn executor_for(command: &RuntimeCommand) -> Executor {
         RuntimeCommand::AuthStart { .. }
         | RuntimeCommand::AuthComplete { .. }
         | RuntimeCommand::AuthStatus { .. }
+        | RuntimeCommand::AuthLease { .. }
         | RuntimeCommand::AuthLogout { .. } => Executor::Auth,
         RuntimeCommand::FlowStart { .. }
         | RuntimeCommand::FlowSteer { .. }
@@ -1218,7 +1219,11 @@ mod command_executor_partition {
             }
             "session.set_model" => json!({ "session_id": "s", "model": "m" }),
             "session.set_mode" => json!({ "session_id": "s", "mode": "yolo" }),
-            "auth.start" | "auth.status" | "auth.logout" => json!({ "provider": "p" }),
+            "auth.start" => json!({ "provider": "p", "flow": "browser" }),
+            "auth.status" | "auth.logout" => json!({ "provider": "p" }),
+            "auth.lease" => {
+                json!({ "provider": "p", "force_refresh": false, "include_token": false })
+            }
             "auth.complete" => json!({ "login_id": "l" }),
             "delegate.start" => json!({ "agent": "codex", "task": "t" }),
             "delegate.steer" => json!({ "session_id": "s", "message": "m" }),

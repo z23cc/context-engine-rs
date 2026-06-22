@@ -172,6 +172,38 @@ fn reference_expansion_adds_codemap_only_defining_file() {
 }
 
 #[test]
+fn reference_expansion_uses_reference_only_markdown_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("README.md"),
+        "# Example\n\n```javascript\nnew ReferencedThing();\n```\n",
+    )
+    .expect("write readme");
+    fs::write(dir.path().join("types.js"), "class ReferencedThing {}\n").expect("write");
+    let (provider, snapshot) = provider_for(dir.path());
+
+    let response = build_context(
+        &provider,
+        &snapshot,
+        &BuildContextRequest {
+            query: "Example".to_string(),
+            token_budget: 700,
+            max_files: Some(1),
+            seed_paths: vec![PathBuf::from("README.md")],
+        },
+    )
+    .expect("build context");
+
+    let expanded = response
+        .manifest
+        .included
+        .iter()
+        .find(|file| file.path == "types.js")
+        .expect("referenced definition file included");
+    assert_eq!(expanded.mode, "codemap_only");
+}
+
+#[test]
 fn reference_expansion_skips_when_budget_exhausted() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(

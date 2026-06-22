@@ -16,6 +16,20 @@
           var el = document.documentElement;
           if (t === "light" || t === "dark") el.setAttribute("data-theme", t);
           else el.removeAttribute("data-theme");
+          var vars = {
+            accent: "--accent",
+            bg: "--bg",
+            fg: "--fg",
+            font_ui: "--font-ui",
+            font_code: "--font-code",
+          };
+          Object.keys(vars).forEach(function (key) {
+            var value = (s[key] || "").trim();
+            if (value) el.style.setProperty(vars[key], value);
+            else el.style.removeProperty(vars[key]);
+          });
+          if (s.sidebar_vibrancy === true) el.setAttribute("data-vibrancy", "sidebar");
+          else el.removeAttribute("data-vibrancy");
         } catch (e) {}
       })();
     </script>
@@ -33,7 +47,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="stylesheet" href="/app/styles.css" integrity="sha384-0PUaG2ZkWtpCTbSPkfhODXm5Kdp9VgLN49sXik6zuEWreVBjhRNT/UP7+euv4+2l"/>
-  <link rel="modulepreload" href="/app/nerve-gui.js" crossorigin="anonymous" integrity="sha384-DmBJcSn80HK2twElFamkqLOsBRkM3/FCXC/WhbGSJxlmGGfN/k8cXAoe+2XmDEFx"><link rel="preload" href="/app/nerve-gui_bg.wasm" crossorigin="anonymous" integrity="sha384-divWPEPujh+BioKO/xBQ8QVRahSjHPtteIecojKF4H37Kh/6FvPql8FQZzrCDPT0" as="fetch" type="application/wasm"></head>
+    <link rel="stylesheet" href="/app/styles.css" integrity="sha384-FV0Z32e262fDGeaZdkYyutAKTWr2Lfl5de2XpVanzHrEzGrphIrRG/pAsJdvBcQl"/>
+  <link rel="modulepreload" href="/app/nerve-gui.js" crossorigin="anonymous" integrity="sha384-ASl0nJvNzCQMqn59COr8nFoLsIIm+tAXHPztW1s3zpw43Zq5wB/XBTeKyV2RKpEr"><link rel="preload" href="/app/nerve-gui_bg.wasm" crossorigin="anonymous" integrity="sha384-Oq93d152R4yLIv6/f6RkNuoNa1kW/U3bQb61Iqvt4bo/EaqK0ubIV+Cv1s/KPCVL" as="fetch" type="application/wasm"></head>
   <body></body>
 </html>

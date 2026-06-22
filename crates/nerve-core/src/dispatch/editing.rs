@@ -118,6 +118,13 @@ pub(super) struct EditResult {
     pub(super) files: Vec<EditedFile>,
 }
 
+pub(super) struct ContentUpdate {
+    pub(super) edit_path: String,
+    pub(super) response_path: String,
+    pub(super) content: String,
+    pub(super) old: String,
+}
+
 impl ToolText for EditResult {
     fn tool_text(&self) -> String {
         let mut out = String::new();
@@ -429,6 +436,75 @@ pub(super) fn apply_content_update_with_old<P: CatalogProvider + ?Sized>(
             diff_options,
         )?],
     })
+}
+
+pub(super) fn apply_content_update_at_path_with_old<P: CatalogProvider + ?Sized>(
+    provider: &P,
+    action: &'static str,
+    edit_path: String,
+    response_path: String,
+    content: String,
+    old: String,
+    diff_options: DiffOptions,
+) -> Result<EditResult, DispatchError> {
+    apply_content_updates_at_paths_with_old(
+        provider,
+        action,
+        vec![ContentUpdate {
+            edit_path,
+            response_path,
+            content,
+            old,
+        }],
+        diff_options,
+    )
+}
+
+pub(super) fn apply_content_updates_at_paths_with_old<P: CatalogProvider + ?Sized>(
+    provider: &P,
+    action: &'static str,
+    updates: Vec<ContentUpdate>,
+    diff_options: DiffOptions,
+) -> Result<EditResult, DispatchError> {
+    let before_keys: Vec<_> = updates
+        .iter()
+        .map(|update| selected_key(provider, &update.edit_path))
+        .collect();
+    let changes: Vec<FileChange> = updates
+        .iter()
+        .map(|update| FileChange::Update {
+            path: update.edit_path.clone(),
+            content: update.content.clone(),
+        })
+        .collect();
+    preflight_changes(provider, &changes)?;
+    provider.apply_file_batch(&changes, true)?;
+    let files = updates
+        .into_iter()
+        .zip(before_keys)
+        .map(|(update, before_key)| {
+            let after_key = selected_key(provider, &update.edit_path);
+            let selection = update_selection_for_content(
+                provider,
+                before_key,
+                after_key,
+                &update.response_path,
+                &update.response_path,
+                &update.old,
+                &update.content,
+            );
+            EditedFile::with_content(
+                action,
+                update.response_path,
+                None,
+                &update.content,
+                &update.old,
+                diff_options,
+            )
+            .with_selection(selection)
+        })
+        .collect();
+    Ok(EditResult { files })
 }
 
 fn apply_update<P: CatalogProvider + ?Sized>(

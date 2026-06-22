@@ -6,7 +6,9 @@
 //!
 //! Split out of `app.rs` to stay under the file-size gate.
 
+use crate::settings_auth::BrokerOAuthControls;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 const KEY: &str = "nerve.settings";
 
@@ -22,6 +24,12 @@ const AUTO_OPTS: &[(&str, &str)] = &[
 /// uniformly and the values flow straight to `delegate.start`.
 pub(crate) struct Settings {
     pub(crate) theme: String,
+    pub(crate) accent: String,
+    pub(crate) bg: String,
+    pub(crate) fg: String,
+    pub(crate) font_ui: String,
+    pub(crate) font_code: String,
+    pub(crate) sidebar_vibrancy: bool,
     pub(crate) agent: String,
     pub(crate) autonomy: String,
     pub(crate) model: String,
@@ -43,8 +51,19 @@ pub(crate) fn load() -> Settings {
             .unwrap_or(d)
             .to_string()
     };
+    let get_bool = |k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
     Settings {
         theme: get("theme", "system"),
+        accent: get("accent", ""),
+        bg: get("bg", ""),
+        fg: get("fg", ""),
+        font_ui: get("font_ui", ""),
+        font_code: get("font_code", ""),
+        sidebar_vibrancy: get_bool("sidebar_vibrancy"),
         agent: get("agent", "claude"),
         autonomy: get("autonomy", "full"),
         model: get("model", ""),
@@ -54,24 +73,34 @@ pub(crate) fn load() -> Settings {
 /// Persist the current settings (called from an Effect on any change).
 pub(crate) fn save(s: &Settings) {
     let v = serde_json::json!({
-        "theme": s.theme, "agent": s.agent, "autonomy": s.autonomy, "model": s.model,
+        "theme": s.theme,
+        "accent": s.accent,
+        "bg": s.bg,
+        "fg": s.fg,
+        "font_ui": s.font_ui,
+        "font_code": s.font_code,
+        "sidebar_vibrancy": s.sidebar_vibrancy,
+        "agent": s.agent,
+        "autonomy": s.autonomy,
+        "model": s.model,
     });
     if let Some(store) = local_storage() {
         let _ = store.set_item(KEY, &v.to_string());
     }
 }
 
-/// Drive `data-theme` on `<html>`: explicit `light`/`dark` set an override;
-/// `system` (or anything else) clears it so the CSS media query governs (and
-/// tracks the OS live, with no listener needed).
-pub(crate) fn apply_theme(choice: &str) {
+/// Drive `data-theme` and Codex-style theme knobs on `<html>`. Base theme
+/// chooses system/light/dark; non-empty overrides map directly to CSS variables
+/// so users can tune accent/background/foreground/UI font/code font without a
+/// protocol change. Empty values remove the override and fall back to tokens.
+pub(crate) fn apply_theme(settings: &Settings) {
     let Some(el) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.document_element())
     else {
         return;
     };
-    match choice {
+    match settings.theme.as_str() {
         "light" => {
             let _ = el.set_attribute("data-theme", "light");
         }
@@ -81,6 +110,29 @@ pub(crate) fn apply_theme(choice: &str) {
         _ => {
             let _ = el.remove_attribute("data-theme");
         }
+    }
+    let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
+    let style = html.style();
+    set_var(&style, "--accent", &settings.accent);
+    set_var(&style, "--bg", &settings.bg);
+    set_var(&style, "--fg", &settings.fg);
+    set_var(&style, "--font-ui", &settings.font_ui);
+    set_var(&style, "--font-code", &settings.font_code);
+    if settings.sidebar_vibrancy {
+        let _ = el.set_attribute("data-vibrancy", "sidebar");
+    } else {
+        let _ = el.remove_attribute("data-vibrancy");
+    }
+}
+
+fn set_var(style: &web_sys::CssStyleDeclaration, name: &str, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        let _ = style.remove_property(name);
+    } else {
+        let _ = style.set_property(name, trimmed);
     }
 }
 
@@ -117,6 +169,27 @@ fn seg(opts: &'static [(&'static str, &'static str)], sig: RwSignal<String>) -> 
         .collect_view()
 }
 
+fn token_input(sig: RwSignal<String>, placeholder: &'static str) -> impl IntoView {
+    view! {
+        <input
+            class="set-input"
+            type="text"
+            placeholder=placeholder
+            prop:value=move || sig.get()
+            on:input=move |ev| sig.set(event_target_value(&ev))
+        />
+    }
+}
+
+fn bool_toggle(sig: RwSignal<bool>, label: &'static str) -> impl IntoView {
+    view! {
+        <button class="set-toggle" type="button" class:on=move || sig.get()
+            on:click=move |_| sig.update(|enabled| *enabled = !*enabled)>
+            <span class="set-toggle-dot"></span>{label}
+        </button>
+    }
+}
+
 #[component]
 fn Section(title: &'static str, desc: &'static str, children: Children) -> impl IntoView {
     view! {
@@ -135,19 +208,48 @@ fn Section(title: &'static str, desc: &'static str, children: Children) -> impl 
 #[component]
 pub(crate) fn SettingsModal(
     open: RwSignal<bool>,
+    token: StoredValue<Option<String>>,
     theme: RwSignal<String>,
+    accent: RwSignal<String>,
+    bg: RwSignal<String>,
+    fg: RwSignal<String>,
+    font_ui: RwSignal<String>,
+    font_code: RwSignal<String>,
+    sidebar_vibrancy: RwSignal<bool>,
     agent: RwSignal<String>,
     autonomy: RwSignal<String>,
     model: RwSignal<String>,
 ) -> impl IntoView {
     view! {
-        <div class="modal-scrim" on:click=move |_| open.set(false)>
+        <div class="modal-scrim" hidden=move || !open.get() on:click=move |_| open.set(false)>
             <div class="modal settings-modal" role="dialog" aria-modal="true"
                 on:click=move |ev| ev.stop_propagation()>
                 <div class="modal-head"><span class="modal-title">"Settings"</span></div>
                 <div class="set-body">
-                    <Section title="Appearance" desc="Theme used across the app.">
+                    <Section title="Appearance" desc="Base theme used across the app.">
                         <div class="seg">{seg(THEME_OPTS, theme)}</div>
+                    </Section>
+                    <Section title="Accent" desc="Optional CSS color for --accent; blank keeps monochrome default.">
+                        {token_input(accent, "#0d0d0d")}
+                    </Section>
+                    <Section title="Background" desc="Optional CSS color for --bg.">
+                        {token_input(bg, "#fbfbfa")}
+                    </Section>
+                    <Section title="Foreground" desc="Optional CSS color for --fg.">
+                        {token_input(fg, "#131312")}
+                    </Section>
+                    <Section title="UI font" desc="Optional CSS font-family for --font-ui.">
+                        {token_input(font_ui, "-apple-system, Segoe UI, sans-serif")}
+                    </Section>
+                    <Section title="Code font" desc="Optional CSS font-family for --font-code.">
+                        {token_input(font_code, "ui-monospace, SF Mono, monospace")}
+                    </Section>
+                    <Section title="Sidebar material" desc="Optional translucent sidebar for macOS/WebKit shells.">
+                        {bool_toggle(sidebar_vibrancy, "Vibrant sidebar")}
+                    </Section>
+                    <hr class="set-div"/>
+                    <Section title="Broker OAuth" desc="Start browser OAuth, complete pasted callbacks, and inspect metadata-only broker lease status.">
+                        <BrokerOAuthControls token=token/>
                     </Section>
                     <hr class="set-div"/>
                     <Section title="Default agent" desc="Which local CLI new threads use.">

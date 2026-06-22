@@ -81,6 +81,7 @@ fn tool_text_code_structure_lists_symbols() {
                 kind: "function".to_string(),
                 name: "needle".to_string(),
                 line: 12,
+                column: 8,
                 signature: None,
                 members: vec![],
             }],
@@ -175,6 +176,86 @@ fn get_code_structure_reports_token_counts() {
     assert_eq!(
         total, file_tokens,
         "total_tokens == sum of file token_counts"
+    );
+}
+
+#[test]
+fn shebang_script_without_extension_has_code_structure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("script"),
+        "#!/usr/bin/env python3\nclass ScriptThing:\n    pass\n\ndef main():\n    return ScriptThing()\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+    let response = handle_tool_call(
+        &provider,
+        &json!({ "name": "get_code_structure", "arguments": { "paths": ["script"] } }),
+    )
+    .expect("get_code_structure");
+    assert_eq!(
+        response["structuredContent"]["files"][0]["language"],
+        json!("python")
+    );
+    let text = response["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("class ScriptThing"), "{text}");
+    assert!(text.contains("def main()"), "{text}");
+}
+
+#[test]
+fn markdown_fenced_code_has_code_structure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("README.md"),
+        "# Docs\n\n```rust\npub fn documented() {}\n```\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+    let response = handle_tool_call(
+        &provider,
+        &json!({ "name": "get_code_structure", "arguments": { "paths": ["README.md"] } }),
+    )
+    .expect("get_code_structure");
+    assert_eq!(
+        response["structuredContent"]["files"][0]["language"],
+        json!("markdown")
+    );
+    assert_eq!(
+        response["structuredContent"]["files"][0]["symbols"][0]["line"],
+        json!(4)
+    );
+    let text = response["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("pub fn documented()"), "{text}");
+}
+
+#[test]
+fn shebang_script_summary_and_ast_search_work_without_extension() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("script"),
+        "#!/usr/bin/env python3\ndef main():\n    return 1\n",
+    )
+    .expect("seed");
+    let provider = provider_for(dir.path());
+    let summary = handle_tool_call(
+        &provider,
+        &json!({ "name": "read_file", "arguments": { "path": "script", "view": "summary" } }),
+    )
+    .expect("summary");
+    assert_eq!(summary["structuredContent"]["language"], json!("python"));
+    assert_eq!(summary["structuredContent"]["parsed"], json!(true));
+
+    let ast = handle_tool_call(
+        &provider,
+        &json!({ "name": "ast_search", "arguments": {
+            "language": "python", "paths": ["script"],
+            "query": "(function_definition name: (identifier) @name) @match" } }),
+    )
+    .expect("ast_search");
+    assert_eq!(ast["structuredContent"]["files_scanned"], json!(1));
+    assert_eq!(
+        ast["structuredContent"]["matches"][0]["captures"]["name"],
+        json!("main")
     );
 }
 

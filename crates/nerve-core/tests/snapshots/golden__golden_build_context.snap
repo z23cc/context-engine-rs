@@ -13,7 +13,16 @@ expression: response
         "display_path": "fixtures/alpha.rs",
         "mode": "codemap_only",
         "tokens": 77,
-        "score": "1.000000"
+        "score": "1.000000",
+        "score_breakdown": {
+          "search": "0.550000",
+          "repo_map": "0.350000",
+          "semantic": "0.000000",
+          "path": "0.100000",
+          "total": "1.000000",
+          "source": "ranked",
+          "semantic_enabled": false
+        }
       }
     ],
     "excluded": [
@@ -21,6 +30,73 @@ expression: response
         "path": "gamma.py",
         "display_path": "fixtures/gamma.py",
         "score": "0.583387",
+        "score_breakdown": {
+          "search": "0.233387",
+          "repo_map": "0.350000",
+          "semantic": "0.000000",
+          "path": "0.000000",
+          "total": "0.583387",
+          "source": "ranked",
+          "semantic_enabled": false
+        },
+        "reason": "over_budget"
+      }
+    ],
+    "allocation_trace": [
+      {
+        "path": "alpha.rs",
+        "display_path": "fixtures/alpha.rs",
+        "score": "1.000000",
+        "score_breakdown": {
+          "search": "0.550000",
+          "repo_map": "0.350000",
+          "semantic": "0.000000",
+          "path": "0.100000",
+          "total": "1.000000",
+          "source": "ranked",
+          "semantic_enabled": false
+        },
+        "attempts": [
+          {
+            "mode": "full",
+            "total_tokens": 124,
+            "accepted": false
+          },
+          {
+            "mode": "codemap_only",
+            "total_tokens": 95,
+            "accepted": true
+          }
+        ],
+        "result": "included",
+        "reason": "accepted"
+      },
+      {
+        "path": "gamma.py",
+        "display_path": "fixtures/gamma.py",
+        "score": "0.583387",
+        "score_breakdown": {
+          "search": "0.233387",
+          "repo_map": "0.350000",
+          "semantic": "0.000000",
+          "path": "0.000000",
+          "total": "0.583387",
+          "source": "ranked",
+          "semantic_enabled": false
+        },
+        "attempts": [
+          {
+            "mode": "full",
+            "total_tokens": 170,
+            "accepted": false
+          },
+          {
+            "mode": "codemap_only",
+            "total_tokens": 176,
+            "accepted": false
+          }
+        ],
+        "result": "excluded",
         "reason": "over_budget"
       }
     ]

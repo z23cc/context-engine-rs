@@ -497,7 +497,7 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
     padding: 11px 13px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   }
-  .modal .m-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal .m-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
   button.allow { background: var(--ok); color: var(--on-accent); }
   button.allow:not(:disabled):hover { filter: brightness(1.08); }
   button.deny { background: transparent; color: var(--err); border-color: var(--err); }
@@ -1123,10 +1123,18 @@
   function addApprovalChip(tool, state) {
     const body = turnBody();
     if (!body) return;
-    const chip = el("div", "approval-chip " + (state === "allow" ? "allowed" : state === "deny" ? "denied" : ""));
+    const allowed = state === "allow" || state === "allow_always";
+    const denied = state === "deny" || state === "deny_always";
+    const labels = {
+      allow: "allowed",
+      allow_always: "allowed for session",
+      deny: "denied",
+      deny_always: "always denied",
+    };
+    const chip = el("div", "approval-chip " + (allowed ? "allowed" : denied ? "denied" : ""));
     chip.append(svg(ICONS.warn));
     chip.append(el("span", "ac-tool", tool || "tool"));
-    chip.append(el("span", "ac-verdict", state === "allow" ? "allowed" : state === "deny" ? "denied" : "closed"));
+    chip.append(el("span", "ac-verdict", labels[state] || "closed"));
     body.append(chip);
     autoscroll();
   }
@@ -1148,9 +1156,11 @@
     const pre = el("pre", null, pretty(args));
     modal.append(pre);
     const actions = el("div", "m-actions");
-    const deny = el("button", "deny", "Deny");
     const allow = el("button", "allow", "Allow");
-    actions.append(deny, allow);
+    const allowAlways = el("button", "allow", "Allow for session");
+    const deny = el("button", "deny", "Deny");
+    const denyAlways = el("button", "deny", "Always deny");
+    actions.append(allow, allowAlways, deny, denyAlways);
     modal.append(actions);
     scrim.append(modal);
     host.append(scrim);
@@ -1161,7 +1171,9 @@
       closeApprovalModal();
     };
     allow.addEventListener("click", () => respond(requestId, "allow", close));
+    allowAlways.addEventListener("click", () => respond(requestId, "allow_always", close));
     deny.addEventListener("click", () => respond(requestId, "deny", close));
+    denyAlways.addEventListener("click", () => respond(requestId, "deny_always", close));
     chat.approvals.set(requestId, { close });
   }
 

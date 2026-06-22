@@ -1,22 +1,25 @@
 //! Deterministic query-to-context builder.
 
 use crate::{
-    CancelToken, CatalogEntry, CatalogProvider, ContentSearchMatch, LineRange, NerveError,
-    PathSearchMatch, ReadFileRequest, RepoMapRequest, SearchMode, SearchRequest, Selection,
-    SelectionMode, WorkspaceContextInclude, WorkspaceContextRequest, WorkspaceContextResponse,
-    count_tokens, get_repo_map_cancellable, read_file, search_snapshot_cancellable,
-    workspace_context_for_selection,
+    CancelToken, CatalogEntry, CatalogProvider, ContentSearchMatch, NerveError, PathSearchMatch,
+    RepoMapRequest, SearchMode, SearchRequest, Selection, WorkspaceContextInclude,
+    WorkspaceContextRequest, WorkspaceContextResponse, get_repo_map_cancellable,
+    search_snapshot_cancellable, workspace_context_for_selection,
 };
 #[cfg(all(feature = "semantic", not(target_arch = "wasm32")))]
 use crate::{SemanticSearchMode, SemanticSearchRequest};
-use crate::{
-    repomap::RepoMapResponse,
-    selection::SelectionKey,
-    workspace_context::{RenderCache, workspace_context_for_selection_cached},
-};
+use crate::{repomap::RepoMapResponse, selection::SelectionKey, workspace_context::RenderCache};
 use serde::{Deserialize, Serialize};
 
+mod allocation;
+mod explain;
 mod reference_expansion;
+mod sensitive;
+use allocation::allocate_selection;
+pub use explain::{
+    BuildContextAllocationAttempt, BuildContextAllocationTrace, BuildContextScoreBreakdown,
+};
+pub use sensitive::BuildContextSensitiveFinding;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -62,6 +65,10 @@ pub struct BuildContextManifest {
     pub token_used: usize,
     pub included: Vec<BuildContextIncludedFile>,
     pub excluded: Vec<BuildContextExcludedFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allocation_trace: Vec<BuildContextAllocationTrace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sensitive_findings: Vec<BuildContextSensitiveFinding>,
 }
 
 /// Included file selected by the builder.
@@ -72,6 +79,7 @@ pub struct BuildContextIncludedFile {
     pub mode: String,
     pub tokens: usize,
     pub score: String,
+    pub score_breakdown: BuildContextScoreBreakdown,
 }
 
 /// Ranked file not included in the built context.
@@ -80,6 +88,7 @@ pub struct BuildContextExcludedFile {
     pub path: String,
     pub display_path: String,
     pub score: String,
+    pub score_breakdown: BuildContextScoreBreakdown,
     pub reason: String,
 }
 
@@ -140,7 +149,7 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
     // One render cache spans the greedy allocation and reference expansion:
     // each (file, mode) is rendered once instead of re-rendered per trial.
     let mut render_cache = RenderCache::new(snapshot.generation);
-    let (mut selection, mut excluded) = allocate_selection(
+    let (mut selection, mut excluded, mut allocation_trace) = allocate_selection(
         provider,
         snapshot,
         &ranked,
@@ -148,15 +157,18 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         max_files,
         &mut render_cache,
     )?;
-    excluded.extend(reference_expansion::expand_reference_codemap_selection(
+    let expansion = reference_expansion::expand_reference_codemap_selection(
         provider,
         snapshot,
         &mut selection,
         request.token_budget,
         cancel,
         &mut render_cache,
-    )?);
+    )?;
+    excluded.extend(expansion.excluded);
+    merge_allocation_trace(&mut allocation_trace, expansion.allocation_trace);
     remove_selected_exclusions(&mut excluded, &selection);
+    dedupe_exclusions(&mut excluded);
     let mut workspace = workspace_context_for_selection(
         provider,
         snapshot,
@@ -176,6 +188,7 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
         workspace.tokens.file_map_tokens = 0;
     }
     let included = included_manifest(&workspace, &ranked);
+    let sensitive_findings = sensitive::scan_selection(provider, &snapshot.entries, &selection)?;
 
     Ok(BuildContextResponse {
         context: workspace.context,
@@ -185,6 +198,8 @@ pub fn build_context_cancellable<P: CatalogProvider + Sync>(
             token_used: workspace.tokens.total_tokens,
             included,
             excluded,
+            allocation_trace,
+            sensitive_findings,
         },
     })
 }
@@ -194,6 +209,7 @@ struct Candidate<'a> {
     entry: &'a CatalogEntry,
     display_path: String,
     score: f64,
+    score_breakdown: BuildContextScoreBreakdown,
     hit_lines: BTreeSet<usize>,
 }
 
@@ -264,10 +280,19 @@ fn rank_candidates<'a, P: CatalogProvider>(
                 path_score,
                 has_semantic,
             );
+            let score_breakdown = BuildContextScoreBreakdown::from_normalized(
+                search_score,
+                repo_score,
+                semantic_score,
+                path_score,
+                score,
+                has_semantic,
+            );
             (score > 0.0).then(|| Candidate {
                 entry,
                 display_path: provider.display_path(&entry.abs_path),
                 score,
+                score_breakdown,
                 hit_lines: builder.hit_lines,
             })
         })
@@ -380,60 +405,27 @@ fn path_relevance(path: &str, query: &str) -> f64 {
     matched as f64 / terms.len() as f64
 }
 
-fn allocate_selection<P: CatalogProvider>(
-    provider: &P,
-    snapshot: &crate::CatalogSnapshot,
-    ranked: &[Candidate<'_>],
-    token_budget: usize,
-    max_files: usize,
-    render_cache: &mut RenderCache,
-) -> Result<(Selection, Vec<BuildContextExcludedFile>), NerveError> {
-    let mut selection = Selection::default();
-    let mut excluded = Vec::new();
+fn merge_allocation_trace(
+    allocation_trace: &mut Vec<BuildContextAllocationTrace>,
+    expansion_trace: Vec<BuildContextAllocationTrace>,
+) {
+    let mut positions = allocation_trace
+        .iter()
+        .enumerate()
+        .map(|(idx, trace)| (trace.path.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
 
-    for (idx, candidate) in ranked.iter().enumerate() {
-        if selection.files.len() >= max_files {
-            excluded.extend(
-                ranked[idx..]
-                    .iter()
-                    .map(|candidate| excluded_file(candidate, "max_files")),
-            );
-            break;
-        }
-
-        let mut included = false;
-        for mode in candidate_modes(provider, candidate, token_budget)? {
-            let mut next_selection = selection.clone();
-            next_selection
-                .files
-                .insert(selection_key(candidate.entry), mode);
-            let workspace = workspace_context_for_selection_cached(
-                provider,
-                snapshot,
-                &next_selection,
-                &WorkspaceContextRequest {
-                    include: vec![
-                        WorkspaceContextInclude::FileMap,
-                        WorkspaceContextInclude::Contents,
-                    ],
-                    instructions: None,
-                    ..Default::default()
-                },
-                render_cache,
-            )?;
-            if workspace.tokens.total_tokens <= token_budget {
-                selection = next_selection;
-                included = true;
-                break;
-            }
-        }
-
-        if !included {
-            excluded.push(excluded_file(candidate, "over_budget"));
+    for trace in expansion_trace {
+        let path = trace.path.clone();
+        if let Some(idx) = positions.get(path.as_str()).copied() {
+            allocation_trace[idx].attempts = trace.attempts;
+            allocation_trace[idx].result = trace.result;
+            allocation_trace[idx].reason = trace.reason;
+        } else {
+            positions.insert(path, allocation_trace.len());
+            allocation_trace.push(trace);
         }
     }
-
-    Ok((selection, excluded))
 }
 
 fn remove_selected_exclusions(excluded: &mut Vec<BuildContextExcludedFile>, selection: &Selection) {
@@ -445,87 +437,41 @@ fn remove_selected_exclusions(excluded: &mut Vec<BuildContextExcludedFile>, sele
     excluded.retain(|file| !selected_paths.contains(file.path.as_str()));
 }
 
-fn candidate_modes<P: CatalogProvider>(
-    provider: &P,
-    candidate: &Candidate<'_>,
-    token_budget: usize,
-) -> Result<Vec<SelectionMode>, NerveError> {
-    let full_tokens = full_content_tokens(provider, candidate.entry)?;
-    let ranges = hit_line_ranges(&candidate.hit_lines);
-    let codemap_supported = provider
-        .code_symbols_for_path(&candidate.entry.abs_path, &candidate.entry.rel_path)?
-        .ok()
-        .flatten()
-        .is_some();
-
-    let mut modes = vec![SelectionMode::Full];
-    if codemap_supported {
-        modes.push(SelectionMode::CodemapOnly);
-    }
-    let huge_with_hits = full_tokens > token_budget.saturating_div(2) && !ranges.is_empty();
-    if (huge_with_hits || !codemap_supported) && !ranges.is_empty() {
-        modes.push(SelectionMode::Slices(ranges));
-    }
-    Ok(modes)
-}
-
-fn full_content_tokens<P: CatalogProvider>(
-    provider: &P,
-    entry: &CatalogEntry,
-) -> Result<usize, NerveError> {
-    let response = read_file(
-        provider,
-        &ReadFileRequest {
-            path: entry.abs_path.clone(),
-            start_line: None,
-            end_line: None,
-            limit: None,
-            snap: None,
-        },
-    )?;
-    Ok(count_tokens(&response.content))
-}
-
-fn hit_line_ranges(lines: &BTreeSet<usize>) -> Vec<LineRange> {
-    lines
-        .iter()
-        .take(3)
-        .map(|line| LineRange {
-            start_line: line.saturating_sub(SLICE_RADIUS).max(1),
-            end_line: line.saturating_add(SLICE_RADIUS),
-        })
-        .collect()
+fn dedupe_exclusions(excluded: &mut Vec<BuildContextExcludedFile>) {
+    let mut seen = BTreeSet::new();
+    excluded.reverse();
+    excluded.retain(|file| seen.insert(file.path.clone()));
+    excluded.reverse();
 }
 
 fn included_manifest(
     workspace: &WorkspaceContextResponse,
     ranked: &[Candidate<'_>],
 ) -> Vec<BuildContextIncludedFile> {
-    let score_by_path = ranked
+    let candidates_by_path = ranked
         .iter()
-        .map(|candidate| (candidate.entry.rel_path.as_str(), candidate.score))
+        .map(|candidate| (candidate.entry.rel_path.as_str(), candidate))
         .collect::<BTreeMap<_, _>>();
     workspace
         .tokens
         .files
         .iter()
-        .map(|file| BuildContextIncludedFile {
-            path: file.path.clone(),
-            display_path: file.display_path.clone(),
-            mode: file.mode.clone(),
-            tokens: file.token_count,
-            score: format_score(*score_by_path.get(file.path.as_str()).unwrap_or(&0.0)),
+        .map(|file| {
+            let candidate = candidates_by_path.get(file.path.as_str()).copied();
+            BuildContextIncludedFile {
+                path: file.path.clone(),
+                display_path: file.display_path.clone(),
+                mode: file.mode.clone(),
+                tokens: file.token_count,
+                score: candidate
+                    .map(|candidate| format_score(candidate.score))
+                    .unwrap_or_else(|| format_score(0.0)),
+                score_breakdown: candidate
+                    .map(|candidate| candidate.score_breakdown.clone())
+                    .unwrap_or_else(BuildContextScoreBreakdown::zero),
+            }
         })
         .collect()
-}
-
-fn excluded_file(candidate: &Candidate<'_>, reason: &str) -> BuildContextExcludedFile {
-    BuildContextExcludedFile {
-        path: candidate.entry.rel_path.clone(),
-        display_path: candidate.display_path.clone(),
-        score: format_score(candidate.score),
-        reason: reason.to_string(),
-    }
 }
 
 fn selection_key(entry: &CatalogEntry) -> SelectionKey {

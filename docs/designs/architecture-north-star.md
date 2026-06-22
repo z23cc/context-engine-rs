@@ -69,8 +69,9 @@ approval round-trips (`session.respond`) — is Session-layer / P6 work, not in-
 7. **OAuth login topology — callback capture is the client's job, never the daemon's.** Providers
    allowlist **localhost** redirect URIs (OpenAI `:1455`, xAI `:56121` fixed; Anthropic `:54545`), so
    the OAuth redirect only ever lands on the machine running the browser. Login is therefore staged
-   and the daemon stays **stateless**: `auth.start` returns the authorize URL + a pending id; the
-   client opens the browser, captures the `?code=` redirect, and calls `auth.complete`. The daemon
+   and the daemon stays **stateless**: `auth.start` with `flow=browser` returns the authorize URL + a pending id; the
+   client opens the browser, captures the `?code=` redirect, and calls `auth.complete`. `flow=device_code`
+   is protocol vocabulary for mobile/remote clients but currently fails closed until provider device endpoints are wired. The daemon
    **must not own a keep-alive loopback** — for a remote daemon (Tailscale/mobile) the redirect lands
    on the client, not the daemon, so a daemon loopback structurally cannot catch it and adds nothing
    over client capture. Token holding/refresh is the composition-root "broker" role (`AuthManager` +
@@ -182,7 +183,7 @@ Do not build one plugin system; layer by what is being extended, each with the r
 8. **Extract a thin `nerve-protocol` crate** when third-party Rust plugins/clients appear, so they
    depend on protocol types only, not all of `nerve-runtime`.
 
-## 8. Roadmap (status — reconciled to code 2026-06-19)
+## 8. Roadmap (status — reconciled to code 2026-06-22)
 
 - **P0 — Session layer (folds in the off-protocol agent). ✅ Done.** `RuntimeCommand::AgentRun` + the
   `Session*` command family are protocol vocabulary; the daemon runs the orchestrator as a cancellable
@@ -191,14 +192,17 @@ Do not build one plugin system; layer by what is being extended, each with the r
   host executor `agent::run_agent` (see §2). Invariant §3 restored; GUI/TUI can drive the agent.
 - **P1 — MCP client. ✅ Done.** `McpClientToolAdapter: RuntimeToolAdapter` consumes external stdio MCP
   servers (`--mcp-config`); attached via `mcp::attach` in both faces. Near-zero new architecture.
-- **P2 — Provider registry + config-driven providers. ✅ Done (a named registry API is the only
-  polish left).** `ProviderRegistry` resolves built-ins + `--provider-config` entries; `ProviderWire`
-  covers the OpenAI-compatible long tail with no code.
-- **P3 — Skills + Agent/Workflow definitions. ✅ Agent defs + skills done; workflow defs pending.**
-  `Capabilities::discover` loads agent defs and skills (project > global > built-in precedence).
-- **P4 — Permission / policy engine. ✅ Done (authorization); containment pending.** `PolicyToolBox`
-  is the outermost gate (invariant 9). The orthogonal `SandboxLauncher` half — *what* a spawned
-  process may touch — is not yet built (see `docs/designs/agent-exec-sandbox.md`).
+- **P2 — Provider registry + config-driven providers. ✅ Done.** `ProviderRegistry` resolves
+  built-ins + `--provider-config` entries; `ProviderWire` covers the OpenAI-compatible long tail with
+  no code, and the named registry API (`descriptors`, `descriptor`, `contains_name`) lets UI/agent
+  definitions validate providers without constructing clients or credentials.
+- **P3 — Skills + Agent/Workflow definitions. ✅ Done.** `Capabilities::discover` loads agent defs
+  and skills, `WorkerRegistry` / `WorkflowRegistry` load worker + workflow defs, and `flow.start`
+  accepts inline or named workflow refs with project > global > built-in precedence.
+- **P4 — Permission / policy engine. ✅ Done for authorization + MVP containment.** `PolicyToolBox`
+  is the outermost gate (invariant 9). `SandboxLauncher` now backs `run_command` / delegate spawning
+  with trusted-local `ProcessLauncher` and served-path `RefuseLauncher`; Linux-strong Landlock/seccomp
+  remains a future backend (see `docs/designs/agent-exec-sandbox.md`).
 - **P5 — Persistence + migrations. ✅ Done for transcripts/sessions.** Versioned `SessionRecord`
   (`schema_version` + a `migrate_to_current` scaffold) under `.nerve/sessions`; resume + a
   multi-session live registry; credentials persisted by `nerve-agent::auth`. Live daemon jobs stay
@@ -206,10 +210,18 @@ Do not build one plugin system; layer by what is being extended, each with the r
 - **P6 — Hooks + GUI (Tauri) / TUI / mobile. ◑ Partial.** Hooks wired (`Orchestrator::with_hooks`);
   the `nerve-tui` (Rust) client plus daemon stdio and HTTP/SSE transports are live; a minimal
   `daemon/gui.html` exists. Native Tauri GUI and mobile remain.
-- **Auth broker (pairs with P6 mobile/remote). ✗ Not started.** Share tokens to remote/mobile clients
-  — log in once on a trusted node; the refresh token never leaves the broker (`AuthManager` is already
-  the holder). This, **not** a daemon loopback, is the mobile zero-paste answer (§3.7); device-code
-  flow is the secondary fallback.
+- **Auth broker (pairs with P6 mobile/remote). ◑ Partial.** `auth.lease` now exposes host-managed
+  OAuth lease metadata: the trusted node refreshes via `AuthManager` / `ensure_fresh`, does not return
+  bearer or stored refresh tokens through runtime jobs, and advertises that boundary via `auth.status`.
+  The Rust TUI consumes it via `/lease`; the Leptos Web GUI sends `include_token=false`
+  and shows metadata-only lease status in Settings. `auth.start.flow` now reserves `device_code` and
+  fails closed when requested, while `auth.status` advertises per-provider auth capabilities so remote
+  clients can discover browser/device-code/lease support without trial-and-error; the Leptos Web GUI
+  now renders that capability matrix in Settings with metadata-only requests, secret-shaped reason
+  redaction, and Web-GUI-boundary bearer wording. It can also run the staged browser flow by calling
+  `auth.start`, opening the provider authorize URL, and submitting a pasted callback/code to
+  `auth.complete`; token exchange and credential storage remain daemon-only. Remaining work: mobile
+  UI, a first-party daemon callback catcher, and real provider device-authorization endpoints.
 
 ## 9. Risks & anti-goals
 
@@ -226,16 +238,12 @@ Do not build one plugin system; layer by what is being extended, each with the r
 
 - **Enforced by CI today:** protocol drift (`export-runtime-protocol -- --check` + `generated_protocol_rust_artifacts_are_current`),
   determinism (golden snapshots), file/function size, `clippy -D warnings`, fmt.
-- **To add — command-executor exhaustiveness (the writable form of the old "nothing outside
-  `Runtime`" idea).** A literal "every command flows through `Runtime::handle_command`" test is
-  *unwritable*: `agent.run` / `session.*` / `auth.*` are domain-bearing and are **refused** by the
-  core hub by design (it may depend only on `nerve-core`, never `nerve-agent`), so the host intercepts
-  them upstream. The guard that actually closes the gap is a totality test — for every name in
-  `RUNTIME_COMMAND_NAMES`, exactly one executor claims it: the core hub (`ping` / `tool.list` /
-  `tool.call`) or a host interceptor (`is_agent_run` / `is_session_command` / `is_auth_command`) — so a
-  newly-added variant cannot silently fall through `run_job`'s `else` into a hub that refuses it.
-  (Tool execution is already structurally funneled through `Runtime`: the orchestrator sees only
-  `&dyn ToolBox`, and the composition root only ever builds `RuntimeToolBox` over `NerveRuntime`.)
+- **Command-executor exhaustiveness. ✅ Done.** A literal "every command flows through
+  `Runtime::handle_command`" test is unwritable because `agent.run` / `session.*` / `auth.*` /
+  `flow.*` are domain-bearing host commands that the core hub intentionally refuses. The implemented
+  guard is `jobs.rs::executor_for`: an exhaustive `RuntimeCommand` match plus a partition test over
+  `RUNTIME_COMMAND_NAMES`, so a newly-added command must compile-time choose exactly one executor and
+  cannot silently fall through to the wrong hub.
 - **Per seam:** a registry + contract tests (adapter name dedup, spec shape, provider config
   validation).
 - **Record contract evolution** alongside `docs/parity/` (the differential ledger style).

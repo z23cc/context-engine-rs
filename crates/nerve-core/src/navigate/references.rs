@@ -56,14 +56,10 @@ pub(super) fn collect_references<P: CatalogProvider + Sync>(
     sources: &mut Sources<P>,
     request: &NavigateRequest,
 ) -> Vec<ReferenceLocation> {
-    let lang = request.language.as_deref();
     let def_files = definition_file_indexes(files, request);
     let unambiguous = count_definitions(files, request) <= 1;
     let mut references = Vec::new();
     for (idx, file) in files.iter().enumerate() {
-        if !language_matches(lang, &file.language) {
-            continue;
-        }
         let confidence = reference_confidence(files, idx, &def_files, unambiguous);
         collect_file_references(file, sources, request, confidence, &mut references);
     }
@@ -113,7 +109,11 @@ pub(super) fn collect_file_references<P: CatalogProvider + Sync>(
     references: &mut Vec<ReferenceLocation>,
 ) {
     for reference in &file.references {
+        let reference_language = reference.effective_language(&file.language);
         if reference.name != request.symbol {
+            continue;
+        }
+        if !language_matches(request.language.as_deref(), reference_language) {
             continue;
         }
         if request.confident_only && confidence == Confidence::Low {
@@ -123,8 +123,9 @@ pub(super) fn collect_file_references<P: CatalogProvider + Sync>(
             path: file.path.clone(),
             display_path: file.display_path.clone(),
             line: reference.line,
+            column: reference.column,
             kind: reference.kind.clone(),
-            language: file.language.clone(),
+            language: reference_language.to_string(),
             text: sources.line(&file.path, &file.abs_path, reference.line),
             confidence,
         });
@@ -169,6 +170,7 @@ pub(super) fn collect_definitions<P: CatalogProvider + Sync>(
                     path: file.path.clone(),
                     display_path: file.display_path.clone(),
                     line: symbol.line,
+                    column: symbol.column,
                     kind: symbol.kind.clone(),
                     language: file.language.clone(),
                     signature: symbol.signature.clone(),

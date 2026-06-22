@@ -115,6 +115,7 @@ where
             RuntimeCommand::AuthStart { .. }
             | RuntimeCommand::AuthComplete { .. }
             | RuntimeCommand::AuthStatus { .. }
+            | RuntimeCommand::AuthLease { .. }
             | RuntimeCommand::AuthLogout { .. } => Err(RuntimeError::adapter(
                 "auth commands are executed by the host auth manager, not the core runtime",
             )),

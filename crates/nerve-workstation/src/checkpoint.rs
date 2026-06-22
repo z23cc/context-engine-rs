@@ -1,8 +1,4 @@
-//! Working-memory checkpoint tool and request hook.
-//!
-//! This module is intentionally standalone until the agent/session wiring lands.
-
-#![allow(dead_code)]
+//! Working-memory checkpoint tool and request hook shared by agent runs and sessions.
 
 use nerve_agent::{AgentError, AgentResult, ChatRequest, Hook, ToolBox, ToolSpec};
 use nerve_core::CancelToken;
@@ -15,7 +11,7 @@ const UPDATE_CHECKPOINT: &str = "update_checkpoint";
 const TRUNCATED_MARKER: &str = " …[truncated]";
 const WORKING_MEMORY_HEADER: &str = "\n\n## Working memory (your running notes)\n";
 
-type SharedCheckpoint = Arc<Mutex<Checkpoint>>;
+pub(crate) type SharedCheckpoint = Arc<Mutex<Checkpoint>>;
 
 pub(crate) struct Checkpoint {
     pub(crate) note: String,
@@ -33,6 +29,11 @@ impl Checkpoint {
         self.note = note;
         truncated
     }
+}
+
+pub(crate) fn checkpoint_snapshot(checkpoint: &SharedCheckpoint) -> Option<String> {
+    let note = lock_checkpoint(checkpoint).note.clone();
+    (!note.trim().is_empty()).then_some(note)
 }
 
 pub(crate) struct CheckpointToolBox<T: ToolBox> {
@@ -86,7 +87,7 @@ impl CheckpointHook {
 impl Hook for CheckpointHook {
     fn on_request(&self, req: &mut ChatRequest) {
         let note = lock_checkpoint(&self.checkpoint).note.clone();
-        if note.is_empty() {
+        if note.trim().is_empty() {
             return;
         }
 
@@ -338,12 +339,36 @@ mod tests {
     #[test]
     fn empty_note_injects_nothing() {
         let checkpoint = shared();
-        let hook = CheckpointHook::new(checkpoint);
+        let hook = CheckpointHook::new(Arc::clone(&checkpoint));
         let mut req = request(Some("base system"));
 
         hook.on_request(&mut req);
 
         assert_eq!(req.system.as_deref(), Some("base system"));
+        assert_eq!(checkpoint_snapshot(&checkpoint), None);
+    }
+
+    #[test]
+    fn snapshot_returns_non_empty_note() {
+        let checkpoint = shared();
+        lock_checkpoint(&checkpoint).replace("next: inspect session persistence");
+        assert_eq!(
+            checkpoint_snapshot(&checkpoint).as_deref(),
+            Some("next: inspect session persistence")
+        );
+    }
+
+    #[test]
+    fn whitespace_only_note_injects_and_persists_nothing() {
+        let checkpoint = shared();
+        lock_checkpoint(&checkpoint).replace("   \n  ");
+        let hook = CheckpointHook::new(Arc::clone(&checkpoint));
+        let mut req = request(Some("base system"));
+
+        hook.on_request(&mut req);
+
+        assert_eq!(req.system.as_deref(), Some("base system"));
+        assert_eq!(checkpoint_snapshot(&checkpoint), None);
     }
 
     #[test]

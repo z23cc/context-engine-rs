@@ -25,9 +25,9 @@ pub use adapter::RuntimeToolAdapter;
 pub use error::RuntimeError;
 pub use job::RuntimeJobErrorExt;
 pub use nerve_proto::{
-    AgentEventKind, ApprovalMode, AuthEventKind, BudgetSpec, ContextSplit, DelegateAutonomy,
-    FailPolicy, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowSource, FlowWorkerKind, Join,
-    LedgerRef, RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent,
+    AgentEventKind, ApprovalMode, AuthEventKind, AuthStartFlow, BudgetSpec, ContextSplit,
+    DelegateAutonomy, FailPolicy, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowSource,
+    FlowWorkerKind, Join, LedgerRef, RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent,
     RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
     RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec,
     SessionApprovalDecision, Step, Strategy, TaskTemplate, ToolCapability, WorkerRef,
@@ -246,7 +246,13 @@ mod tests {
 
     #[test]
     fn auth_commands_are_advertised() {
-        for command in ["auth.start", "auth.complete", "auth.status", "auth.logout"] {
+        for command in [
+            "auth.start",
+            "auth.complete",
+            "auth.status",
+            "auth.lease",
+            "auth.logout",
+        ] {
             assert!(RUNTIME_COMMAND_NAMES.contains(&command));
         }
     }
@@ -295,6 +301,22 @@ mod tests {
 
     #[test]
     fn auth_command_serializes_protocol_shape() {
+        let start = RuntimeCommand::AuthStart {
+            provider: "openai".to_string(),
+            flow: AuthStartFlow::Browser,
+        };
+        let value = serde_json::to_value(start).expect("start command json");
+        assert_eq!(value["kind"], "auth.start");
+        assert_eq!(value["provider"], "openai");
+        assert!(value.get("flow").is_none());
+
+        let start = RuntimeCommand::AuthStart {
+            provider: "openai".to_string(),
+            flow: AuthStartFlow::DeviceCode,
+        };
+        let value = serde_json::to_value(start).expect("device start command json");
+        assert_eq!(value["flow"], "device_code");
+
         let command = RuntimeCommand::AuthComplete {
             login_id: "login-1".to_string(),
             code: Some("code-1".to_string()),
@@ -305,6 +327,25 @@ mod tests {
         assert_eq!(value["login_id"], "login-1");
         assert_eq!(value["code"], "code-1");
         assert!(value.get("callback_url").is_none());
+
+        let lease = RuntimeCommand::AuthLease {
+            provider: "openai".to_string(),
+            force_refresh: true,
+            include_token: true,
+        };
+        let value = serde_json::to_value(lease).expect("lease command json");
+        assert_eq!(value["kind"], "auth.lease");
+        assert_eq!(value["provider"], "openai");
+        assert_eq!(value["force_refresh"], true);
+        assert!(value.get("include_token").is_none());
+
+        let metadata_lease = RuntimeCommand::AuthLease {
+            provider: "openai".to_string(),
+            force_refresh: false,
+            include_token: false,
+        };
+        let value = serde_json::to_value(metadata_lease).expect("metadata lease json");
+        assert_eq!(value["include_token"], false);
     }
 
     #[test]

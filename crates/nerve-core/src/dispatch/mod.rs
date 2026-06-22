@@ -7,8 +7,15 @@ mod editing;
 mod error;
 mod git;
 mod handlers;
+mod impact_args;
+mod read_symbol_args;
+mod referencing_symbols_args;
 mod specs;
+mod symbol_edit;
+mod symbol_rename;
+mod symbol_rename_scope;
 mod text;
+mod tool_search;
 
 use args::*;
 use ast::*;
@@ -18,18 +25,26 @@ pub use error::{
     DispatchError, dispatch_error_json, dispatch_error_json_for, dispatch_error_kind,
     dispatch_error_value,
 };
-use git::run_git;
+use git::run_git_response;
 use handlers::dispatch_provider_tool;
+use impact_args::*;
+use read_symbol_args::*;
+use referencing_symbols_args::*;
 pub use specs::tool_specs;
+use symbol_edit::*;
+use symbol_rename::*;
+use symbol_rename_scope::*;
 #[cfg(test)]
 use text::{REPO_MAP_TEXT_BUDGET_CHARS, render_repo_map_text};
 use text::{ToolText, tool_response, tool_response_text};
+use tool_search::search_tool_specs;
 
 use crate::edit;
 use crate::{
     CancelToken, CatalogProvider, NerveError, SingletonWorkspaceResolver, WorkspaceResolver,
-    build_context_cancellable, get_code_structure, get_file_tree, get_repo_map_cancellable,
-    manage_selection, read_file, search_snapshot_cancellable, workspace_context,
+    build_context_cancellable, get_code_structure, get_file_tree_with_selection,
+    get_repo_map_cancellable, get_selected_file_tree_with_selection, manage_selection, read_file,
+    search_snapshot_cancellable, workspace_context,
 };
 use serde_json::{Value, json};
 
@@ -95,6 +110,10 @@ where
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if name == "tool_search" {
+        let args: ToolSearchArgs = serde_json::from_value(arguments)?;
+        return tool_response_text(&search_tool_specs(args));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if name == "manage_workspaces" {
         let args: crate::ManageWorkspacesRequest = serde_json::from_value(arguments)?;

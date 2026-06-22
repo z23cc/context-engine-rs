@@ -88,6 +88,7 @@ fn normalize_ranges(ranges: &[LineRange], line_count: usize) -> Vec<LineRange> {
             LineRange {
                 start_line: start,
                 end_line: end,
+                label: range.label.clone(),
             }
         })
         .collect();
@@ -100,6 +101,7 @@ fn merge_ranges(ranges: Vec<LineRange>) -> Vec<LineRange> {
     for range in ranges {
         if let Some(last) = merged.last_mut()
             && range.start_line <= last.end_line.saturating_add(1)
+            && range.label == last.label
         {
             last.end_line = last.end_line.max(range.end_line);
             continue;
@@ -130,6 +132,7 @@ fn shift_range(range: &LineRange, delta: isize) -> LineRange {
     LineRange {
         start_line: shift_line(range.start_line, delta),
         end_line: shift_line(range.end_line, delta),
+        label: range.label.clone(),
     }
 }
 
@@ -147,6 +150,7 @@ fn clamp_range(range: LineRange, line_count: usize) -> LineRange {
     LineRange {
         start_line: start,
         end_line: end,
+        label: range.label,
     }
 }
 
@@ -175,6 +179,7 @@ fn anchor_rebase(
             LineRange {
                 start_line: start,
                 end_line: end,
+                label: range.label.clone(),
             },
             new_lines.len(),
         )
@@ -397,13 +402,22 @@ mod tests {
         LineRange {
             start_line,
             end_line,
+            label: None,
+        }
+    }
+
+    fn labeled_range(start_line: usize, end_line: usize, label: &str) -> LineRange {
+        LineRange {
+            start_line,
+            end_line,
+            label: Some(label.to_string()),
         }
     }
 
     #[test]
     fn insertion_before_slice_shifts_range_down() {
-        let result = rebase_ranges("a\nb\nc\n", "x\na\nb\nc\n", &[range(2, 3)]);
-        assert_eq!(result.rebased, vec![range(3, 4)]);
+        let result = rebase_ranges("a\nb\nc\n", "x\na\nb\nc\n", &[labeled_range(2, 3, "focus")]);
+        assert_eq!(result.rebased, vec![labeled_range(3, 4, "focus")]);
         assert!(result.dropped.is_empty());
         assert!(result.did_change);
     }

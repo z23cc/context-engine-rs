@@ -280,4 +280,48 @@ fn boundary_corpus_uses_tempdir_and_degrades_gracefully() {
     let err =
         handle_tool_call_json(&provider, &invalid_regex).expect_err("invalid regex is an error");
     assert!(err.to_string().contains("invalid regex"));
+
+    let invalid_fallback = json!({
+        "name": "file_search",
+        "arguments": {
+            "pattern": "(",
+            "regex": true,
+            "regex_fallback": "bogus",
+            "mode": "both"
+        }
+    })
+    .to_string();
+    let err = handle_tool_call_json(&provider, &invalid_fallback)
+        .expect_err("unknown regex fallback is an argument error");
+    assert!(err.to_string().contains("unknown variant"));
+
+    let fallback_regex = json!({
+        "name": "file_search",
+        "arguments": {
+            "pattern": "(",
+            "regex": true,
+            "regex_fallback": "literal",
+            "mode": "both",
+            "max_results": 5
+        }
+    })
+    .to_string();
+    let fallback_text = handle_tool_call_json(&provider, &fallback_regex)
+        .expect("invalid regex can fall back to literal search");
+    let fallback: serde_json::Value = serde_json::from_str(&fallback_text).expect("json response");
+    let diagnostics = fallback["structuredContent"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("fell back to literal")
+    );
+    assert!(
+        fallback["structuredContent"]["totals"]["content_matches"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
 }

@@ -21,6 +21,10 @@ where
         "semantic_search" => handle_semantic_search(provider, arguments, cancel),
         "read_file" => handle_read_file(provider, arguments, cancel),
         "edit" => handle_edit(provider, arguments, cancel),
+        "replace_symbol_body" => handle_replace_symbol_body(provider, arguments, cancel),
+        "insert_before_symbol" => handle_insert_before_symbol(provider, arguments, cancel),
+        "insert_after_symbol" => handle_insert_after_symbol(provider, arguments, cancel),
+        "rename_symbol" => handle_rename_symbol(provider, arguments, cancel),
         "write" => handle_write(provider, arguments),
         "delete" => handle_delete(provider, arguments),
         "move" => handle_move(provider, arguments),
@@ -30,6 +34,10 @@ where
         "get_file_tree" => handle_get_file_tree(provider, arguments, cancel),
         "get_code_structure" => handle_get_code_structure(provider, arguments, cancel),
         "get_repo_map" => handle_get_repo_map(provider, arguments, cancel),
+        "symbol_search" => handle_symbol_search(provider, arguments, cancel),
+        "read_symbol" => handle_read_symbol(provider, arguments, cancel),
+        "analyze_impact" => handle_analyze_impact(provider, arguments, cancel),
+        "find_referencing_symbols" => handle_find_referencing_symbols(provider, arguments, cancel),
         "goto_definition" => handle_goto_definition(provider, arguments, cancel),
         "find_references" => handle_find_references(provider, arguments, cancel),
         "call_hierarchy" => handle_call_hierarchy(provider, arguments, cancel),
@@ -111,8 +119,11 @@ where
     P: DispatchProvider,
 {
     let args: FileSearchArgs = serde_json::from_value(arguments)?;
+    let (request, mut diagnostics) = args.into_request_and_diagnostics()?;
     let snapshot = provider.snapshot_arc_cancellable(cancel)?;
-    let response = search_snapshot_cancellable(provider, &snapshot, &args.into_request(), cancel)?;
+    let mut response = search_snapshot_cancellable(provider, &snapshot, &request, cancel)?;
+    diagnostics.append(&mut response.diagnostics);
+    response.diagnostics = diagnostics;
     tool_response_text(&response)
 }
 
@@ -261,128 +272,6 @@ where
     tool_response_text(&response)
 }
 
-fn ensure_ast_language(language: &str, mode: &'static str) -> Result<(), DispatchError> {
-    if crate::codemap::ast_language_supported(language) {
-        return Ok(());
-    }
-    Err(DispatchError::Edit(edit::EditError::Parse {
-        mode,
-        detail: format!("unsupported language: {language}"),
-    }))
-}
-
-fn ast_search_response<P>(
-    provider: &P,
-    snapshot: &crate::CatalogSnapshot,
-    args: &AstSearchArgs,
-    cancel: &CancelToken,
-) -> Result<AstSearchResponse, DispatchError>
-where
-    P: DispatchProvider,
-{
-    let mut matches = Vec::new();
-    let mut files_scanned = 0usize;
-    for entry in &snapshot.entries {
-        if !ast_entry_matches_scope(entry, args) {
-            continue;
-        }
-        let Ok(bytes) = provider.read_bytes(&entry.abs_path) else {
-            continue;
-        };
-        files_scanned += 1;
-        push_ast_matches(&mut matches, entry, &String::from_utf8_lossy(&bytes), args)?;
-        if matches.len() >= args.max_results {
-            break;
-        }
-        cancel.check_cancelled()?;
-    }
-    Ok(AstSearchResponse {
-        matches,
-        files_scanned,
-    })
-}
-
-fn ast_entry_matches_scope(entry: &crate::CatalogEntry, args: &AstSearchArgs) -> bool {
-    if crate::codemap::path_language_name(&entry.rel_path) != Some(args.language.as_str()) {
-        return false;
-    }
-    args.paths.is_empty()
-        || args
-            .paths
-            .iter()
-            .any(|scope| path_in_scope(&entry.rel_path, scope))
-}
-
-enum AstInput<'a> {
-    Query(&'a str),
-    Pattern(&'a str),
-}
-
-fn ast_input<'a>(
-    query: &'a Option<String>,
-    pattern: &'a Option<String>,
-    mode: Option<&str>,
-    tool: &'static str,
-) -> Result<AstInput<'a>, DispatchError> {
-    match (mode, query.as_deref(), pattern.as_deref()) {
-        (Some("query"), Some(query), _) | (None, Some(query), _) => Ok(AstInput::Query(query)),
-        (Some("pattern"), _, Some(pattern)) | (None, None, Some(pattern)) => {
-            Ok(AstInput::Pattern(pattern))
-        }
-        (Some("query"), None, _) => ast_input_error(tool, "mode `query` requires `query`"),
-        (Some("pattern"), _, None) => ast_input_error(tool, "mode `pattern` requires `pattern`"),
-        (Some(other), _, _) => ast_input_error(tool, &format!("unknown AST mode: {other}")),
-        (None, None, None) => ast_input_error(tool, "provide either `query` or `pattern`"),
-    }
-}
-
-fn ast_input_error<T>(tool: &'static str, detail: &str) -> Result<T, DispatchError> {
-    Err(DispatchError::Edit(edit::EditError::Parse {
-        mode: tool,
-        detail: detail.to_string(),
-    }))
-}
-
-fn push_ast_matches(
-    matches: &mut Vec<AstFileMatch>,
-    entry: &crate::CatalogEntry,
-    source: &str,
-    args: &AstSearchArgs,
-) -> Result<(), DispatchError> {
-    let input = ast_input(
-        &args.query,
-        &args.pattern,
-        args.mode.as_deref(),
-        "ast_search",
-    )?;
-    let found = match input {
-        AstInput::Query(query) => {
-            crate::codemap::ast_search(&entry.rel_path, source, query, args.max_results)
-        }
-        AstInput::Pattern(pattern) => {
-            crate::codemap::ast_search_pattern(&entry.rel_path, source, pattern, args.max_results)
-        }
-    }
-    .map_err(|detail| {
-        DispatchError::Edit(edit::EditError::Parse {
-            mode: "ast_search",
-            detail,
-        })
-    })?;
-    for item in found {
-        matches.push(AstFileMatch {
-            path: entry.rel_path.clone(),
-            line: item.line,
-            text: item.text,
-            captures: item.captures,
-        });
-        if matches.len() >= args.max_results {
-            break;
-        }
-    }
-    Ok(())
-}
-
 fn handle_ast_edit<P>(provider: &P, arguments: Value) -> Result<Value, DispatchError>
 where
     P: DispatchProvider,
@@ -407,24 +296,6 @@ where
     )?)
 }
 
-fn ast_rewrite(args: &AstEditArgs, source: &str) -> Result<(String, usize), DispatchError> {
-    let input = ast_input(&args.query, &args.pattern, args.mode.as_deref(), "ast_edit")?;
-    let result = match input {
-        AstInput::Query(query) => {
-            crate::codemap::ast_rewrite(&args.path, source, query, &args.replacement)
-        }
-        AstInput::Pattern(pattern) => {
-            crate::codemap::ast_rewrite_pattern(&args.path, source, pattern, &args.replacement)
-        }
-    };
-    result.map_err(|detail| {
-        DispatchError::Edit(edit::EditError::Parse {
-            mode: "ast_edit",
-            detail,
-        })
-    })
-}
-
 fn handle_git<P>(
     provider: &P,
     arguments: Value,
@@ -440,10 +311,10 @@ where
         .first()
         .map(|root| root.path.clone())
         .ok_or(DispatchError::Core(NerveError::NoRoots))?;
-    let output = run_git(&root, &args)?;
+    let output = run_git_response(&root, &args)?;
     Ok(json!({
-        "content": [{ "type": "text", "text": output.clone() }],
-        "structuredContent": { "op": args.op, "output": output },
+        "content": [{ "type": "text", "text": output.text }],
+        "structuredContent": output.structured,
     }))
 }
 
@@ -458,12 +329,19 @@ where
     let args: FileTreeArgs = serde_json::from_value(arguments)?;
     let snapshot = provider.snapshot_arc_cancellable(cancel)?;
     cancel.check_cancelled()?;
+    let selected_mode = args.mode.as_deref() == Some("selected");
     let options = crate::FileTreeOptions {
         mode: crate::TreeMode::from_arg(args.mode.as_deref()),
         max_depth: args.max_depth,
         path: args.path,
     };
-    tool_response_text(&get_file_tree(&snapshot, &options))
+    let selection = provider.selection();
+    let response = if selected_mode {
+        get_selected_file_tree_with_selection(&snapshot, &options, &selection)
+    } else {
+        get_file_tree_with_selection(&snapshot, &options, &selection)
+    };
+    tool_response_text(&response)
 }
 
 fn handle_get_code_structure<P>(
@@ -493,6 +371,82 @@ where
     let args: RepoMapArgs = serde_json::from_value(arguments)?;
     let snapshot = provider.snapshot_arc_cancellable(cancel)?;
     let response = get_repo_map_cancellable(provider, &snapshot, &args.into_request(), cancel)?;
+    tool_response_text(&response)
+}
+
+fn handle_symbol_search<P>(
+    provider: &P,
+    arguments: Value,
+    cancel: &CancelToken,
+) -> Result<Value, DispatchError>
+where
+    P: DispatchProvider,
+{
+    let args: SymbolSearchArgs = serde_json::from_value(arguments)?;
+    let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+    let response = crate::navigate::symbol_search_cancellable(
+        provider,
+        &snapshot,
+        &args.into_request(),
+        cancel,
+    )?;
+    tool_response_text(&response)
+}
+
+fn handle_read_symbol<P>(
+    provider: &P,
+    arguments: Value,
+    cancel: &CancelToken,
+) -> Result<Value, DispatchError>
+where
+    P: DispatchProvider,
+{
+    let args: ReadSymbolArgs = serde_json::from_value(arguments)?;
+    let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+    let response = crate::navigate::read_symbol_cancellable(
+        provider,
+        &snapshot,
+        &args.into_request(),
+        cancel,
+    )?;
+    tool_response_text(&response)
+}
+
+fn handle_analyze_impact<P>(
+    provider: &P,
+    arguments: Value,
+    cancel: &CancelToken,
+) -> Result<Value, DispatchError>
+where
+    P: DispatchProvider,
+{
+    let args: ImpactAnalysisArgs = serde_json::from_value(arguments)?;
+    let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+    let response = crate::navigate::analyze_impact_cancellable(
+        provider,
+        &snapshot,
+        &args.into_request(),
+        cancel,
+    )?;
+    tool_response_text(&response)
+}
+
+fn handle_find_referencing_symbols<P>(
+    provider: &P,
+    arguments: Value,
+    cancel: &CancelToken,
+) -> Result<Value, DispatchError>
+where
+    P: DispatchProvider,
+{
+    let args: FindReferencingSymbolsArgs = serde_json::from_value(arguments)?;
+    let snapshot = provider.snapshot_arc_cancellable(cancel)?;
+    let response = crate::navigate::find_referencing_symbols_cancellable(
+        provider,
+        &snapshot,
+        &args.into_request(),
+        cancel,
+    )?;
     tool_response_text(&response)
 }
 

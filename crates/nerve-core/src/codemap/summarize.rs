@@ -93,9 +93,65 @@ fn summarize_source_with_options(
 
 fn summarize_source_uncached(path: &str, source: &str, options: SummaryOptions) -> SummaryResult {
     let total_lines = count_lines(source);
-    let Some(language) = Language::from_path(path) else {
+    if super::markdown::is_markdown_path(path) {
+        return summarize_markdown_source(source, total_lines, options);
+    }
+    let Some(language) = Language::from_path_or_source(path, source) else {
         return full_content_result(source, total_lines);
     };
+    summarize_parsed_source(language, source, total_lines, options)
+}
+
+fn summarize_markdown_source(
+    source: &str,
+    total_lines: usize,
+    options: SummaryOptions,
+) -> SummaryResult {
+    let lines = split_line_segments(source);
+    let fences = super::markdown::supported_fences(&lines);
+    if fences.is_empty() {
+        return full_content_result(source, total_lines);
+    }
+
+    let mut parsed_any = false;
+    let mut spans = Vec::new();
+    for fence in fences {
+        let body_source = super::markdown::fence_source(&lines, &fence);
+        let body_lines = count_lines(&body_source);
+        let body_summary =
+            summarize_parsed_source(fence.language, &body_source, body_lines, options);
+        parsed_any |= body_summary.parsed;
+        for segment in body_summary
+            .segments
+            .into_iter()
+            .filter(|segment| segment.kind == "elided")
+        {
+            spans.push(LineSpan {
+                start: fence.body.start + segment.start_line,
+                end: fence.body.start + segment.end_line,
+            });
+        }
+    }
+    if !parsed_any {
+        return full_content_result(source, total_lines);
+    }
+
+    let spans = normalize_spans(spans, total_lines);
+    SummaryResult {
+        language: Some("markdown".to_string()),
+        parsed: true,
+        elided: !spans.is_empty(),
+        total_lines,
+        segments: build_segments(source, total_lines, &spans),
+    }
+}
+
+fn summarize_parsed_source(
+    language: Language,
+    source: &str,
+    total_lines: usize,
+    options: SummaryOptions,
+) -> SummaryResult {
     let Some(tree) = parse_tree(language, source) else {
         return full_content_result(source, total_lines);
     };
@@ -566,8 +622,34 @@ mod tests {
             .segments
             .iter()
             .find(|segment| segment.kind == "elided")
-            .unwrap();
+            .expect("import run elided");
         assert_eq!((elided.start_line, elided.end_line), (2, 4));
+    }
+
+    #[test]
+    fn summarizes_markdown_fenced_code_on_host_lines() {
+        let source = "# Example\n\n```rust\npub fn demo() {\n    let one = 1;\n    let two = 2;\n    let three = 3;\n    println!(\"{}\", one + two + three);\n}\n```\n";
+        let summary = summarize_source("README.md", source);
+        let elided = summary
+            .segments
+            .iter()
+            .find(|segment| segment.kind == "elided")
+            .expect("fenced body elided");
+
+        assert_eq!(summary.language.as_deref(), Some("markdown"));
+        assert!(summary.parsed);
+        assert!(summary.elided);
+        assert_eq!((elided.start_line, elided.end_line), (5, 8));
+    }
+
+    #[test]
+    fn malformed_markdown_fenced_code_returns_full_content() {
+        let source = "# Example\n\n```typescript\nexport function broken( {\n```\n";
+        let summary = summarize_source("README.md", source);
+
+        assert!(!summary.parsed);
+        assert!(!summary.elided);
+        assert_eq!(summary.segments[0].text.as_deref(), Some(source));
     }
 
     #[test]

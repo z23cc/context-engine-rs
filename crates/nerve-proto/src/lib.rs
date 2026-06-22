@@ -27,8 +27,8 @@ pub mod risk;
 pub mod tool_spec;
 
 pub use command::{
-    ApprovalMode, DelegateAutonomy, FlowSource, LedgerRef, RUNTIME_COMMAND_NAMES, RuntimeCommand,
-    SessionApprovalDecision, WorkerSelector,
+    ApprovalMode, AuthStartFlow, DelegateAutonomy, FlowSource, LedgerRef, RUNTIME_COMMAND_NAMES,
+    RuntimeCommand, SessionApprovalDecision, WorkerSelector,
 };
 pub use event::{
     AgentEventKind, AuthEventKind, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowWorkerKind,

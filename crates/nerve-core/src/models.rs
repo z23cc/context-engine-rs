@@ -416,6 +416,8 @@ pub struct FileTreeNode {
     pub name: String,
     pub path: String,
     pub kind: FileTreeKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<FileTreeMarker>,
     pub children: Vec<FileTreeNode>,
 }
 
@@ -424,6 +426,13 @@ pub struct FileTreeNode {
 pub enum FileTreeKind {
     Directory,
     File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileTreeMarker {
+    Selected,
+    Codemap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

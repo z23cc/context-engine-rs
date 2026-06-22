@@ -16,6 +16,20 @@
           var el = document.documentElement;
           if (t === "light" || t === "dark") el.setAttribute("data-theme", t);
           else el.removeAttribute("data-theme");
+          var vars = {
+            accent: "--accent",
+            bg: "--bg",
+            fg: "--fg",
+            font_ui: "--font-ui",
+            font_code: "--font-code",
+          };
+          Object.keys(vars).forEach(function (key) {
+            var value = (s[key] || "").trim();
+            if (value) el.style.setProperty(vars[key], value);
+            else el.style.removeProperty(vars[key]);
+          });
+          if (s.sidebar_vibrancy === true) el.setAttribute("data-vibrancy", "sidebar");
+          else el.removeAttribute("data-vibrancy");
         } catch (e) {}
       })();
     </script>

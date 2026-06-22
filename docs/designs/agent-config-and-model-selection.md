@@ -58,9 +58,14 @@ User-owned, readable, editable — same transparency principle as the memory fil
 - Safety: picker only on a TTY; non-interactive (daemon, CI, pipe) still fails
   closed with a clear message. No network in the picker.
 
-## Stage 2 — in-session slash commands (no protocol change)
+## Stage 2 — in-session slash commands
 TUI gains `/model`, `/provider`, `/models` (list from the xai/openai catalogs),
-`/login`. `/model X` is implemented client-side: `session.close` then
+`/login`, and `/lease` (request brokered OAuth lease metadata with token output redacted). `/login --device`
+is a UX affordance over the auth/mobile roadmap's additive `auth.start.flow=device_code` protocol seam and
+is intentionally fail-closed until provider device-code endpoints are wired. Clients should read `auth.status`
+capabilities to discover that state instead of probing failed starts. `/lease` is a client capability check,
+not a way to print copyable bearer or refresh credentials; runtime lease jobs expose metadata only, and
+browser clients still send `include_token=false` as a defense-in-depth signal. `/model X` is implemented client-side: `session.close` then
 `session.start` with the new model, re-seeding history (the orchestrator already
 supports `with_history`). Matches codex `/model` UX without touching the protocol.
 

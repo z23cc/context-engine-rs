@@ -5,7 +5,10 @@ pub(crate) fn symbols_for_path(
     source: &str,
     rel_path: &str,
 ) -> Result<Option<ParsedCodeFile>, String> {
-    let Some(language) = Language::from_path(rel_path) else {
+    if super::markdown::is_markdown_path(rel_path) {
+        return symbols_for_markdown_fences(source);
+    }
+    let Some(language) = Language::from_path_or_source(rel_path, source) else {
         return Ok(None);
     };
     let (symbols, references) = code_facts_for_language(language, source)?;
@@ -14,6 +17,97 @@ pub(crate) fn symbols_for_path(
         symbols,
         references,
     }))
+}
+
+fn symbols_for_markdown_fences(source: &str) -> Result<Option<ParsedCodeFile>, String> {
+    let mut symbols = Vec::new();
+    let mut references = Vec::new();
+    let mut lines: Vec<&str> = source.split_inclusive('\n').collect();
+    if lines.is_empty() && !source.is_empty() {
+        lines.push(source);
+    }
+    for fence in super::markdown::supported_fences(&lines) {
+        let body = super::markdown::fence_source(&lines, &fence);
+        let column_offsets = super::markdown::fence_column_offsets(&lines, &fence);
+        parse_markdown_fence(
+            &body,
+            fence.body.start,
+            &column_offsets,
+            fence.language,
+            &mut symbols,
+            &mut references,
+        )?;
+    }
+    if symbols.is_empty() && references.is_empty() {
+        return Ok(None);
+    }
+    symbols.sort_by(symbol_cmp);
+    references.sort_by(reference_cmp);
+    Ok(Some(ParsedCodeFile {
+        language: "markdown".to_string(),
+        symbols,
+        references,
+    }))
+}
+
+fn line_column_for_byte(source: &[u8], offset: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for byte in source.iter().take(offset.min(source.len())) {
+        if *byte == b'\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
+fn symbol_cmp(a: &CodeSymbol, b: &CodeSymbol) -> std::cmp::Ordering {
+    a.line
+        .cmp(&b.line)
+        .then(a.column.cmp(&b.column))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+fn reference_cmp(a: &CodeReference, b: &CodeReference) -> std::cmp::Ordering {
+    a.line
+        .cmp(&b.line)
+        .then(a.column.cmp(&b.column))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+fn parse_markdown_fence(
+    source: &str,
+    line_offset: usize,
+    column_offsets: &[usize],
+    language: Language,
+    symbols: &mut Vec<CodeSymbol>,
+    references: &mut Vec<CodeReference>,
+) -> Result<(), String> {
+    if source.is_empty() {
+        return Ok(());
+    }
+    let (mut block_symbols, mut block_references) = code_facts_for_language(language, source)?;
+    for symbol in &mut block_symbols {
+        symbol.column += column_offsets
+            .get(symbol.line.saturating_sub(1))
+            .copied()
+            .unwrap_or_default();
+        symbol.line += line_offset;
+    }
+    for reference in &mut block_references {
+        reference.column += column_offsets
+            .get(reference.line.saturating_sub(1))
+            .copied()
+            .unwrap_or_default();
+        reference.line += line_offset;
+        reference.language = Some(language.name().to_string());
+    }
+    symbols.extend(block_symbols);
+    references.extend(block_references);
+    Ok(())
 }
 
 #[cfg(fuzzing)]
@@ -47,7 +141,7 @@ pub(super) fn code_facts_for_language(
             continue;
         };
         let name = String::from_utf8_lossy(name).into_owned();
-        let line = tag.span.start.row + 1;
+        let (line, column) = line_column_for_byte(bytes, tag.name_range.start);
         let kind = config.syntax_type_name(tag.syntax_type_id).to_string();
         if tag.is_definition {
             let signature = signature_for(language, bytes, &tag);
@@ -59,20 +153,20 @@ pub(super) fn code_facts_for_language(
                 kind,
                 name,
                 line,
+                column,
                 signature,
                 members,
             });
         } else {
-            references.push(CodeReference {
-                kind,
-                name,
-                line,
-                import_path: None,
-            });
+            references.push(CodeReference::new(kind, name, line).with_column(column));
         }
     }
+    references.extend(super::imports::import_references_for_language(
+        language, source,
+    ));
     // Deterministic order for stable output and goldens.
-    symbols.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.name.cmp(&b.name)));
+    symbols.sort_by(symbol_cmp);
+    references.sort_by(reference_cmp);
     Ok((symbols, references))
 }
 

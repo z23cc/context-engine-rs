@@ -3,11 +3,12 @@ source: crates/nerve-core/tests/golden.rs
 expression: response
 ---
 {
+  "context_hash": "64764aa4793830c39f7f0605bd7ceb00",
   "tokens": {
-    "total_tokens": 207,
+    "total_tokens": 204,
     "file_map_tokens": 37,
     "instructions_tokens": 12,
-    "contents_tokens": 158,
+    "contents_tokens": 155,
     "git_diff_tokens": 0,
     "meta_prompts_tokens": 0,
     "files": [
@@ -16,6 +17,7 @@ expression: response
         "path": "alpha.rs",
         "display_path": "fixtures/alpha.rs",
         "mode": "codemap_only",
+        "content_hash": "275969d3dfad58151938a1e66105ab29",
         "token_count": 77,
         "segments": [
           {
@@ -31,10 +33,11 @@ expression: response
         "path": "nested/beta.rs",
         "display_path": "fixtures/nested/beta.rs",
         "mode": "slices",
-        "token_count": 50,
+        "content_hash": "cff24517cf6eac03170110c39a4d6ec6",
+        "token_count": 47,
         "segments": [
           {
-            "label": "lines 1-2",
+            "label": "beta API",
             "start_line": 1,
             "end_line": 2,
             "token_count": 7
@@ -46,6 +49,7 @@ expression: response
         "path": "notes.txt",
         "display_path": "fixtures/notes.txt",
         "mode": "full",
+        "content_hash": "66d02828cfca589dd7456b08ddb0856e",
         "token_count": 31,
         "segments": [
           {

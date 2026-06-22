@@ -53,6 +53,31 @@ pub const AGENT_MODELS: &[(&str, &str, &str)] = &[
     ("codex", "gpt-5.3-codex-high", "5.3 · High"),
 ];
 
+/// Human label for the selected model id within an agent catalog.
+pub fn model_label<'a>(agent: &str, model: &'a str) -> &'a str {
+    AGENT_MODELS
+        .iter()
+        .find(|(a, id, _)| *a == agent && *id == model)
+        .map_or(
+            if model.is_empty() { "Default" } else { model },
+            |(_, _, label)| *label,
+        )
+}
+
+/// A short sidebar title from the first user message.
+pub(crate) fn truncate_title(text: &str) -> String {
+    let line = text.lines().next().unwrap_or(text).trim();
+    let mut title: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "New thread".into()
+    } else {
+        title
+    }
+}
+
 /// Run one `tool.call` job to completion; return its `structuredContent` object.
 pub async fn tool_job(token: &str, name: &str, arguments: Value) -> Result<Value, String> {
     let result = start_job_await(

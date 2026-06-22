@@ -1,18 +1,18 @@
 # Agent Working Memory (checkpoint)
 
-Status: **proposed** (design) — the "memory" capability flagged as the #1 agent gap.
+Status: **implemented** — `update_checkpoint`, per-turn pinning, compaction survival, and session persistence/resume are wired.
 Date: 2026-06-18
+Updated: 2026-06-22
 Related: `docs/designs/architecture-north-star.md` (seams, determinism boundary).
 
 ## 1. Problem
 
 `nerve-agent`'s loop (`orchestrator.rs`) keeps the full turn history and, once
-serialized history exceeds ~96k chars, **elides the oldest tool-output bodies**
-(`HISTORY_COMPACT_THRESHOLD`, keep recent 8). There is **no working memory** —
-nothing the agent maintains that (a) survives compaction and (b) carries the
-current plan / decisions / next-steps across many turns. On long or complex
-tasks the agent loses elided context and has no durable "current state." This is
-the dominant agent-capability gap.
+the model context budget is pressured, **elides older tool-output bodies** while
+keeping the cache anchor and recent window. Before this design landed there was
+no working memory — nothing the agent maintained that (a) survived compaction and
+(b) carried the current plan / decisions / next steps across many turns. That gap
+is now closed by the `update_checkpoint` tool plus per-request `CheckpointHook`.
 
 **Hard constraint: memory must not accumulate junk.** A naive append-everything
 store (raw tool outputs, guesses, unexecuted plans, volatile state, easily
@@ -142,6 +142,7 @@ finish turn → persist checkpoint with the transcript
 - **Pin survives compaction**: orchestrator-level test (hook + `MockProvider`)
   asserting the note appears in *every* request even after history elision.
 - Persistence + resume restores the note with the staleness marker.
+- One-shot `run_agent` persistence records the final non-empty checkpoint in `SessionRecord`.
 - `Hook::on_request` default no-op leaves hook-free runs unchanged (existing tests pass).
 
 ## 9. Phasing

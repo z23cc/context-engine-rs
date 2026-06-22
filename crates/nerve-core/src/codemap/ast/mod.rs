@@ -70,7 +70,36 @@ pub(crate) fn ast_search(
     query_src: &str,
     max: usize,
 ) -> Result<Vec<AstMatch>, String> {
-    run_ast_search(path, source, query_src, max, &BTreeMap::new(), None, false)
+    let language = Language::from_path_or_source(path, source)
+        .ok_or_else(|| "unsupported language".to_string())?;
+    run_ast_search(
+        language,
+        source,
+        query_src,
+        max,
+        &BTreeMap::new(),
+        None,
+        false,
+    )
+}
+
+pub(crate) fn ast_search_language(
+    language_name: &str,
+    source: &str,
+    query_src: &str,
+    max: usize,
+) -> Result<Vec<AstMatch>, String> {
+    let language =
+        Language::from_name(language_name).ok_or_else(|| "unsupported language".to_string())?;
+    run_ast_search(
+        language,
+        source,
+        query_src,
+        max,
+        &BTreeMap::new(),
+        None,
+        false,
+    )
 }
 
 pub(crate) fn ast_search_pattern(
@@ -79,9 +108,31 @@ pub(crate) fn ast_search_pattern(
     pattern: &str,
     max: usize,
 ) -> Result<Vec<AstMatch>, String> {
-    let compiled = pattern::compile_pattern_query(path, pattern)?;
+    let language = Language::from_path_or_source(path, source)
+        .ok_or_else(|| "unsupported language".to_string())?;
+    ast_search_pattern_with_language(language, source, pattern, max)
+}
+
+pub(crate) fn ast_search_pattern_language(
+    language_name: &str,
+    source: &str,
+    pattern: &str,
+    max: usize,
+) -> Result<Vec<AstMatch>, String> {
+    let language =
+        Language::from_name(language_name).ok_or_else(|| "unsupported language".to_string())?;
+    ast_search_pattern_with_language(language, source, pattern, max)
+}
+
+fn ast_search_pattern_with_language(
+    language: Language,
+    source: &str,
+    pattern: &str,
+    max: usize,
+) -> Result<Vec<AstMatch>, String> {
+    let compiled = pattern::compile_pattern_query_for_language(language, pattern)?;
     run_ast_search(
-        path,
+        language,
         source,
         &compiled.query,
         max,
@@ -118,7 +169,9 @@ pub(crate) fn ast_rewrite_pattern(
     pattern: &str,
     replacement: &str,
 ) -> Result<(String, usize), String> {
-    let compiled = pattern::compile_pattern_query(path, pattern)?;
+    let language = Language::from_path_or_source(path, source)
+        .ok_or_else(|| "unsupported language".to_string())?;
+    let compiled = pattern::compile_pattern_query_for_language(language, pattern)?;
     run_ast_rewrite(
         path,
         source,
@@ -131,7 +184,7 @@ pub(crate) fn ast_rewrite_pattern(
 }
 
 fn run_ast_search(
-    path: &str,
+    language: Language,
     source: &str,
     query_src: &str,
     max: usize,
@@ -139,7 +192,6 @@ fn run_ast_search(
     shape: Option<&PatternShape>,
     pattern_mode: bool,
 ) -> Result<Vec<AstMatch>, String> {
-    let language = Language::from_path(path).ok_or_else(|| "unsupported language".to_string())?;
     let query = build_query(language, query_src)?;
     let Some(tree) = parse_source(language, source)? else {
         return Ok(Vec::new());
@@ -187,7 +239,8 @@ fn run_ast_rewrite(
     shape: Option<&PatternShape>,
     pattern_mode: bool,
 ) -> Result<(String, usize), String> {
-    let language = Language::from_path(path).ok_or_else(|| "unsupported language".to_string())?;
+    let language = Language::from_path_or_source(path, source)
+        .ok_or_else(|| "unsupported language".to_string())?;
     let query = build_query(language, query_src)?;
     if !query.capture_names().contains(&"match") {
         return Err("rewrite query must capture the region to replace as @match".to_string());

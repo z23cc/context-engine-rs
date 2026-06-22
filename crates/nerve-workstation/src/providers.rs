@@ -41,6 +41,14 @@ enum ProviderWire {
 }
 
 impl ProviderWire {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderWire::Anthropic => "anthropic",
+            ProviderWire::OpenaiChat => "openai-chat",
+            ProviderWire::OpenaiResponses => "openai-responses",
+        }
+    }
+
     /// The built-in [`ProviderId`] whose request-shaping this wire reuses. For a
     /// config provider this only tags the [`Credential`]; the live endpoint is
     /// the config `base_url`.
@@ -85,6 +93,33 @@ struct ProviderConfigFile {
     providers: Vec<ProviderConfigEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderSource {
+    BuiltIn,
+    Config,
+}
+
+impl ProviderSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderSource::BuiltIn => "built-in",
+            ProviderSource::Config => "config",
+        }
+    }
+}
+
+/// A deterministic, user-facing description of one selectable provider name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderDescriptor {
+    pub(crate) name: String,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) source: ProviderSource,
+    pub(crate) provider_id: ProviderId,
+    pub(crate) wire: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) api_key_env: Option<String>,
+}
+
 /// Resolves a provider name to a concrete [`LlmProvider`]. Built-in names
 /// (`anthropic`/`claude`, `openai`/`chatgpt`, `xai`/`grok`) are always
 /// available; config entries extend the set without code. Built-ins take
@@ -117,6 +152,7 @@ impl ProviderRegistry {
     fn from_entries(entries: Vec<ProviderConfigEntry>) -> Result<Self> {
         let mut configs = BTreeMap::new();
         for entry in entries {
+            let mut entry = entry;
             let name = entry.name.trim().to_string();
             if name.is_empty() {
                 bail!("provider config entry has an empty name");
@@ -130,9 +166,47 @@ impl ProviderRegistry {
             if configs.contains_key(&name) {
                 bail!("duplicate provider config name '{name}'");
             }
+            entry.name = name.clone();
             configs.insert(name, entry);
         }
         Ok(Self { configs })
+    }
+
+    /// List every selectable provider in deterministic order: built-ins first,
+    /// then config entries sorted by name. This is the named registry API used by
+    /// diagnostics, future UIs, and agent definitions that need to validate a
+    /// provider without constructing a network client.
+    pub(crate) fn descriptors(&self) -> Vec<ProviderDescriptor> {
+        let mut providers = builtin_descriptors();
+        providers.extend(
+            self.configs
+                .iter()
+                .map(|(name, entry)| config_descriptor(name, entry)),
+        );
+        providers
+    }
+
+    /// Return the descriptor for one provider name or alias without resolving
+    /// credentials or constructing a network client.
+    pub(crate) fn descriptor(&self, name: &str) -> Option<ProviderDescriptor> {
+        if let Some(desc) = builtin_descriptor(name) {
+            return Some(desc);
+        }
+        self.configs
+            .get(name)
+            .map(|entry| config_descriptor(name, entry))
+    }
+
+    pub(crate) fn contains_name(&self, name: &str) -> bool {
+        self.descriptor(name).is_some()
+    }
+
+    fn known_provider_summary(&self) -> String {
+        self.descriptors()
+            .iter()
+            .map(describe_provider)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Resolve `name` (built-in or config) to a provider. `api_key` overrides any
@@ -146,17 +220,100 @@ impl ProviderRegistry {
             let credential = builtin_credential(builtin, api_key)?;
             return Ok(build_builtin(builtin, credential));
         }
-        let entry = self.configs.get(name).ok_or_else(|| {
-            anyhow!(
-                "unknown provider '{name}': not a built-in (anthropic|openai|xai) \
-                 and not defined in --provider-config"
-            )
-        })?;
+        if !self.contains_name(name) {
+            return Err(anyhow!(
+                "unknown provider '{name}'. Known providers: {}",
+                self.known_provider_summary()
+            ));
+        }
+        let entry = self
+            .configs
+            .get(name)
+            .expect("contains_name checked config provider");
         let token = config_token(entry, api_key)?;
         let credential =
             auth::from_api_key(entry.wire.provider_id(), &token, entry.base_url.as_deref());
         Ok(entry.wire.build(credential))
     }
+}
+
+fn config_descriptor(name: &str, entry: &ProviderConfigEntry) -> ProviderDescriptor {
+    ProviderDescriptor {
+        name: name.to_string(),
+        aliases: Vec::new(),
+        source: ProviderSource::Config,
+        provider_id: entry.wire.provider_id(),
+        wire: entry.wire.as_str().to_string(),
+        base_url: entry.base_url.clone(),
+        api_key_env: Some(entry.api_key_env.clone()),
+    }
+}
+
+fn builtin_descriptor(name: &str) -> Option<ProviderDescriptor> {
+    let provider = parse_builtin(name)?;
+    builtin_descriptors()
+        .into_iter()
+        .find(|desc| desc.provider_id == provider)
+}
+
+fn builtin_descriptors() -> Vec<ProviderDescriptor> {
+    vec![
+        ProviderDescriptor {
+            name: "anthropic".into(),
+            aliases: vec!["claude".into()],
+            source: ProviderSource::BuiltIn,
+            provider_id: ProviderId::Anthropic,
+            wire: ProviderWire::Anthropic.as_str().into(),
+            base_url: Some(ProviderId::Anthropic.default_base_url().into()),
+            api_key_env: Some(builtin_env_var(ProviderId::Anthropic).into()),
+        },
+        ProviderDescriptor {
+            name: "openai".into(),
+            aliases: vec!["chatgpt".into(), "openai_responses".into()],
+            source: ProviderSource::BuiltIn,
+            provider_id: ProviderId::OpenAi,
+            wire: ProviderWire::OpenaiResponses.as_str().into(),
+            base_url: Some(ProviderId::OpenAi.default_base_url().into()),
+            api_key_env: Some(builtin_env_var(ProviderId::OpenAi).into()),
+        },
+        ProviderDescriptor {
+            name: "xai".into(),
+            aliases: vec!["grok".into()],
+            source: ProviderSource::BuiltIn,
+            provider_id: ProviderId::Xai,
+            wire: ProviderWire::OpenaiChat.as_str().into(),
+            base_url: Some(ProviderId::Xai.default_base_url().into()),
+            api_key_env: Some(builtin_env_var(ProviderId::Xai).into()),
+        },
+    ]
+}
+
+fn describe_provider(desc: &ProviderDescriptor) -> String {
+    let aliases = if desc.aliases.is_empty() {
+        String::new()
+    } else {
+        format!(" aliases=[{}]", desc.aliases.join("|"))
+    };
+    let base = desc
+        .base_url
+        .as_deref()
+        .map(|url| format!(" base_url={url}"))
+        .unwrap_or_default();
+    let env = desc
+        .api_key_env
+        .as_deref()
+        .map(|var| format!(" api_key_env={var}"))
+        .unwrap_or_default();
+    format!(
+        "{}({} provider={} wire={}{}{}{})",
+        desc.name,
+        desc.source.as_str(),
+        desc.provider_id.as_str(),
+        desc.wire,
+        aliases,
+        base,
+        env,
+    )
 }
 
 /// Map a provider name (and its aliases) to a built-in [`ProviderId`], or `None`
@@ -348,6 +505,56 @@ mod tests {
         assert_eq!(parse_builtin("openai_responses"), Some(ProviderId::OpenAi));
         assert_eq!(parse_builtin("grok"), Some(ProviderId::Xai));
         assert_eq!(parse_builtin("mystery"), None);
+    }
+
+    #[test]
+    fn descriptors_list_builtins_then_config_entries() {
+        let registry = ProviderRegistry::from_entries(vec![entry(
+            r#"{"name":"groq","wire":"openai-chat","base_url":"https://api.groq.com/openai","api_key_env":"GROQ_API_KEY"}"#,
+        )])
+        .expect("registry");
+        let descriptors = registry.descriptors();
+        let names: Vec<_> = descriptors.iter().map(|desc| desc.name.as_str()).collect();
+        assert_eq!(names, ["anthropic", "openai", "xai", "groq"]);
+        assert_eq!(descriptors[0].aliases, ["claude"]);
+        let groq = descriptors.last().expect("groq descriptor");
+        assert_eq!(groq.source, ProviderSource::Config);
+        assert_eq!(groq.provider_id, ProviderId::Xai);
+        assert_eq!(groq.wire, "openai-chat");
+        assert_eq!(groq.api_key_env.as_deref(), Some("GROQ_API_KEY"));
+    }
+
+    #[test]
+    fn named_lookup_covers_builtin_aliases_and_config_names() {
+        let registry = ProviderRegistry::from_entries(vec![entry(
+            r#"{"name":" gw ","wire":"openai-responses","api_key_env":"GW_KEY"}"#,
+        )])
+        .expect("registry");
+        assert!(registry.contains_name("claude"));
+        assert!(registry.contains_name("openai"));
+        assert!(registry.contains_name("gw"));
+        assert!(!registry.contains_name("missing"));
+        let claude = registry.descriptor("claude").expect("claude alias");
+        assert_eq!(claude.name, "anthropic");
+        assert_eq!(claude.source, ProviderSource::BuiltIn);
+        let gw = registry.descriptor("gw").expect("config provider");
+        assert_eq!(gw.name, "gw");
+        assert_eq!(gw.wire, "openai-responses");
+    }
+
+    #[test]
+    fn unknown_provider_error_lists_known_names() {
+        let registry = ProviderRegistry::from_entries(vec![entry(
+            r#"{"name":"groq","wire":"openai-chat","api_key_env":"GROQ_API_KEY"}"#,
+        )])
+        .expect("registry");
+        let text = match registry.resolve("missing", Some("k")) {
+            Ok(_) => panic!("missing provider unexpectedly resolved"),
+            Err(err) => err.to_string(),
+        };
+        assert!(text.contains("Known providers"));
+        assert!(text.contains("anthropic"));
+        assert!(text.contains("groq(config"));
     }
 
     #[test]

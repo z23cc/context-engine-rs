@@ -18,7 +18,7 @@ pub(crate) fn render_turn(turn: Turn) -> AnyView {
                 <div class="turn assistant">
                     {(!reasoning.is_empty()).then(|| view! {
                         <details class="reasoning">
-                            <summary>"reasoning"</summary>
+                            <summary>"Thought for this step"</summary>
                             <pre>{reasoning}</pre>
                         </details>
                     })}
@@ -38,7 +38,7 @@ fn render_tool(card: ToolCard) -> AnyView {
         Some(true) => "ok",
         Some(false) => "err",
     };
-    let badge = match card.ok {
+    let status_label = match card.ok {
         None => "running",
         Some(true) => "ok",
         Some(false) => "error",
@@ -47,7 +47,7 @@ fn render_tool(card: ToolCard) -> AnyView {
         <div class=format!("tool {status}")>
             <div class="tool-head">
                 <span class="tool-name">{card.tool}</span>
-                <span class="tool-badge">{badge}</span>
+                <span class=format!("tool-dot {status}") title=status_label aria-label=status_label></span>
             </div>
             {(!card.output.is_empty()).then(|| view! {
                 <details class="tool-details">

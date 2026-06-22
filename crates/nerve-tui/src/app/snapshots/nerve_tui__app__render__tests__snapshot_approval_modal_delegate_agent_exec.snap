@@ -4,4 +4,4 @@ expression: rendered
 ---
 «yellow»⚠ allow  «bold»delegate_agent  «red»[exec]
 «dim»│ «dim»claude: refactor module (cwd packages/tui) [auto-edit]
-«bold»[a]llow once · «bold»[A]lways · «bold»[d]eny · «bold»[D]eny always · «dim»Esc cancel
+«bold»[a] Allow · «bold»[A] Allow for session · «bold»[d] Deny · «bold»[D] Always deny · «dim»Esc cancel

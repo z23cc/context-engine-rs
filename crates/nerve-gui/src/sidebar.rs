@@ -12,6 +12,55 @@ use crate::rpc::start_job;
 use leptos::prelude::*;
 use serde_json::json;
 
+fn thread_icon() -> impl IntoView {
+    view! {
+        <svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+        </svg>
+    }
+}
+
+fn chat_icon() -> impl IntoView {
+    view! {
+        <svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M7 8h10" />
+            <path d="M7 12h6" />
+            <path d="M5 19a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H9l-4 3z" />
+        </svg>
+    }
+}
+
+fn automation_icon() -> impl IntoView {
+    view! {
+        <svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M13 2 4 14h7l-1 8 10-13h-7z" />
+        </svg>
+    }
+}
+
+fn skill_icon() -> impl IntoView {
+    view! {
+        <svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3v18" />
+            <path d="M5 8h14" />
+            <path d="M7 16h10" />
+            <path d="M4 12h16" />
+        </svg>
+    }
+}
+
+fn settings_icon() -> impl IntoView {
+    view! {
+        <svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" />
+            <path d="M3 12h2" />
+            <path d="M19 12h2" />
+            <path d="M12 3v2" />
+            <path d="M12 19v2" />
+        </svg>
+    }
+}
+
 /// Compact relative time from an epoch-ms timestamp: now / 3m / 2h / 4d / 1w.
 pub(crate) fn rel_time(ms: f64) -> String {
     let secs = ((js_sys::Date::now() - ms).max(0.0)) / 1000.0;
@@ -143,6 +192,20 @@ pub(crate) fn Sidebar(
                     } />
                 <button class="search-clear" title="Clear" on:click=move |_| search.set(String::new())>"×"</button>
             </div>
+            <nav class="nav" aria-label="Workspace navigation">
+                <button class="nav-row on" title="Threads">
+                    <span class="nav-icon">{thread_icon()}</span><span>"Threads"</span>
+                </button>
+                <button class="nav-row" title="Chats — coming soon" aria-disabled="true">
+                    <span class="nav-icon">{chat_icon()}</span><span>"Chats"</span>
+                </button>
+                <button class="nav-row" title="Automations — coming soon" aria-disabled="true">
+                    <span class="nav-icon">{automation_icon()}</span><span>"Automations"</span>
+                </button>
+                <button class="nav-row" title="Skills — coming soon" aria-disabled="true">
+                    <span class="nav-icon">{skill_icon()}</span><span>"Skills"</span>
+                </button>
+            </nav>
             <div class="rail-label rail-label-row">
                 <span>"Projects"</span>
                 <button class="rail-add" title="Add project"
@@ -190,45 +253,49 @@ pub(crate) fn Sidebar(
                     }).collect_view().into_any()
                 }}
             </div>
-            <div class="rail-label">"Conversations"</div>
-            <div class="rail">
-                {move || {
-                    let q = search.get().trim().to_lowercase();
-                    let cur = active.get();
-                    // Keep ORIGINAL Vec indices (active/close index the full Vec):
-                    // filter after enumerate, always keep the active chat, then sort
-                    // a copy by recency so the latest thread floats to the top.
-                    let mut rows: Vec<(usize, Chat)> = chats.get().into_iter().enumerate()
-                        .filter(|(i, c)| q.is_empty() || *i == cur || c.title.to_lowercase().contains(&q))
-                        .collect();
-                    rows.sort_by(|a, b| b.1.updated_ms
-                        .partial_cmp(&a.1.updated_ms).unwrap_or(std::cmp::Ordering::Equal));
-                    if rows.is_empty() {
-                        return view! { <div class="rail-empty">"No matches"</div> }.into_any();
-                    }
-                    rows.into_iter().map(|(i, c)| {
-                        let cls = if i == cur { "rail-row on" } else { "rail-row" };
-                        let live = c.session.is_some();
-                        let title = c.title;
-                        let stamp = rel_time(c.updated_ms);
-                        let session = c.session.clone();
-                        view! {
-                            <div class=cls>
-                                <button class="rail-pick" on:click=move |_| active.set(i)>
-                                    <span class="rail-dot" class:live=live></span>
-                                    <span class="rail-title">{title}</span>
-                                    <span class="rail-time">{stamp}</span>
-                                </button>
-                                <button class="rail-close" title="Close thread"
-                                    on:click=move |_| close_chat(i, session.clone())>"×"</button>
-                            </div>
+            <div class="thread-rail-wrap">
+                <div class="rail-label">"Threads"</div>
+                <div class="rail rail-nested">
+                    {move || {
+                        let q = search.get().trim().to_lowercase();
+                        let cur = active.get();
+                        // Keep ORIGINAL Vec indices (active/close index the full Vec):
+                        // filter after enumerate, always keep the active chat, then sort
+                        // a copy by recency so the latest thread floats to the top.
+                        let mut rows: Vec<(usize, Chat)> = chats.get().into_iter().enumerate()
+                            .filter(|(i, c)| q.is_empty() || *i == cur || c.title.to_lowercase().contains(&q))
+                            .collect();
+                        rows.sort_by(|a, b| b.1.updated_ms
+                            .partial_cmp(&a.1.updated_ms).unwrap_or(std::cmp::Ordering::Equal));
+                        if rows.is_empty() {
+                            return view! { <div class="rail-empty">"No matches"</div> }.into_any();
                         }
-                    }).collect_view().into_any()
-                }}
+                        rows.into_iter().map(|(i, c)| {
+                            let cls = if i == cur { "rail-row on" } else { "rail-row" };
+                            let live = c.session.is_some();
+                            let title = c.title;
+                            let stamp = rel_time(c.updated_ms);
+                            let session = c.session.clone();
+                            view! {
+                                <div class=cls>
+                                    <button class="rail-pick thread-pick" on:click=move |_| active.set(i)>
+                                        <span class="rail-dot" class:live=live></span>
+                                        <span class="rail-copy">
+                                            <span class="rail-title">{title}</span>
+                                            <span class="rail-sub">{stamp}</span>
+                                        </span>
+                                    </button>
+                                    <button class="rail-close" title="Close thread"
+                                        on:click=move |_| close_chat(i, session.clone())>"×"</button>
+                                </div>
+                            }
+                        }).collect_view().into_any()
+                    }}
+                </div>
             </div>
             <div class="spacer"></div>
             <button class="nav-row settings-row" title="Settings" on:click=move |_| settings_open.set(true)>
-                <span class="nav-icon">"⚙"</span><span>"Settings"</span>
+                <span class="nav-icon">{settings_icon()}</span><span>"Settings"</span>
             </button>
             <div class="status-row">
                 {move || if busy.get() {

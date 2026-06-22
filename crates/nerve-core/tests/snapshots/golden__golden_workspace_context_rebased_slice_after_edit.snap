@@ -1,12 +1,12 @@
 ---
 source: crates/nerve-core/tests/golden.rs
-assertion_line: 364
 expression: "json!({\n    \"files\": response.tokens.files, \"contents_tokens\":\n    response.tokens.contents_tokens,\n})"
 ---
 {
   "contents_tokens": 44,
   "files": [
     {
+      "content_hash": "de99b671202dd44340d9baf306f1f664",
       "display_path": "selection-root/target.txt",
       "mode": "slices",
       "path": "target.txt",

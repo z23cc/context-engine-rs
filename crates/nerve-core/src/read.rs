@@ -80,6 +80,11 @@ fn block_snap_metadata(
     start: usize,
     end: usize,
 ) -> ReadFileSnapMetadata {
+    match codemap::embedded_block_span(display_path, text, start, end) {
+        Ok(Some(span)) => return applied_snap(start, end, clamp_span(span, total_lines)),
+        Ok(None) => {}
+        Err(error) => return unapplied_snap(start, end, containing_block_reason(error)),
+    }
     if let Some(span) = codemap::block_span(display_path, text, start)
         && span.1 > span.0
     {
@@ -288,6 +293,93 @@ mod tests {
         assert_eq!(response.last_line, 3);
         let snap = response.snap.expect("snap metadata");
         assert_eq!(snap.boundary_lines, vec![1, 3]);
+    }
+
+    #[test]
+    fn snap_block_expands_markdown_fenced_code_from_interior_line() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let markdown = concat!(
+            "# Notes\n\n",
+            "```rust\n",
+            "pub fn fenced() {\n",
+            "    println!(\"x\");\n",
+            "}\n",
+            "```\n",
+            "tail\n"
+        );
+        fs::write(dir.path().join("README.md"), markdown).expect("write");
+        let provider = provider_for(dir.path());
+        let response = read_file(
+            &provider,
+            &ReadFileRequest {
+                path: dir.path().join("README.md"),
+                start_line: Some(5),
+                end_line: None,
+                limit: Some(1),
+                snap: Some(ReadFileSnapMode::Block),
+            },
+        )
+        .expect("read");
+        assert_eq!(response.first_line, 4);
+        assert_eq!(response.last_line, 6);
+        assert_eq!(
+            response.content,
+            "pub fn fenced() {\n    println!(\"x\");\n}\n"
+        );
+        let snap = response.snap.expect("snap metadata");
+        assert!(snap.applied);
+        assert_eq!(snap.boundary_lines, vec![4, 6]);
+    }
+
+    #[test]
+    fn snap_block_expands_indented_markdown_fenced_python() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let markdown = concat!(
+            "   ```python\n",
+            "   def fenced():\n",
+            "       return 1\n",
+            "   ```\n"
+        );
+        fs::write(dir.path().join("README.md"), markdown).expect("write");
+        let provider = provider_for(dir.path());
+        let response = read_file(
+            &provider,
+            &ReadFileRequest {
+                path: dir.path().join("README.md"),
+                start_line: Some(3),
+                end_line: None,
+                limit: Some(1),
+                snap: Some(ReadFileSnapMode::Block),
+            },
+        )
+        .expect("read");
+        assert_eq!(response.first_line, 2);
+        assert_eq!(response.last_line, 3);
+        assert_eq!(response.content, "   def fenced():\n       return 1\n");
+        assert!(response.snap.expect("snap metadata").applied);
+    }
+
+    #[test]
+    fn snap_block_markdown_prose_still_falls_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Notes\n\nplain prose\n").expect("write");
+        let provider = provider_for(dir.path());
+        let response = read_file(
+            &provider,
+            &ReadFileRequest {
+                path: dir.path().join("README.md"),
+                start_line: Some(3),
+                end_line: None,
+                limit: Some(1),
+                snap: Some(ReadFileSnapMode::Block),
+            },
+        )
+        .expect("read");
+        assert_eq!(response.content, "plain prose\n");
+        assert_eq!(
+            response.snap.expect("snap metadata").reason.as_deref(),
+            Some("unsupported_language")
+        );
     }
 
     #[test]

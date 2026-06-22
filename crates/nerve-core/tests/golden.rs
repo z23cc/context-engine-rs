@@ -250,6 +250,53 @@ fn golden_get_file_tree() {
 }
 
 #[test]
+fn get_file_tree_marks_managed_selection() {
+    let provider = provider();
+    let snapshot = provider.snapshot().expect("snapshot");
+    manage_selection(
+        &provider,
+        &snapshot,
+        &ManageSelectionRequest {
+            op: ManageSelectionOp::Add,
+            paths: vec![PathBuf::from("alpha.rs")],
+            mode: Some(ManageSelectionMode::Full),
+            slices: Vec::new(),
+            auto_codemap: false,
+        },
+    )
+    .expect("selection add");
+
+    let response = handle_tool_call(
+        &provider,
+        &json!({ "name": "get_file_tree", "arguments": {
+            "mode": "full", "max_depth": 1
+        } }),
+    )
+    .expect("tree response");
+    let text = response["content"][0]["text"].as_str().unwrap_or_default();
+
+    assert!(text.contains("alpha.rs *+"), "{text}");
+    assert!(
+        text.contains("legend: * selected, + codemap-capable"),
+        "{text}"
+    );
+    assert_eq!(response["structuredContent"]["uses_legend"], true);
+
+    let selected_response = handle_tool_call(
+        &provider,
+        &json!({ "name": "get_file_tree", "arguments": {
+            "mode": "selected"
+        } }),
+    )
+    .expect("selected tree response");
+    let selected_text = selected_response["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(selected_text.contains("alpha.rs *+"), "{selected_text}");
+    assert!(!selected_text.contains("notes.txt"), "{selected_text}");
+}
+
+#[test]
 fn golden_get_code_structure() {
     let (provider, snapshot) = snapshot();
     let response = get_code_structure(&provider, &snapshot, &[]).expect("code structure");
@@ -283,6 +330,7 @@ fn golden_workspace_context() {
             paths: vec![PathBuf::from("notes.txt")],
             mode: Some(ManageSelectionMode::Full),
             slices: Vec::new(),
+            auto_codemap: false,
         },
     )
     .expect("select full");
@@ -298,8 +346,10 @@ fn golden_workspace_context() {
                 ranges: vec![LineRange {
                     start_line: 1,
                     end_line: 2,
+                    label: Some("beta API".to_string()),
                 }],
             }],
+            auto_codemap: false,
         },
     )
     .expect("select slices");
@@ -311,6 +361,7 @@ fn golden_workspace_context() {
             paths: vec![PathBuf::from("alpha.rs")],
             mode: Some(ManageSelectionMode::CodemapOnly),
             slices: Vec::new(),
+            auto_codemap: false,
         },
     )
     .expect("select codemap");
@@ -354,8 +405,10 @@ fn golden_workspace_context_rebased_slice_after_edit() {
                 ranges: vec![LineRange {
                     start_line: 3,
                     end_line: 3,
+                    label: None,
                 }],
             }],
+            auto_codemap: false,
         },
     )
     .expect("select slice");

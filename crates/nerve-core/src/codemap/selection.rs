@@ -10,17 +10,9 @@ pub(super) fn select_entries<'a>(
 
     let mut selected = BTreeSet::new();
     for path in paths {
-        let raw = path.to_string_lossy().replace('\\', "/");
-        let rel = raw.trim_start_matches("./").trim_end_matches('/');
-        let canonical = path.canonicalize().ok();
+        let input = crate::path_match::PathMatchInput::from_path(path);
         for (idx, entry) in snapshot.entries.iter().enumerate() {
-            let rel_match = rel.is_empty()
-                || entry.rel_path == rel
-                || entry.rel_path.starts_with(&format!("{rel}/"));
-            let abs_match = canonical
-                .as_ref()
-                .is_some_and(|abs| entry.abs_path == *abs || entry.abs_path.starts_with(abs));
-            if rel_match || abs_match {
+            if crate::path_match::entry_matches(snapshot, entry, &input) {
                 selected.insert(idx);
             }
         }

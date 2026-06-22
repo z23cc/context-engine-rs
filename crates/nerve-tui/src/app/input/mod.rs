@@ -18,6 +18,7 @@
 //!   Tab              complete the selected palette command
 //!   mouse wheel      scroll (handled in the event loop)
 
+mod auth;
 mod delegate;
 mod flow;
 
@@ -268,6 +269,7 @@ impl Shell {
             "done" | "close" => self.cmd_done().await,
             "new" | "reset" => self.new_session().await,
             "login" => self.cmd_login(&rest),
+            "lease" => self.cmd_lease(&rest).await,
             "theme" => self.cmd_theme(),
             other => self.state.hint = format!("unknown command: /{other} — try /help"),
         }
@@ -352,17 +354,24 @@ impl Shell {
         }
     }
 
-    /// `/login [provider]`: print the auth instruction. Ports the TS `login` arm.
+    /// `/login [provider] [--device]`: print auth instructions. Device-code is
+    /// protocol vocabulary, but provider device endpoints are not wired yet.
     fn cmd_login(&mut self, rest: &str) {
-        let who = if rest.is_empty() {
-            "claude|chatgpt|xai"
+        let device = rest
+            .split_whitespace()
+            .any(|part| matches!(part, "--device" | "--device-code"));
+        let provider = rest
+            .split_whitespace()
+            .find(|part| !part.starts_with("--"))
+            .unwrap_or("claude|chatgpt|xai");
+        let message = if device {
+            format!(
+                "device-code login for {provider} is reserved for mobile/remote clients but is not implemented yet; use browser login for that provider for now"
+            )
         } else {
-            rest
+            format!("authenticate with:  nerve agent login --provider {provider}")
         };
-        self.state.push_notice(
-            Tone::Info,
-            format!("authenticate with:  nerve agent login --provider {who}"),
-        );
+        self.state.push_notice(Tone::Info, message);
     }
 
     /// `/theme`: cycle the accent color. Ports the TS `theme` arm.

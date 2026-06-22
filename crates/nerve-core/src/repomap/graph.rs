@@ -37,7 +37,9 @@ impl ReferenceGraph {
             references
                 .sort_by(|left, right| reference_sort_key(left).cmp(&reference_sort_key(right)));
             for reference in &references {
-                if is_reference_stopword(&reference.name, language_family(&file.language)) {
+                let reference_language =
+                    language_family(reference.effective_language(&file.language));
+                if is_reference_stopword(&reference.name, reference_language) {
                     continue;
                 }
 
@@ -51,7 +53,7 @@ impl ReferenceGraph {
                 }
 
                 let Some(definers) = definitions
-                    .get(language_family(&file.language))
+                    .get(reference_language)
                     .and_then(|by_name| by_name.get(reference.name.as_str()))
                 else {
                     continue;
@@ -112,11 +114,14 @@ fn definition_index(
     definitions
 }
 
-fn reference_sort_key(reference: &CodeReference) -> (&str, &str, usize, Option<&str>) {
+fn reference_sort_key(
+    reference: &CodeReference,
+) -> (&str, &str, usize, Option<&str>, Option<&str>) {
     (
         reference.kind.as_str(),
         reference.name.as_str(),
         reference.line,
         reference.import_path.as_deref(),
+        reference.language.as_deref(),
     )
 }

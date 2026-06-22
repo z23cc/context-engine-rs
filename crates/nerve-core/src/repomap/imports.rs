@@ -9,8 +9,11 @@ pub(crate) fn resolve_import_reference(
     reference: &CodeReference,
 ) -> Option<usize> {
     let import_path = reference.import_path.as_deref()?;
+    if reference.has_embedded_language() {
+        return None;
+    }
     let referencer = &files[referencer_idx];
-    match language_family(&referencer.language) {
+    match language_family(reference.effective_language(&referencer.language)) {
         "rust" => resolve_rust_import(files, referencer, import_path),
         "python" => resolve_python_import(files, referencer, import_path),
         "javascript" => resolve_javascript_import(files, referencer, import_path),

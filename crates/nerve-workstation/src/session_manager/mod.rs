@@ -9,7 +9,7 @@ mod approval;
 mod run_config;
 
 use crate::capabilities::{Capabilities, ResolvedAgent};
-use crate::checkpoint::Checkpoint;
+use crate::checkpoint::{Checkpoint, checkpoint_snapshot};
 use crate::policy::{Policy, ToolGate};
 use crate::session::{SessionRecord, SessionStore};
 use crate::subagent::{DEFAULT_MAX_DEPTH, SubAgentSpawner};
@@ -407,7 +407,7 @@ impl SessionManager {
             }
             session
                 .record
-                .set_checkpoint(Some(checkpoint_note(&session.checkpoint)));
+                .set_checkpoint(checkpoint_snapshot(&session.checkpoint));
             self.persist(&session.record);
         }
         drop(sessions);
@@ -534,10 +534,6 @@ fn new_checkpoint(note: Option<String>) -> SessionCheckpoint {
         lock_checkpoint(&checkpoint).replace(note);
     }
     checkpoint
-}
-
-fn checkpoint_note(checkpoint: &SessionCheckpoint) -> String {
-    lock_checkpoint(checkpoint).note.clone()
 }
 
 fn lock_checkpoint(checkpoint: &SessionCheckpoint) -> std::sync::MutexGuard<'_, Checkpoint> {
@@ -954,6 +950,82 @@ mod tests {
             None,
         );
         assert_eq!(run_config.resume_truncations, 2);
+    }
+
+    #[test]
+    fn resumed_session_can_clear_checkpoint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut record = SessionRecord::begin("claude", "m1", "investigate");
+        record.set_history(vec![Message::user("investigate")]);
+        record.set_checkpoint(Some("old plan".into()));
+        store.write(&record).expect("persist record");
+        let resumed_id = record.id.clone();
+
+        let manager = test_manager(SessionStore::new(dir.path().to_path_buf()));
+        let config = SessionConfig {
+            workspace: None,
+            provider: "claude".into(),
+            model: "m1".into(),
+            system_prompt: None,
+            agent: None,
+            max_turns: None,
+            temperature: None,
+            reasoning_effort: None,
+            tool_filter: None,
+            resume_truncations: 0,
+        };
+        manager
+            .start(config, Some(resumed_id.clone()))
+            .expect("resume start");
+
+        {
+            let mut sessions = crate::sync::lock_recover(&manager.sessions);
+            let live = sessions.get_mut(&resumed_id).expect("live session");
+            assert!(
+                checkpoint_snapshot(&live.checkpoint)
+                    .as_deref()
+                    .is_some_and(|note| note.contains("old plan"))
+            );
+            lock_checkpoint(&live.checkpoint).replace("");
+        }
+
+        manager
+            .finish_turn(
+                &resumed_id,
+                Ok(TurnResult {
+                    history: vec![Message::user("next")],
+                    events: Vec::new(),
+                    outcome: None,
+                }),
+                &CancelToken::never(),
+            )
+            .expect("finish turn");
+
+        let loaded = SessionStore::new(dir.path().to_path_buf())
+            .load(&resumed_id)
+            .expect("load cleared record");
+        assert_eq!(loaded.checkpoint, None);
+
+        let manager = test_manager(SessionStore::new(dir.path().to_path_buf()));
+        let config = SessionConfig {
+            workspace: None,
+            provider: "claude".into(),
+            model: "m1".into(),
+            system_prompt: None,
+            agent: None,
+            max_turns: None,
+            temperature: None,
+            reasoning_effort: None,
+            tool_filter: None,
+            resume_truncations: 0,
+        };
+        manager
+            .start(config, Some(resumed_id.clone()))
+            .expect("resume cleared");
+        let sessions = crate::sync::lock_recover(&manager.sessions);
+        let live = sessions.get(&resumed_id).expect("live cleared session");
+        assert_eq!(checkpoint_snapshot(&live.checkpoint), None);
     }
 
     #[test]

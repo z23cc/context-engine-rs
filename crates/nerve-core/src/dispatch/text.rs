@@ -36,12 +36,17 @@ impl ToolText for crate::ReadFileResponse {
 
 impl ToolText for crate::FileTreeResponse {
     fn tool_text(&self) -> String {
-        let note = self.note.as_deref().filter(|n| !n.is_empty());
-        match (self.tree.is_empty(), note) {
-            (false, Some(note)) => format!("{}\n\n(note: {note})", self.tree),
-            (true, Some(note)) => format!("(note: {note})"),
-            (_, None) => self.tree.clone(),
+        let mut sections = Vec::new();
+        if !self.tree.is_empty() {
+            sections.push(self.tree.clone());
         }
+        if self.uses_legend {
+            sections.push("legend: * selected, + codemap-capable".to_string());
+        }
+        if let Some(note) = self.note.as_deref().filter(|n| !n.is_empty()) {
+            sections.push(format!("(note: {note})"));
+        }
+        sections.join("\n\n")
     }
 }
 
@@ -53,7 +58,14 @@ impl ToolText for crate::WorkspaceContextResponse {
 
 impl ToolText for crate::BuildContextResponse {
     fn tool_text(&self) -> String {
-        self.context.clone()
+        if self.manifest.sensitive_findings.is_empty() {
+            return self.context.clone();
+        }
+        format!(
+            "warning: {} sensitive-content findings in structuredContent\n\n{}",
+            self.manifest.sensitive_findings.len(),
+            self.context
+        )
     }
 }
 
@@ -257,25 +269,37 @@ impl ToolText for crate::workspace::ManageWorkspacesResponse {
     }
 }
 
-impl ToolText for crate::navigate::DefinitionResponse {
+impl ToolText for crate::navigate::SymbolSearchResponse {
     fn tool_text(&self) -> String {
-        if self.definitions.is_empty() {
-            return format!("(no definitions for {})\n", self.symbol);
+        if self.matches.is_empty() {
+            if self.total > 0 {
+                return format!(
+                    "symbol_search: {} matches for {:?} (showing 0)\n",
+                    self.total, self.query
+                );
+            }
+            return format!("symbol_search: no matches for {:?}\n", self.query);
         }
-        let mut out = String::new();
-        for def in &self.definitions {
-            match &def.signature {
-                Some(sig) => out.push_str(&format!(
-                    "{}:{} {} {}\n",
-                    def.display_path, def.line, def.kind, sig
+        let mut out = format!(
+            "symbol_search: {} matches for {:?}\n",
+            self.total, self.query
+        );
+        for item in &self.matches {
+            match &item.signature {
+                Some(signature) => out.push_str(&format!(
+                    "  {}:{} {} {} (score {})\n",
+                    item.display_path, item.line, item.kind, signature, item.score
                 )),
-                None => out.push_str(&format!("{}:{} {}\n", def.display_path, def.line, def.kind)),
+                None => out.push_str(&format!(
+                    "  {}:{} {} {} (score {})\n",
+                    item.display_path, item.line, item.kind, item.name, item.score
+                )),
             }
         }
         if self.truncated {
             out.push_str(&format!(
                 "(showing {} of {})\n",
-                self.definitions.len(),
+                self.matches.len(),
                 self.total
             ));
         }
@@ -283,80 +307,8 @@ impl ToolText for crate::navigate::DefinitionResponse {
     }
 }
 
-impl ToolText for crate::navigate::ReferencesResponse {
-    fn tool_text(&self) -> String {
-        let mut out = String::new();
-        if !self.definitions.is_empty() {
-            out.push_str("definitions:\n");
-            for def in &self.definitions {
-                out.push_str(&format!(
-                    "  {}:{} {}\n",
-                    def.display_path, def.line, def.kind
-                ));
-            }
-        }
-        if self.references.is_empty() {
-            out.push_str(&format!("(no references to {})\n", self.symbol));
-            return out;
-        }
-        if self.definition_count > 1 {
-            out.push_str(&format!(
-                "references ({} definitions of this name \u{2014} low-confidence may be unrelated):\n",
-                self.definition_count
-            ));
-        } else {
-            out.push_str("references:\n");
-        }
-        for r in &self.references {
-            let mark = match r.confidence {
-                crate::navigate::Confidence::High => "",
-                crate::navigate::Confidence::Low => "  [low]",
-            };
-            out.push_str(&format!(
-                "  {}:{} {}{}\n",
-                r.display_path, r.line, r.kind, mark
-            ));
-        }
-        if self.truncated {
-            out.push_str(&format!(
-                "(showing {} of {})\n",
-                self.references.len(),
-                self.total
-            ));
-        }
-        out
-    }
-}
-
-impl ToolText for crate::navigate::CallHierarchyResponse {
-    fn tool_text(&self) -> String {
-        let mut out = String::new();
-        let render = |label: &str, edges: &[crate::navigate::CallEdge], out: &mut String| {
-            if edges.is_empty() {
-                return;
-            }
-            out.push_str(label);
-            out.push('\n');
-            for e in edges {
-                match &e.text {
-                    Some(t) => out.push_str(&format!(
-                        "  {}:{} {} {}\n",
-                        e.display_path, e.line, e.symbol, t
-                    )),
-                    None => {
-                        out.push_str(&format!("  {}:{} {}\n", e.display_path, e.line, e.symbol))
-                    }
-                }
-            }
-        };
-        render("callers (incoming):", &self.incoming, &mut out);
-        render("callees (outgoing):", &self.outgoing, &mut out);
-        if out.is_empty() {
-            out.push_str(&format!("(no call hierarchy for {})\n", self.symbol));
-        }
-        out
-    }
-}
+#[path = "text_nav.rs"]
+mod text_nav;
 
 impl ToolText for crate::codemap::CodeStructureResponse {
     fn tool_text(&self) -> String {

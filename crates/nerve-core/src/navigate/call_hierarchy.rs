@@ -82,10 +82,16 @@ pub(super) fn incoming_call_edges<P: CatalogProvider + Sync>(
 ) -> Vec<CallEdge> {
     let mut incoming = Vec::new();
     for file in files {
-        if !language_matches(request.language.as_deref(), &file.language) {
-            continue;
-        }
         for reference in &file.references {
+            if reference.has_embedded_language() {
+                continue;
+            }
+            if !language_matches(
+                request.language.as_deref(),
+                reference.effective_language(&file.language),
+            ) {
+                continue;
+            }
             if reference.name != request.symbol {
                 continue;
             }
@@ -131,6 +137,7 @@ pub(super) fn call_edge_for_symbol<P: CatalogProvider + Sync>(
         path: file.path.clone(),
         display_path: file.display_path.clone(),
         line: symbol.line,
+        column: symbol.column,
         kind: symbol.kind.clone(),
         language: file.language.clone(),
         text: sources.line(&file.path, &file.abs_path, symbol.line),
@@ -165,6 +172,7 @@ pub(super) fn definitions_by_name(files: &[IndexedFile]) -> HashMap<&str, Vec<De
                     display_path: &file.display_path,
                     language: &file.language,
                     line: symbol.line,
+                    column: symbol.column,
                     kind: &symbol.kind,
                 });
         }
@@ -228,6 +236,7 @@ pub(super) fn add_outgoing_targets(
             path: target.path.to_string(),
             display_path: target.display_path.to_string(),
             line: target.line,
+            column: target.column,
             kind: target.kind.to_string(),
             language: target.language.to_string(),
             text: None,
@@ -264,6 +273,7 @@ pub(super) struct DefRef<'a> {
     display_path: &'a str,
     language: &'a str,
     line: usize,
+    column: usize,
     kind: &'a str,
 }
 
@@ -271,5 +281,6 @@ pub(super) fn call_edge_cmp(a: &CallEdge, b: &CallEdge) -> std::cmp::Ordering {
     a.display_path
         .cmp(&b.display_path)
         .then(a.line.cmp(&b.line))
+        .then(a.column.cmp(&b.column))
         .then(a.symbol.cmp(&b.symbol))
 }
