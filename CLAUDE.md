@@ -21,9 +21,8 @@ path, not featured in the GUI. See `docs/designs/architecture-north-star.md` §1
 cargo build                                   # whole workspace
 cargo build -p nerve-workstation --bin nerve  # just the nerve binary
 
-# Test (default features). The semantic engine is behind a feature flag:
+# Test
 cargo test --workspace
-cargo test -p nerve-core --features semantic            # exercises embeddings/ANN/rerank
 cargo test --workspace golden_build_context             # run a single test by name substring
 
 # Golden snapshots (insta) — after an *intentional* change to tool output:
@@ -31,7 +30,6 @@ cargo insta test --review                               # or: cargo insta accept
 
 # CI gates (all enforced; clippy runs with -D warnings)
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p nerve-core --all-targets --features semantic -- -D warnings
 cargo fmt --all --check
 ./Scripts/check-file-size.sh                            # files <= 600 non-test lines (hard gate)
 
@@ -70,7 +68,7 @@ Which tool to reach for:
 | "Which files are central" | `get_repo_map` (deterministic PageRank; seed with `query` or `seed_paths`) |
 | "Where is X defined / who calls it / how is it wired" | `goto_definition`, `find_references`, `call_hierarchy` |
 | Structural match/rewrite text search can't express | `ast_search`, `ast_edit` (tree-sitter `query` mode **or** `$META` pattern mode) |
-| "Find code about <concept>" (don't know the name) | `semantic_search` (hybrid dense+BM25+rerank) |
+| "Where does code about <concept> live" (don't know the name) | `scout` (query → ranked `path:line-range` citations; reuses `build_context` ranking — BM25 + repo-map PageRank + path; deterministic, no LLM) |
 | Edit files | `edit` (`replace`/`patch`/`apply_patch`/`hashline`), `write`, `delete`, `move` |
 | Assemble a working set for a question | `build_context`, then `manage_selection` / `workspace_context` |
 | Read-only history | `git` (`status`/`diff`/`log`/`blame`/`show`) |
@@ -82,11 +80,12 @@ Usage notes that bite if you don't know them:
   1-based line numbers, then `edit mode="hashline"`. A stale tag is rejected with `StaleHash` +
   `reread_hint` — re-read with `view="hashline"` and retry. `edit` returns a unified diff + syntax
   diagnostics and is root-gated.
-- **Semantic freshness:** `semantic_search` returns `index_state` (`ready` / `warming` / `bm25_only`)
-  plus a snapshot `generation`. The first call may be BM25-only while the dense index warms in the
-  background — re-query for the upgraded hybrid results. The tool only exists when the server was
-  built `--features semantic` (the default `cargo build` / `nerve install` binary omits it; first
-  semantic use downloads a ~300 MB model).
+- **Scout vs build_context:** `scout` is the cheap "where does X live" locator — given a query it
+  returns compact `path:line-range` citations (clustered from content hits; files relevant only by
+  graph centrality come back file-level, no range) without pulling file bodies into context. Reach
+  for `build_context` instead when you want the assembled context *text* for a question, not just
+  pointers. Both are deterministic and share the same ranking; `scout` takes `query`, optional
+  `max_files` (default 12) and `seed_paths`.
 - **Fail-closed:** without `--root`, catalog/read/search are refused. The xAI/Grok tools are out of
   scope for code work here.
 
@@ -98,7 +97,7 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
   through the `CatalogProvider` port (`port.rs`); operations run against immutable
   `CatalogSnapshot` values (`snapshot.rs`). This snapshot-centered design is *why* the
   lexical/structural tools are deterministic and golden-testable. Tools live here
-  (search, read, tree, `codemap`, `repomap`, `navigate`, `edit`, `semantic`, `build_context`).
+  (search, read, tree, `codemap`, `repomap`, `navigate`, `edit`, `build_context`, `scout`).
   The transport-neutral MCP dispatch entry point is `dispatch/` (`handle_tool_call*` in
   `dispatch/mod.rs`): it takes a JSON `tools/call` params object and returns a JSON result.
   Core errors are `NerveError`; dispatch surfaces `DispatchError`.
@@ -137,10 +136,6 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
   pinned by golden snapshots in `crates/nerve-core/tests/snapshots/*.snap` (insta). Behavioral
   differences vs. RepoPrompt are tracked in `docs/parity/` (`captures.json` is historical recorded
   I/O — treat it as a fixture, not editable config).
-- **Semantic search is opt-in.** It is gated behind the `semantic` cargo feature (default build is
-  OFF): local ONNX embeddings (`fastembed`) + ANN (`hnsw_rs`) + cross-encoder rerank, RRF-fused with
-  BM25. First semantic use downloads a ~300 MB model **once per machine**; the index is persisted
-  **per project**. Don't trigger it in tests/CI unless you mean to.
 - **Two providers.** `MemoryCatalogProvider` (in-memory) backs most tests; `FsCatalogProvider` is the
   real filesystem provider. Codemap parses are cached by `(mtime, size)`.
 
