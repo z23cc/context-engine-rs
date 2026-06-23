@@ -24,6 +24,7 @@ pub(crate) fn BrokerOAuthControls(token: StoredValue<Option<String>>) -> impl In
     let callback_input = RwSignal::new(String::new());
     let login_status = RwSignal::new("No browser login started.".to_string());
     let login_busy = RwSignal::new(false);
+    let open_url_busy = RwSignal::new(false);
     let lease_status = RwSignal::new("No broker lease requested.".to_string());
     let lease_busy = RwSignal::new(false);
     let check_auth = move || request_auth_status(token, provider, auth_status, auth_busy);
@@ -40,35 +41,91 @@ pub(crate) fn BrokerOAuthControls(token: StoredValue<Option<String>>) -> impl In
     let complete_login = move || {
         request_auth_complete(token, login_id, callback_input, login_status, login_busy);
     };
+    let open_authorization = move || {
+        request_open_authorization_url(token, authorize_url, login_status, open_url_busy);
+    };
     let lease = move |force_refresh| {
         request_auth_lease(token, provider, lease_status, lease_busy, force_refresh);
     };
     view! {
         <div class="lease-box">
-            <select class="set-select" prop:value=move || provider.get()
+            <select id="auth-provider" name="auth-provider" class="set-select" prop:value=move || provider.get()
+                aria-label="Auth provider"
+                aria-controls="auth-status-output login-status-output lease-status-output"
                 disabled=move || auth_busy.get() || login_busy.get() || lease_busy.get()
                 on:change=move |ev| provider.set(event_target_value(&ev))>
                 {AUTH_PROVIDER_OPTS.iter().map(|(id, label)| view! { <option value=*id>{*label}</option> }).collect_view()}
             </select>
             <div class="lease-actions">
-                <button class="btn" type="button" disabled=move || auth_busy.get() on:click=move |_| check_auth()>"Check status"</button>
-                <button class="btn" type="button" disabled=move || login_busy.get() on:click=move |_| start_login()>"Start browser login"</button>
+                <button class="btn" type="button" disabled=move || auth_busy.get()
+                    aria-label="Check selected provider auth status"
+                    aria-controls="auth-status-output"
+                    on:click=move |_| check_auth()>"Check status"</button>
+                <button class="btn" type="button" disabled=move || login_busy.get()
+                    aria-label="Start browser login for selected provider"
+                    aria-controls="login-status-output"
+                    on:click=move |_| start_login()>"Start browser login"</button>
                 <button class="btn" type="button"
                     disabled=move || login_busy.get() || login_id.get().is_empty() || callback_input.get().trim().is_empty()
+                    aria-label="Complete browser login with pasted callback"
+                    aria-controls="login-status-output"
                     on:click=move |_| complete_login()>"Complete login"</button>
-                <button class="btn" type="button" disabled=move || lease_busy.get() on:click=move |_| lease(false)>"Check lease"</button>
-                <button class="btn" type="button" disabled=move || lease_busy.get() title="Forces broker refresh/rotation" on:click=move |_| lease(true)>"Force refresh lease"</button>
+                <button class="btn" type="button" disabled=move || lease_busy.get()
+                    aria-label="Check broker lease for selected provider"
+                    aria-controls="lease-status-output"
+                    on:click=move |_| lease(false)>"Check lease"</button>
+                <button class="btn" type="button" disabled=move || lease_busy.get() title="Forces broker refresh/rotation"
+                    aria-label="Force refresh broker lease for selected provider"
+                    aria-controls="lease-status-output"
+                    on:click=move |_| lease(true)>"Force refresh lease"</button>
             </div>
-            <a class="auth-link" href=move || authorize_url.get() target="_blank" rel="noreferrer noopener" hidden=move || authorize_url.get().is_empty()>"Open authorization URL"</a>
-            <input class="set-input auth-callback" type="text" placeholder="Paste callback URL or code"
+            <button class="btn auth-open" type="button"
+                hidden=move || authorize_url.get().is_empty()
+                disabled=move || open_url_busy.get()
+                aria-label="Open authorization URL with the host system browser"
+                aria-controls="login-status-output"
+                on:click=move |_| open_authorization()>"Open authorization URL"</button>
+            <input id="auth-callback" name="auth-callback" class="set-input auth-callback" type="text" placeholder="Paste callback URL or code"
+                spellcheck="false"
+                aria-label="Callback URL or authorization code"
+                aria-describedby="login-status-output"
                 prop:value=move || callback_input.get()
                 disabled=move || login_busy.get()
                 on:input=move |ev| callback_input.set(event_target_value(&ev)) />
-            <pre class="lease-status auth-status" role="status" aria-live="polite" aria-busy=move || auth_busy.get().to_string()>{move || auth_status.get()}</pre>
-            <pre class="lease-status login-status" role="status" aria-live="polite" aria-busy=move || login_busy.get().to_string()>{move || login_status.get()}</pre>
-            <pre class="lease-status" role="status" aria-live="polite" aria-busy=move || lease_busy.get().to_string()>{move || lease_status.get()}</pre>
+            <pre id="auth-status-output" class="lease-status auth-status" role="status" aria-live="polite" aria-busy=move || auth_busy.get().to_string()>{move || auth_status.get()}</pre>
+            <pre id="login-status-output" class="lease-status login-status" role="status" aria-live="polite" aria-busy=move || login_busy.get().to_string()>{move || login_status.get()}</pre>
+            <pre id="lease-status-output" class="lease-status" role="status" aria-live="polite" aria-busy=move || lease_busy.get().to_string()>{move || lease_status.get()}</pre>
         </div>
     }
+}
+
+fn request_open_authorization_url(
+    token: StoredValue<Option<String>>,
+    authorize_url: RwSignal<String>,
+    status: RwSignal<String>,
+    busy: RwSignal<bool>,
+) {
+    let Some(tok) = token.get_value() else {
+        status.set(NO_TOKEN.into());
+        return;
+    };
+    if busy.get_untracked() {
+        return;
+    }
+    let url = authorize_url.get_untracked();
+    if url.trim().is_empty() {
+        status.set("No authorization URL to open.".into());
+        return;
+    }
+    busy.set(true);
+    status.set("Opening authorization URL in the system browser…".into());
+    leptos::task::spawn_local(async move {
+        status.set(match crate::data::open_host_url(&tok, &url).await {
+            Ok(()) => "Opened authorization URL in the system browser.".into(),
+            Err(err) => format!("Open authorization URL failed: {err}"),
+        });
+        busy.set(false);
+    });
 }
 
 fn request_auth_status(

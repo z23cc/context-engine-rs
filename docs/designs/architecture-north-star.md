@@ -1,7 +1,7 @@
 # Architecture North Star
 
 Status: **governing** — read before any structural change. Referenced as a binding rule from `CLAUDE.md`.
-Date: 2026-06-18 · reconciled to implementation 2026-06-19
+Date: 2026-06-18 · reconciled to implementation 2026-06-19 · **product direction updated 2026-06-23**
 
 This is the long-term architectural contract for Nerve Workstation. It exists so that every
 incremental change is **locally optimal _and_ globally aligned**: each feature plugs into a declared
@@ -9,15 +9,26 @@ seam instead of bolting on a new bespoke entry point. When in doubt, the seam wi
 
 ## 1. North star
 
-> **Nerve = a deterministic code-intelligence kernel + a thin protocol-defined runtime +
-> "everything else is a plugin behind a port."**
+> **Nerve = a deterministic code-intelligence kernel (exposed as tools) + a protocol-defined runtime
+> that is a _cockpit for orchestrating multiple external CLI coding agents_ (Claude Code, Codex,
+> Gemini CLI, …) side by side — "everything else is a plugin behind a port."**
 
-- The **kernel** (`nerve-core`) is pure and deterministic; it is golden-tested and is never extended
-  by runtime plugins.
-- Non-determinism (LLMs, third-party tools, sessions, network, time) lives strictly **above** the
-  kernel.
+**Product identity (set 2026-06-23).** Nerve's job is to **manage and observe external agent CLIs,
+not to be one.** The deterministic engine is offered *to* those agents (as MCP tools); the runtime
+drives them through the `delegate.*` seam, surfaces their tool calls / approvals / output in one
+cockpit, and lets you run several agents across projects concurrently. The built-in `nerve-agent`
+LLM loop (the `agent.run` / `session.*` own-engine path) is **demoted to a secondary, optional
+seam** — retained for headless/embedded use, but no longer the primary product surface and not
+featured in the GUI. This **reverses** the earlier "runtime session as the primary cockpit" framing;
+see the dated note in §2, the scorecard in §5, and the roadmap in §8.
+
+- The **kernel** (`nerve-core`) is pure and deterministic; golden-tested; never extended by runtime
+  plugins. Its tools are the value Nerve hands to the agents it orchestrates.
+- Non-determinism (the external agent CLIs, LLMs, third-party tools, sessions, network, time) lives
+  strictly **above** the kernel.
 - Extending the system means **implementing a declared seam** — never editing the kernel and never
-  opening a new ad-hoc host entry point.
+  opening a new ad-hoc host entry point. Supporting a new agent CLI = the **`delegate` seam**, not a
+  new face.
 
 ## 2. Prime directive (local-optimal = global-optimal)
 
@@ -39,6 +50,13 @@ correct, not debt. The lesson stands — **a capability without a seam is guaran
 capability now has its seam (`RuntimeCommand::AgentRun` + the shared `run_agent` executor). The
 remaining convergence — turning the interactive CLI into a true *transport* client with protocol
 approval round-trips (`session.respond`) — is Session-layer / P6 work, not in-process command routing.
+
+**Direction note (2026-06-23).** The two agent-execution faces are now ranked. The **`delegate.*`
+seam** — drive an external CLI (codex / claude / gemini) as a sandboxed, steerable subprocess — is
+the **primary, product-facing** path; the **own-engine** face (`agent.run` / `session.*` over
+`nerve-agent`) is **secondary/optional**. Both remain proper protocol vocabulary and both flow through
+`Runtime` (§3.2 holds), so this is a priority/surfacing decision, **not** an invariant change. The
+cockpit's differentiator is orchestrating *many* such CLIs at once (§8), not a better single loop.
 
 ## 3. Invariants (do not break)
 
@@ -137,7 +155,8 @@ code 2026-06-19 — the layers the original draft marked ✗ have since landed.)
 | `LlmProvider` | `nerve-agent/provider` | ✅ 3 built-in **+ config-driven** (`ProviderRegistry` + `--provider-config`; `ProviderWire` for the OpenAI-compatible long tail, no code) | promote to a named registry; otherwise done |
 | `ToolBox` | `nerve-agent/provider` | `RuntimeToolBox` | fine (agent↔tools seam is wired) |
 | `AuthStrategy` | `nerve-agent/auth` | 3 providers, staged (`start`/`complete`/`refresh`), driven over `auth.*` protocol | client owns callback capture (§3.7); could be config-driven |
-| Session / Conversation | `nerve-runtime` + `session_manager/` | ✅ `RuntimeCommand::Session*` + `SessionManager` (multi-turn, interrupt, resume, set-model) + `ProtocolApprover` approval round-trip; run as daemon jobs | GUI multi-turn surface (S3); CLI-as-session-client (§2) |
+| **Delegate / external agent CLI (primary product seam)** | `nerve-proto` (`delegate.*`) + `delegate_runtime.rs` | ✅ `RuntimeCommand::Delegate{Start,Steer,Close}` spawns sandboxed **codex / claude / gemini**, streams `DelegateProgress`, approvals via `session.respond`; steerable parked sessions | **multi-agent cockpit** (§8): run several side by side, per-thread agent binding, live agents dashboard, cross-agent context handoff |
+| Session / Conversation **(own-engine; secondary)** | `nerve-runtime` + `session_manager/` | ✅ `RuntimeCommand::Session*` + `SessionManager` (multi-turn, interrupt, resume, set-model) + `ProtocolApprover` approval round-trip; run as daemon jobs | **demoted** from the product surface (§1); kept for headless/embedded; not featured in the GUI |
 | Skill / AgentDef | `capabilities.rs` | ✅ `Capabilities::discover` loads agent defs **+ skills** (project > global > built-in; `BUILTIN_AGENTS` / `BUILTIN_SKILLS`) | workflow defs; a versioned on-disk schema |
 | Policy / Permission | `policy.rs` | ✅ `PolicyToolBox` outermost gate (invariant 9); `policy.json` global-authoritative + project tighten-only; CLI-interactive / daemon-deny / session-protocol approvers | the orthogonal `SandboxLauncher` containment half (exec) |
 | Hooks | `hooks.rs` + `nerve-agent::Hook` | ✅ wired via `Orchestrator::with_hooks` — `on_start` (environment + memory recall) and request-time checkpoint capture | further points (response/end) are additive when needed |
@@ -183,8 +202,17 @@ Do not build one plugin system; layer by what is being extended, each with the r
 8. **Extract a thin `nerve-protocol` crate** when third-party Rust plugins/clients appear, so they
    depend on protocol types only, not all of `nerve-runtime`.
 
-## 8. Roadmap (status — reconciled to code 2026-06-22)
+## 8. Roadmap (status — reconciled to code 2026-06-22; **direction updated 2026-06-23**)
 
+- **P7 — Multi-agent cockpit over external CLIs (NEW headline direction, 2026-06-23). ◑ In progress.**
+  The product's defining capability is **managing many CLI coding agents at once**: each thread bound
+  to an agent (claude / codex / gemini …), several running concurrently across projects, a live
+  "agents" dashboard (status / current task / pending approvals), and **cross-agent context handoff**
+  built on the deterministic engine (`build_context` / repomap / semantic) plus Nerve-as-MCP-tools.
+  The foundation already exists — the `delegate.*` seam + `SandboxLauncher` (P4); remaining work is
+  GUI surfacing + a small, additive management vocabulary (list/observe running agents). The
+  own-engine `session.*` / `agent.run` path is **demoted to a secondary seam** (kept, not featured) —
+  see §1.
 - **P0 — Session layer (folds in the off-protocol agent). ✅ Done.** `RuntimeCommand::AgentRun` + the
   `Session*` command family are protocol vocabulary; the daemon runs the orchestrator as a cancellable
   job emitting structured agent events; `SessionManager` adds multi-turn, interrupt, resume, and
@@ -230,6 +258,10 @@ Do not build one plugin system; layer by what is being extended, each with the r
 - **Security before openness.** Ship the permission engine + trust gates (P4) **before** enabling
   third-party MCP servers or script-bearing skills. A plugin is arbitrary code execution.
 - **Versioned or dead.** Once a protocol / provider / skill contract ships, it is additive-only.
+- **Don't rebuild what the agent CLIs already do — orchestrate them.** Nerve competes on
+  deterministic code-intelligence + multi-agent orchestration, not on being a better single agent
+  loop. Investing in the built-in `nerve-agent` engine is **not** a priority while the cockpit is the
+  goal; spend effort on the `delegate.*` management surface instead.
 - **Anti-goals:** no premature WASM plugin host; no bespoke plugin protocol (MCP is the standard);
   no kitchen-sink protocol (a session is not strings stuffed into `JobProgress`); no premature crate
   splitting (split only when independent versioning is needed, e.g. `nerve-protocol`).

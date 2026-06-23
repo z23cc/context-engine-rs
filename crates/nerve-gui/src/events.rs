@@ -119,9 +119,10 @@ fn apply_agent_event(event: AgentEventKind, chat: &mut Chat) {
     match event {
         AgentEventKind::Message { text } => turn.text.push_str(&text),
         AgentEventKind::Reasoning { text } => turn.reasoning.push_str(&text),
-        AgentEventKind::ToolStarted { tool, .. } => turn.tools.push(ToolCard {
+        AgentEventKind::ToolStarted { tool, arguments } => turn.tools.push(ToolCard {
             tool,
             ok: None,
+            input: format_arguments(&arguments),
             output: String::new(),
         }),
         AgentEventKind::ToolFinished { tool, ok, output } => {
@@ -138,6 +139,7 @@ fn apply_agent_event(event: AgentEventKind, chat: &mut Chat) {
                 None => turn.tools.push(ToolCard {
                     tool,
                     ok: Some(ok),
+                    input: String::new(),
                     output,
                 }),
             }
@@ -148,4 +150,11 @@ fn apply_agent_event(event: AgentEventKind, chat: &mut Chat) {
         }
         AgentEventKind::TurnStarted { .. } | AgentEventKind::Usage { .. } => {}
     }
+}
+
+fn format_arguments(arguments: &serde_json::Value) -> String {
+    if arguments.is_null() {
+        return String::new();
+    }
+    serde_json::to_string_pretty(arguments).unwrap_or_else(|_| arguments.to_string())
 }

@@ -44,6 +44,10 @@ web-sys = { version = "0.3", features = [
   "CssStyleDeclaration",
   "Storage",
   "MediaQueryList",
+  "KeyboardEvent",
+  "EventTarget",
+  "Node",
+  "NodeList",
 ] }
 console_error_panic_hook = "0.1"
 # Markdown rendering for assistant turns (wasm-safe; html output only).

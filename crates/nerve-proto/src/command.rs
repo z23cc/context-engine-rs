@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+mod runtime_command_impl;
+
 /// Runtime command kinds accepted by the human-facing daemon job protocol.
 pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "ping",
@@ -35,6 +37,12 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "flow.list",
     "flow.close",
     "flow.respond",
+    "host.capabilities",
+    "host.clipboard.write_text",
+    "host.notification.show",
+    "host.folder.pick",
+    "host.file.save_text",
+    "host.url.open",
     "workspace.reveal",
 ];
 
@@ -300,12 +308,33 @@ pub enum RuntimeCommand {
         request_id: String,
         decision: SessionApprovalDecision,
     },
-    /// Reveal a served workspace root in the OS file manager (macOS Finder /
-    /// Windows Explorer / Linux `xdg-open`). Pure protocol vocabulary: the host
-    /// daemon runs the platform opener on the resolved root; `nerve-core` has no
-    /// process knowledge. `workspace` selects which root when more than one is
-    /// registered (defaults to the first). This is the GUI's "open location"
-    /// affordance — clients reach it over `/rpc`, never via native IPC.
+    /// Return concrete host/native affordances reachable through the daemon.
+    #[serde(rename = "host.capabilities")]
+    HostCapabilities,
+    /// Write plain text to the host OS clipboard through the daemon.
+    #[serde(rename = "host.clipboard.write_text")]
+    HostClipboardWriteText { text: String },
+    /// Show a native OS notification through the host daemon.
+    #[serde(rename = "host.notification.show")]
+    HostNotificationShow {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+    },
+    /// Open a native host folder picker and return the selected absolute path.
+    #[serde(rename = "host.folder.pick")]
+    HostFolderPick { title: Option<String> },
+    /// Save UTF-8 text through a native host save panel.
+    #[serde(rename = "host.file.save_text")]
+    HostFileSaveText {
+        title: Option<String>,
+        default_name: Option<String>,
+        text: String,
+    },
+    /// Open an external http(s) URL with the host OS default handler.
+    #[serde(rename = "host.url.open")]
+    HostUrlOpen { url: String },
+    /// Reveal a served workspace root in the OS file manager through the daemon.
     #[serde(rename = "workspace.reveal")]
     WorkspaceReveal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -456,93 +485,6 @@ impl ApprovalMode {
             Self::AlwaysAsk => RiskTier::ReadOnly,
             Self::Write => RiskTier::Edit,
             Self::Yolo => RiskTier::Exec,
-        }
-    }
-}
-
-impl RuntimeCommand {
-    /// Construct a browser-flow `auth.start` command with the wire-compatible default flow.
-    #[must_use]
-    pub fn auth_start(provider: impl Into<String>) -> Self {
-        Self::auth_start_with_flow(provider, AuthStartFlow::Browser)
-    }
-
-    /// Construct an `auth.start` command with an explicit login flow.
-    #[must_use]
-    pub fn auth_start_with_flow(provider: impl Into<String>, flow: AuthStartFlow) -> Self {
-        Self::AuthStart {
-            provider: provider.into(),
-            flow,
-        }
-    }
-
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Ping => "ping",
-            Self::ToolList => "tool.list",
-            Self::ToolCall { .. } => "tool.call",
-            Self::AgentRun { .. } => "agent.run",
-            Self::SessionStart { .. } => "session.start",
-            Self::SessionMessage { .. } => "session.message",
-            Self::SessionInterrupt { .. } => "session.interrupt",
-            Self::SessionRespond { .. } => "session.respond",
-            Self::SessionGet { .. } => "session.get",
-            Self::SessionList => "session.list",
-            Self::SessionClose { .. } => "session.close",
-            Self::SessionSetModel { .. } => "session.set_model",
-            Self::SessionSetMode { .. } => "session.set_mode",
-            Self::AuthStart { .. } => "auth.start",
-            Self::AuthComplete { .. } => "auth.complete",
-            Self::AuthStatus { .. } => "auth.status",
-            Self::AuthLease { .. } => "auth.lease",
-            Self::AuthLogout { .. } => "auth.logout",
-            Self::DelegateStart { .. } => "delegate.start",
-            Self::DelegateSteer { .. } => "delegate.steer",
-            Self::DelegateClose { .. } => "delegate.close",
-            Self::FlowStart { .. } => "flow.start",
-            Self::FlowSteer { .. } => "flow.steer",
-            Self::FlowReplay { .. } => "flow.replay",
-            Self::FlowGet { .. } => "flow.get",
-            Self::FlowList => "flow.list",
-            Self::FlowClose { .. } => "flow.close",
-            Self::FlowRespond { .. } => "flow.respond",
-            Self::WorkspaceReveal { .. } => "workspace.reveal",
-        }
-    }
-
-    #[must_use]
-    pub fn tool_name(&self) -> Option<&str> {
-        match self {
-            Self::ToolCall { name, .. } => Some(name.as_str()),
-            Self::Ping
-            | Self::ToolList
-            | Self::AgentRun { .. }
-            | Self::SessionStart { .. }
-            | Self::SessionMessage { .. }
-            | Self::SessionInterrupt { .. }
-            | Self::SessionRespond { .. }
-            | Self::SessionGet { .. }
-            | Self::SessionList
-            | Self::SessionClose { .. }
-            | Self::SessionSetModel { .. }
-            | Self::SessionSetMode { .. }
-            | Self::AuthStart { .. }
-            | Self::AuthComplete { .. }
-            | Self::AuthStatus { .. }
-            | Self::AuthLease { .. }
-            | Self::AuthLogout { .. }
-            | Self::DelegateStart { .. }
-            | Self::DelegateSteer { .. }
-            | Self::DelegateClose { .. }
-            | Self::FlowStart { .. }
-            | Self::FlowSteer { .. }
-            | Self::FlowReplay { .. }
-            | Self::FlowGet { .. }
-            | Self::FlowList
-            | Self::FlowClose { .. }
-            | Self::FlowRespond { .. }
-            | Self::WorkspaceReveal { .. } => None,
         }
     }
 }
@@ -1055,6 +997,113 @@ mod tests {
             serde_json::to_value(DenyAlways).unwrap(),
             serde_json::json!("deny_always")
         );
+    }
+
+    #[test]
+    fn host_capabilities_round_trips() {
+        let command: RuntimeCommand =
+            serde_json::from_value(serde_json::json!({ "kind": "host.capabilities" }))
+                .expect("parse host.capabilities");
+        assert_eq!(command.name(), "host.capabilities");
+        assert_eq!(command.tool_name(), None);
+        assert!(matches!(command, RuntimeCommand::HostCapabilities));
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.capabilities"));
+    }
+
+    #[test]
+    fn host_clipboard_write_text_round_trips() {
+        let command: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "host.clipboard.write_text",
+            "text": "copy me"
+        }))
+        .expect("parse host.clipboard.write_text");
+        assert_eq!(command.name(), "host.clipboard.write_text");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::HostClipboardWriteText { text } => assert_eq!(text, "copy me"),
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.clipboard.write_text"));
+    }
+
+    #[test]
+    fn host_notification_show_round_trips() {
+        let command: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "host.notification.show",
+            "title": "Nerve",
+            "body": "Done"
+        }))
+        .expect("parse host.notification.show");
+        assert_eq!(command.name(), "host.notification.show");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::HostNotificationShow { title, body } => {
+                assert_eq!(title, "Nerve");
+                assert_eq!(body.as_deref(), Some("Done"));
+            }
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.notification.show"));
+    }
+
+    #[test]
+    fn host_folder_pick_round_trips() {
+        let command: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "host.folder.pick",
+            "title": "Choose project folder"
+        }))
+        .expect("parse host.folder.pick");
+        assert_eq!(command.name(), "host.folder.pick");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::HostFolderPick { title } => {
+                assert_eq!(title.as_deref(), Some("Choose project folder"));
+            }
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.folder.pick"));
+    }
+
+    #[test]
+    fn host_file_save_text_round_trips() {
+        let command: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "host.file.save_text",
+            "title": "Save packet",
+            "default_name": "packet.md",
+            "text": "# Packet"
+        }))
+        .expect("parse host.file.save_text");
+        assert_eq!(command.name(), "host.file.save_text");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::HostFileSaveText {
+                title,
+                default_name,
+                text,
+            } => {
+                assert_eq!(title.as_deref(), Some("Save packet"));
+                assert_eq!(default_name.as_deref(), Some("packet.md"));
+                assert_eq!(text, "# Packet");
+            }
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.file.save_text"));
+    }
+
+    #[test]
+    fn host_url_open_round_trips() {
+        let command: RuntimeCommand = serde_json::from_value(serde_json::json!({
+            "kind": "host.url.open",
+            "url": "https://example.com/auth"
+        }))
+        .expect("parse host.url.open");
+        assert_eq!(command.name(), "host.url.open");
+        assert_eq!(command.tool_name(), None);
+        match command {
+            RuntimeCommand::HostUrlOpen { url } => assert_eq!(url, "https://example.com/auth"),
+            other => panic!("unexpected: {}", other.name()),
+        }
+        assert!(RUNTIME_COMMAND_NAMES.contains(&"host.url.open"));
     }
 
     #[test]

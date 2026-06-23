@@ -8,9 +8,12 @@
 #![allow(clippy::too_many_lines)]
 
 use crate::app::Chat;
+use crate::project_rail::ProjectRail;
 use crate::rpc::start_job;
 use leptos::prelude::*;
 use serde_json::json;
+
+const THREAD_TYPEAHEAD_RESET_MS: f64 = 900.0;
 
 fn thread_icon() -> impl IntoView {
     view! {
@@ -82,6 +85,132 @@ pub(crate) fn rel_time(ms: f64) -> String {
     format!("{}w", (days / 7.0) as u64)
 }
 
+fn thread_agent_badge(agent: &str, live: bool) -> String {
+    let label = crate::data::agent_label(agent);
+    if live {
+        format!("{label} · live")
+    } else {
+        label.to_string()
+    }
+}
+
+fn thread_agent_class(live: bool) -> &'static str {
+    if live {
+        "rail-backend delegate live"
+    } else {
+        "rail-backend delegate"
+    }
+}
+
+#[derive(Clone, Default)]
+struct ThreadTypeaheadState {
+    text: String,
+    at_ms: f64,
+}
+
+#[derive(Clone)]
+struct ThreadRow {
+    index: usize,
+    title: String,
+    session: Option<String>,
+    agent: String,
+    updated_ms: f64,
+}
+
+fn visible_thread_rows(chats: &[Chat], query: &str, active: usize) -> Vec<ThreadRow> {
+    let q = query.trim().to_lowercase();
+    let mut rows: Vec<ThreadRow> = chats
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| q.is_empty() || *i == active || c.title.to_lowercase().contains(&q))
+        .map(|(index, chat)| ThreadRow {
+            index,
+            title: chat.title.clone(),
+            session: chat.session.clone(),
+            agent: chat.agent.clone(),
+            updated_ms: chat.updated_ms,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.updated_ms
+            .partial_cmp(&a.updated_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows
+}
+
+fn thread_key_target(rows: &[ThreadRow], current: usize, key: &str) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    let pos = rows
+        .iter()
+        .position(|row| row.index == current)
+        .unwrap_or(0);
+    let target = match key {
+        "ArrowDown" => (pos + 1).min(rows.len() - 1),
+        "ArrowUp" => pos.saturating_sub(1),
+        "Home" => 0,
+        "End" => rows.len() - 1,
+        _ => return None,
+    };
+    Some(rows[target].index)
+}
+
+fn thread_typeahead_target(
+    rows: &[ThreadRow],
+    current: usize,
+    state: &mut ThreadTypeaheadState,
+    key: &str,
+    now_ms: f64,
+) -> Option<usize> {
+    let ch = printable_thread_char(key)?;
+    let continuing = !state.text.is_empty() && now_ms - state.at_ms <= THREAD_TYPEAHEAD_RESET_MS;
+    if !continuing {
+        state.text.clear();
+    }
+    state.at_ms = now_ms;
+    state.text.push(ch.to_ascii_lowercase());
+    let start = thread_search_start(rows, current, continuing);
+    if let Some(index) = find_thread_match(rows, start, &state.text) {
+        return Some(index);
+    }
+    state.text.clear();
+    state.text.push(ch.to_ascii_lowercase());
+    find_thread_match(rows, thread_search_start(rows, current, false), &state.text)
+}
+
+fn printable_thread_char(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() || ch.is_control() || ch.is_whitespace() {
+        return None;
+    }
+    Some(ch)
+}
+
+fn thread_search_start(rows: &[ThreadRow], current: usize, continuing: bool) -> usize {
+    let pos = rows
+        .iter()
+        .position(|row| row.index == current)
+        .unwrap_or(0);
+    if continuing {
+        pos
+    } else {
+        pos.saturating_add(1)
+    }
+}
+
+fn find_thread_match(rows: &[ThreadRow], start: usize, needle: &str) -> Option<usize> {
+    if rows.is_empty() || needle.is_empty() {
+        return None;
+    }
+    (0..rows.len())
+        .map(|offset| (start + offset) % rows.len())
+        .find(|&pos| rows[pos].title.to_lowercase().starts_with(needle))
+        .map(|pos| rows[pos].index)
+}
+
 #[component]
 pub(crate) fn Sidebar(
     chats: RwSignal<Vec<Chat>>,
@@ -93,33 +222,90 @@ pub(crate) fn Sidebar(
     workspace: RwSignal<String>,
     workspaces: RwSignal<Vec<(String, String)>>,
     settings_open: RwSignal<bool>,
+    mode: RwSignal<&'static str>,
+    inspector_open: RwSignal<bool>,
+    inspector_tab: RwSignal<&'static str>,
+    open_inspector_tab: Callback<&'static str>,
+    chat_backend: RwSignal<String>,
+    native_file_dialogs: Signal<bool>,
     busy: Signal<bool>,
 ) -> impl IntoView {
+    let thread_typeahead = RwSignal::new(ThreadTypeaheadState::default());
+
+    let focus_active_thread = move || {
+        let query = search.get_untracked();
+        let cur = active.get_untracked();
+        let rows = chats.with_untracked(|all| visible_thread_rows(all, &query, cur));
+        if let Some(row) = rows
+            .iter()
+            .find(|row| row.index == cur)
+            .or_else(|| rows.first())
+        {
+            active.set(row.index);
+            mode.set("chat");
+            crate::dom::focus_thread_row(row.index);
+        }
+    };
+
+    let focus_thread = move |index: usize| {
+        active.set(index);
+        mode.set("chat");
+        crate::dom::focus_thread_row(index);
+    };
+
+    let thread_typeahead_jump = move |current: usize, key: String| -> bool {
+        let query = search.get_untracked();
+        let cur = active.get_untracked();
+        let rows = chats.with_untracked(|all| visible_thread_rows(all, &query, cur));
+        if rows.is_empty() {
+            return false;
+        }
+        let now_ms = js_sys::Date::now();
+        let mut target = None;
+        thread_typeahead.update(|state| {
+            target = thread_typeahead_target(&rows, current, state, &key, now_ms);
+        });
+        if let Some(index) = target {
+            focus_thread(index);
+            return true;
+        }
+        false
+    };
+
+    Effect::new(move |_| {
+        let _ = search.get();
+        thread_typeahead.set(ThreadTypeaheadState::default());
+    });
+
     let new_chat = move |_| {
         let mut idx = 0;
+        let backend = chat_backend.get_untracked();
         chats.update(|cs| {
-            cs.push(Chat::new());
+            cs.push(Chat::new_with_backend(backend));
             idx = cs.len() - 1;
         });
         active.set(idx);
         input.set(String::new());
         error.set(None);
         search.set(String::new());
+        mode.set("chat");
+        crate::dom::focus_message_input();
     };
 
-    // Close a chat: end its delegate session (best effort — else every thread
-    // leaks a parked CLI child), remove it, fix `active`. Keeps at least one.
+    // Close a chat: end its live backend session (best effort), remove it, fix
+    // `active`. Keeps at least one.
     let close_chat = move |idx: usize, session: Option<String>| {
         if let (Some(tok), Some(sid)) = (token.get_value(), session) {
             leptos::task::spawn_local(async move {
                 let _ = start_job(&tok, json!({"kind": "delegate.close", "session_id": sid})).await;
             });
         }
+        let new_backend = chat_backend.get_untracked();
         chats.update(|cs| {
             if cs.len() > 1 {
                 cs.remove(idx);
             } else {
-                cs[0] = Chat::new();
+                cs[0] = Chat::new_with_backend(new_backend);
             }
         });
         let len = chats.with_untracked(|cs| cs.len());
@@ -131,162 +317,171 @@ pub(crate) fn Sidebar(
                 *a = len.saturating_sub(1);
             }
         });
-    };
-
-    // Project management. `adding` toggles a path input; do_add registers a root
-    // (name = its basename) and switches to it; do_remove drops one (keeping the
-    // active selection valid, and never the last workspace).
-    let adding = RwSignal::new(false);
-    let new_path = RwSignal::new(String::new());
-    let do_add = move || {
-        let Some(tok) = token.get_value() else { return };
-        let path = new_path.get_untracked().trim().to_string();
-        if path.is_empty() {
-            return;
-        }
-        let name = path
-            .rsplit('/')
-            .find(|s| !s.is_empty())
-            .unwrap_or(path.as_str())
-            .to_string();
-        new_path.set(String::new());
-        adding.set(false);
-        leptos::task::spawn_local(async move {
-            let list = crate::data::add_workspace(&tok, &name, &path).await;
-            workspaces.set(list);
-            workspace.set(name);
-        });
-    };
-    let do_remove = move |name: String| {
-        if workspaces.with_untracked(|all| all.len()) <= 1 {
-            return;
-        }
-        let Some(tok) = token.get_value() else { return };
-        leptos::task::spawn_local(async move {
-            let list = crate::data::remove_workspace(&tok, &name).await;
-            if workspace.get_untracked() == name
-                && let Some((first, _)) = list.first()
-            {
-                workspace.set(first.clone());
-            }
-            workspaces.set(list);
-        });
+        mode.set("chat");
+        crate::dom::focus_thread_row(active.get_untracked());
     };
 
     view! {
-        <aside class="sidebar">
+        <aside id="sidebar-panel" class="sidebar">
             <div class="brand"><span class="spark">"N"</span><span>"Nerve"</span></div>
-            <button class="newchat" title="New thread" on:click=new_chat>
+            <button type="button" class="newchat" title="New thread" aria-label="Create new thread" aria-keyshortcuts="Meta+N Control+N" on:click=new_chat>
                 <span class="plus">"+"</span>"New thread"
             </button>
             <div class="sidebar-search" class:has-text=move || !search.get().is_empty()>
                 <span class="search-ic">"⌕"</span>
-                <input class="search-in" type="search" placeholder="Search threads"
+                <input id="thread-search" class="search-in" type="search" placeholder="Search threads"
+                    spellcheck="false"
+                    aria-label="Search threads. Press Down Arrow to enter the thread list."
+                    aria-controls="thread-list"
+                    aria-keyshortcuts="Meta+F Control+F"
                     prop:value=move || search.get()
                     on:input=move |ev| search.set(event_target_value(&ev))
-                    on:keydown=move |ev| {
-                        if ev.key() == "Escape" && !search.get_untracked().is_empty() {
+                    on:keydown=move |ev| match ev.key().as_str() {
+                        "ArrowDown" => {
+                            ev.prevent_default();
+                            focus_active_thread();
+                        }
+                        "Escape" if !search.get_untracked().is_empty() => {
                             ev.prevent_default();
                             search.set(String::new());
+                            thread_typeahead.set(ThreadTypeaheadState::default());
                         }
+                        _ => {}
                     } />
-                <button class="search-clear" title="Clear" on:click=move |_| search.set(String::new())>"×"</button>
+                <button type="button" class="search-clear" title="Clear" aria-label="Clear thread search"
+                    hidden=move || search.get().is_empty()
+                    on:click=move |_| {
+                        search.set(String::new());
+                        crate::dom::focus_thread_search();
+                    }>"×"</button>
             </div>
             <nav class="nav" aria-label="Workspace navigation">
-                <button class="nav-row on" title="Threads">
+                <button type="button"
+                    class="nav-row"
+                    class:on=move || mode.get() == "chat"
+                    title="Threads"
+                    aria-current=move || if mode.get() == "chat" { "page" } else { "false" }
+                    aria-controls="surface-chat"
+                    aria-keyshortcuts="Meta+1 Control+1"
+                    on:click=move |_| {
+                        mode.set("chat");
+                        crate::dom::focus_message_input();
+                    }
+                >
                     <span class="nav-icon">{thread_icon()}</span><span>"Threads"</span>
                 </button>
-                <button class="nav-row" title="Chats — coming soon" aria-disabled="true">
-                    <span class="nav-icon">{chat_icon()}</span><span>"Chats"</span>
+                <button type="button"
+                    class="nav-row"
+                    class:on=move || mode.get() == "context"
+                    title="Context"
+                    aria-current=move || if mode.get() == "context" { "page" } else { "false" }
+                    aria-controls="surface-context"
+                    aria-keyshortcuts="Meta+2 Control+2"
+                    on:click=move |_| {
+                        mode.set("context");
+                        crate::dom::focus_context_filter();
+                    }
+                >
+                    <span class="nav-icon">{chat_icon()}</span><span>"Context"</span>
                 </button>
-                <button class="nav-row" title="Automations — coming soon" aria-disabled="true">
-                    <span class="nav-icon">{automation_icon()}</span><span>"Automations"</span>
+                <button type="button"
+                    class="nav-row"
+                    class:on=move || inspector_open.get() && inspector_tab.get() == "review"
+                    title="Review packet"
+                    aria-controls="inspector-panel review-panel"
+                    aria-expanded=move || (inspector_open.get() && inspector_tab.get() == "review").to_string()
+                    aria-keyshortcuts="Meta+3 Control+3"
+                    on:click=move |_| open_inspector_tab.run("review")
+                >
+                    <span class="nav-icon">{automation_icon()}</span><span>"Review"</span>
                 </button>
-                <button class="nav-row" title="Skills — coming soon" aria-disabled="true">
-                    <span class="nav-icon">{skill_icon()}</span><span>"Skills"</span>
+                <button type="button"
+                    class="nav-row"
+                    class:on=move || inspector_open.get() && inspector_tab.get() == "plan"
+                    title="Tool activity"
+                    aria-controls="inspector-panel tool-panel"
+                    aria-expanded=move || (inspector_open.get() && inspector_tab.get() == "plan").to_string()
+                    aria-keyshortcuts="Meta+4 Control+4"
+                    on:click=move |_| open_inspector_tab.run("plan")
+                >
+                    <span class="nav-icon">{skill_icon()}</span><span>"Tools"</span>
                 </button>
             </nav>
-            <div class="rail-label rail-label-row">
-                <span>"Projects"</span>
-                <button class="rail-add" title="Add project"
-                    on:click=move |_| adding.update(|a| *a = !*a)>"+"</button>
-            </div>
-            {move || adding.get().then(|| view! {
-                <input class="proj-add-in" placeholder="Absolute path to a repo…"
-                    prop:value=move || new_path.get()
-                    on:input=move |ev| new_path.set(event_target_value(&ev))
-                    on:keydown=move |ev| {
-                        if ev.key() == "Enter" { ev.prevent_default(); do_add(); }
-                        if ev.key() == "Escape" { adding.set(false); }
-                    } />
-            })}
-            <div class="proj-list">
-                {move || {
-                    let cur = workspace.get();
-                    let list = workspaces.get();
-                    if list.is_empty() {
-                        return view! {
-                            <div class="project-row"><span class="project-dot"></span>
-                                <span>{move || workspace.get()}</span></div>
-                        }.into_any();
-                    }
-                    let multi = list.len() > 1;
-                    list.into_iter().map(|(name, _root)| {
-                        let on = name == cur;
-                        let pick = name.clone();
-                        let rm = name.clone();
-                        view! {
-                            <div class="rail-row" class:on=on>
-                                <button class="rail-pick" on:click=move |_| workspace.set(pick.clone())>
-                                    <span class="project-dot"></span>
-                                    <span class="rail-title">{name}</span>
-                                </button>
-                                {multi.then(|| {
-                                    let rm = rm.clone();
-                                    view! {
-                                        <button class="rail-close" title="Remove project"
-                                            on:click=move |_| do_remove(rm.clone())>"×"</button>
-                                    }
-                                })}
-                            </div>
-                        }
-                    }).collect_view().into_any()
-                }}
-            </div>
+            <ProjectRail token=token workspace=workspace workspaces=workspaces native_file_dialogs=native_file_dialogs/>
             <div class="thread-rail-wrap">
                 <div class="rail-label">"Threads"</div>
-                <div class="rail rail-nested">
+                <div id="thread-list" class="rail rail-nested" role="list" aria-label="Threads">
                     {move || {
-                        let q = search.get().trim().to_lowercase();
                         let cur = active.get();
-                        // Keep ORIGINAL Vec indices (active/close index the full Vec):
-                        // filter after enumerate, always keep the active chat, then sort
-                        // a copy by recency so the latest thread floats to the top.
-                        let mut rows: Vec<(usize, Chat)> = chats.get().into_iter().enumerate()
-                            .filter(|(i, c)| q.is_empty() || *i == cur || c.title.to_lowercase().contains(&q))
-                            .collect();
-                        rows.sort_by(|a, b| b.1.updated_ms
-                            .partial_cmp(&a.1.updated_ms).unwrap_or(std::cmp::Ordering::Equal));
+                        let query = search.get();
+                        // Keep ORIGINAL Vec indices (active/close index the full Vec).
+                        let rows = chats.with(|all| visible_thread_rows(all, &query, cur));
                         if rows.is_empty() {
-                            return view! { <div class="rail-empty">"No matches"</div> }.into_any();
+                            return view! { <div class="rail-empty" role="status">"No matches"</div> }.into_any();
                         }
-                        rows.into_iter().map(|(i, c)| {
+                        let row_count = rows.len();
+                        rows.into_iter().enumerate().map(|(visible_index, row)| {
+                            let i = row.index;
                             let cls = if i == cur { "rail-row on" } else { "rail-row" };
-                            let live = c.session.is_some();
-                            let title = c.title;
-                            let stamp = rel_time(c.updated_ms);
-                            let session = c.session.clone();
+                            let live = row.session.is_some();
+                            let agent_badge = thread_agent_badge(&row.agent, live);
+                            let agent_class = thread_agent_class(live);
+                            let title = row.title;
+                            let stamp = rel_time(row.updated_ms);
+                            let session_for_key = row.session.clone();
+                            let session_for_close = row.session.clone();
+                            let thread_label = if i == cur {
+                                format!("Current thread: {title}, {agent_badge}, updated {stamp}")
+                            } else {
+                                format!("Thread: {title}, {agent_badge}, updated {stamp}")
+                            };
+                            let close_label = format!("Close thread: {title}");
+                            let pos = (visible_index + 1).to_string();
+                            let size = row_count.to_string();
                             view! {
-                                <div class=cls>
-                                    <button class="rail-pick thread-pick" on:click=move |_| active.set(i)>
+                                <div class=cls role="listitem" aria-posinset=pos aria-setsize=size>
+                                    <button type="button" id=format!("thread-row-{i}") class="rail-pick thread-pick"
+                                        tabindex=if i == cur { "0" } else { "-1" }
+                                        aria-current=if i == cur { "true" } else { "false" }
+                                        aria-label=thread_label
+                                        aria-keyshortcuts="ArrowUp ArrowDown Home End Delete Backspace"
+                                        on:keydown=move |ev| {
+                                            if ev.key() == "Escape" {
+                                                ev.prevent_default();
+                                                crate::dom::focus_thread_search();
+                                                return;
+                                            }
+                                            let query = search.get_untracked();
+                                            let cur = active.get_untracked();
+                                            let rows = chats.with_untracked(|all| visible_thread_rows(all, &query, cur));
+                                            if let Some(next) = thread_key_target(&rows, i, &ev.key()) {
+                                                ev.prevent_default();
+                                                focus_thread(next);
+                                                return;
+                                            }
+                                            if ev.key() == "Delete" || ev.key() == "Backspace" {
+                                                ev.prevent_default();
+                                                close_chat(i, session_for_key.clone());
+                                                return;
+                                            }
+                                            if !(ev.meta_key() || ev.ctrl_key() || ev.alt_key())
+                                                && thread_typeahead_jump(i, ev.key())
+                                            {
+                                                ev.prevent_default();
+                                            }
+                                        }
+                                        on:click=move |_| focus_thread(i)>
                                         <span class="rail-dot" class:live=live></span>
                                         <span class="rail-copy">
                                             <span class="rail-title">{title}</span>
-                                            <span class="rail-sub">{stamp}</span>
+                                            <span class="rail-meta">
+                                                <span class="rail-sub">{stamp}</span>
+                                                <span class=agent_class>{agent_badge}</span>
+                                            </span>
                                         </span>
                                     </button>
-                                    <button class="rail-close" title="Close thread"
-                                        on:click=move |_| close_chat(i, session.clone())>"×"</button>
+                                    <button type="button" class="rail-close" title="Close thread" aria-label=close_label tabindex="-1"
+                                        on:click=move |_| close_chat(i, session_for_close.clone())>"×"</button>
                                 </div>
                             }
                         }).collect_view().into_any()
@@ -294,16 +489,34 @@ pub(crate) fn Sidebar(
                 </div>
             </div>
             <div class="spacer"></div>
-            <button class="nav-row settings-row" title="Settings" on:click=move |_| settings_open.set(true)>
+            <button type="button" class="nav-row settings-row" title="Settings" aria-label="Open settings" aria-keyshortcuts="Meta+, Control+," on:click=move |_| settings_open.set(true)>
                 <span class="nav-icon">{settings_icon()}</span><span>"Settings"</span>
             </button>
-            <div class="status-row">
+            <div class="status-row" role="status" aria-live="polite" aria-label=move || if busy.get() { "Runtime running" } else { "Runtime ready" }>
                 {move || if busy.get() {
-                    view! { <span class="dot busy"></span>"running" }.into_any()
+                    view! { <span class="dot busy" aria-hidden="true"></span>"running" }.into_any()
                 } else {
-                    view! { <span class="dot idle"></span>"runtime v4" }.into_any()
+                    view! { <span class="dot idle" aria-hidden="true"></span>"runtime v4" }.into_any()
                 }}
             </div>
         </aside>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{thread_agent_badge, thread_agent_class};
+
+    #[test]
+    fn thread_agent_badge_marks_live_state() {
+        assert_eq!(thread_agent_badge("claude", true), "Claude Code · live");
+        assert_eq!(thread_agent_badge("claude", false), "Claude Code");
+        assert_eq!(thread_agent_badge("codex", false), "Codex");
+    }
+
+    #[test]
+    fn thread_agent_class_marks_live_sessions() {
+        assert_eq!(thread_agent_class(true), "rail-backend delegate live");
+        assert_eq!(thread_agent_class(false), "rail-backend delegate");
     }
 }

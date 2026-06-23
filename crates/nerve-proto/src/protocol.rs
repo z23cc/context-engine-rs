@@ -68,6 +68,71 @@ pub struct RuntimeCapabilities {
     pub jobs: RuntimeJobCapabilities,
 }
 
+/// Host-shell capabilities available to GUI/runtime clients through protocol
+/// commands. These are intentionally concrete native affordances, not product
+/// wishes: clients should only render native integration affordances when the
+/// host reports support here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct HostCapabilities {
+    pub host: String,
+    pub platform: String,
+    pub workspace_reveal: bool,
+    pub native_window_chrome: bool,
+    pub native_settings_window: bool,
+    pub native_file_dialogs: bool,
+    pub global_hotkey: bool,
+    pub native_drag_drop: bool,
+    pub os_notifications: bool,
+    #[serde(default)]
+    pub external_url_open: bool,
+    pub clipboard_write_text: bool,
+    pub rich_clipboard: bool,
+    pub native_context_menu: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_color_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_accent_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_accent_ink_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostCapabilitySupport {
+    pub clipboard_write_text: bool,
+    pub os_notifications: bool,
+    pub native_file_dialogs: bool,
+    pub external_url_open: bool,
+    pub system_color_scheme: Option<String>,
+    pub system_accent_color: Option<String>,
+    pub system_accent_ink_color: Option<String>,
+}
+
+impl HostCapabilities {
+    #[must_use]
+    pub fn daemon_web(platform: impl Into<String>, support: HostCapabilitySupport) -> Self {
+        Self {
+            host: "nerve-daemon".to_string(),
+            platform: platform.into(),
+            workspace_reveal: true,
+            native_window_chrome: false,
+            native_settings_window: false,
+            native_file_dialogs: support.native_file_dialogs,
+            global_hotkey: false,
+            native_drag_drop: false,
+            os_notifications: support.os_notifications,
+            external_url_open: support.external_url_open,
+            clipboard_write_text: support.clipboard_write_text,
+            rich_clipboard: false,
+            native_context_menu: false,
+            system_color_scheme: support.system_color_scheme,
+            system_accent_color: support.system_accent_color,
+            system_accent_ink_color: support.system_accent_ink_color,
+        }
+    }
+}
+
 impl RuntimeCapabilities {
     #[must_use]
     pub fn current() -> Self {
@@ -194,6 +259,7 @@ pub struct RuntimeProtocolSchema {
     pub runtime_event: RuntimeEvent,
     pub runtime_event_notification: RuntimeEventNotification,
     pub runtime_info: RuntimeInfo,
+    pub host_capabilities: HostCapabilities,
     pub runtime_tool_spec: RuntimeToolSpec,
     pub runtime_job_error: RuntimeJobError,
     pub runtime_job: RuntimeJobSnapshot,

@@ -42,5 +42,6 @@ pub use job::{
     RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
     RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
 };
+pub use protocol::{HostCapabilities, HostCapabilitySupport};
 pub use risk::{RiskTier, ToolCapability};
 pub use tool_spec::RuntimeToolSpec;

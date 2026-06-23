@@ -18,18 +18,51 @@ use crate::{agent, providers::ProviderRegistry, tools};
 use nerve_agent::AgentEvent;
 use nerve_core::{CancelToken, WorkspaceResolver};
 use nerve_runtime::{
-    DelegateAutonomy, FlowSource, RuntimeCommand, RuntimeEvent, RuntimeJobError,
-    RuntimeJobErrorExt, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
-    RuntimeJobStartRequest, RuntimeJobStatus, SessionApprovalDecision,
+    DelegateAutonomy, FlowSource, HostCapabilities, HostCapabilitySupport, RuntimeCommand,
+    RuntimeEvent, RuntimeJobError, RuntimeJobErrorExt, RuntimeJobGetRequest, RuntimeJobListRequest,
+    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus, SessionApprovalDecision,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::fs;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_JOB_ID_LEN: usize = 128;
+const MAX_HOST_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_NOTIFICATION_TITLE_BYTES: usize = 160;
+const MAX_NOTIFICATION_BODY_BYTES: usize = 2 * 1024;
+const MAX_DIALOG_TITLE_BYTES: usize = 160;
+const MAX_DIALOG_NAME_BYTES: usize = 160;
+const MAX_URL_BYTES: usize = 4096;
+const WINDOWS_FOLDER_PICKER_SCRIPT: &str = r#"
+Add-Type -AssemblyName System.Windows.Forms;
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;
+$dialog.Description = $args[0];
+$dialog.ShowNewFolderButton = $true;
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.WriteLine($dialog.SelectedPath);
+    exit 0;
+}
+exit 2;
+"#;
+const WINDOWS_SAVE_FILE_SCRIPT: &str = r#"
+Add-Type -AssemblyName System.Windows.Forms;
+$dialog = New-Object System.Windows.Forms.SaveFileDialog;
+$dialog.Title = $args[0];
+$dialog.FileName = $args[1];
+$dialog.Filter = "Markdown files (*.md)|*.md|Text files (*.txt)|*.txt|All files (*.*)|*.*";
+$dialog.OverwritePrompt = $true;
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.WriteLine($dialog.FileName);
+    exit 0;
+}
+exit 2;
+"#;
 const TERMINAL_RETAINED: usize = 128;
 const MAX_LIST_LIMIT: usize = 500;
 
@@ -305,6 +338,7 @@ impl JobManager {
         let outcome = match executor_for(&command) {
             Executor::AgentRun => self.run_agent_command(&job_id, command, &token),
             Executor::Delegate => self.run_delegate_command(&job_id, command, &token),
+            Executor::Host => self.run_host_command(command, &token),
             Executor::Session => self.sessions.handle_command(command, &token),
             Executor::Auth => self.auth.handle_command(command, &token),
             Executor::Flow => self.run_flow_command(&job_id, command, &token),
@@ -435,11 +469,38 @@ impl JobManager {
                 message,
             } => self.run_delegate_steer(&session_id, &message, token),
             RuntimeCommand::DelegateClose { session_id } => self.run_delegate_close(&session_id),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected a delegate.* command",
+            )),
+        }
+    }
+
+    /// Execute a host-side command. These commands are the declared runtime seam
+    /// for OS/native shell capabilities; the pure core runtime deliberately does
+    /// not know about windows, menus, pasteboards, or process launchers.
+    fn run_host_command(
+        &self,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::HostCapabilities => host_capabilities_value(),
+            RuntimeCommand::HostClipboardWriteText { text } => run_clipboard_write_text(&text),
+            RuntimeCommand::HostNotificationShow { title, body } => {
+                run_notification_show(&title, body.as_deref())
+            }
+            RuntimeCommand::HostFolderPick { title } => run_folder_pick(title.as_deref()),
+            RuntimeCommand::HostFileSaveText {
+                title,
+                default_name,
+                text,
+            } => run_file_save_text(title.as_deref(), default_name.as_deref(), &text, token),
+            RuntimeCommand::HostUrlOpen { url } => run_url_open(&url),
             RuntimeCommand::WorkspaceReveal { workspace } => {
                 self.run_workspace_reveal(workspace.as_deref())
             }
             _ => Err(nerve_runtime::RuntimeError::adapter(
-                "expected a delegate.* or workspace.* command",
+                "expected a host.* or workspace.* command",
             )),
         }
     }
@@ -1095,6 +1156,8 @@ enum Executor {
     /// The host delegate runtime (`delegate.*` family): drives an external agent
     /// CLI subprocess. DA-1 ships a stub; DA-2 wires the real subprocess.
     Delegate,
+    /// The runtime host/native shell side-effects (`host.*` / `workspace.*`).
+    Host,
     /// The host `SessionManager` (`session.*` family).
     Session,
     /// The host `AuthManager` (`auth.*` family).
@@ -1106,12 +1169,757 @@ enum Executor {
     CoreHub,
 }
 
-/// Map every protocol command to its single owning executor.
-///
-/// This is an **exhaustive** match on [`RuntimeCommand`] on purpose: it is the §10
-/// hard gate. Adding a new variant breaks this match at COMPILE time, forcing an
-/// explicit executor decision rather than letting the command fall through to the
-/// core hub by default. Do not add a wildcard arm.
+/// Serialize the host-shell capability surface reachable through the daemon.
+fn host_capabilities_value() -> Result<Value, nerve_runtime::RuntimeError> {
+    let (scheme, accent, accent_ink) = host_appearance();
+    let caps = HostCapabilities::daemon_web(
+        host_platform(),
+        HostCapabilitySupport {
+            clipboard_write_text: clipboard_write_text_supported(),
+            os_notifications: notifications_supported(),
+            native_file_dialogs: native_file_dialogs_supported(),
+            external_url_open: external_url_open_supported(),
+            system_color_scheme: scheme,
+            system_accent_color: accent,
+            system_accent_ink_color: accent_ink,
+        },
+    );
+    serde_json::to_value(caps).map_err(|err| {
+        nerve_runtime::RuntimeError::adapter(format!("serialize host capabilities: {err}"))
+    })
+}
+
+fn run_clipboard_write_text(text: &str) -> Result<Value, nerve_runtime::RuntimeError> {
+    validate_host_text("clipboard text", text)?;
+    write_clipboard_text(text)?;
+    Ok(json!({ "written": true, "bytes": text.len() }))
+}
+
+fn write_clipboard_text(text: &str) -> Result<(), nerve_runtime::RuntimeError> {
+    let mut attempts = Vec::new();
+    for (program, args) in clipboard_write_commands() {
+        match write_clipboard_with_command(program, args, text) {
+            Ok(()) => return Ok(()),
+            Err(err) => attempts.push(format!("{program}: {err}")),
+        }
+    }
+    Err(nerve_runtime::RuntimeError::adapter(format!(
+        "host clipboard write unavailable ({})",
+        attempts.join("; ")
+    )))
+}
+
+fn write_clipboard_with_command(program: &str, args: &[&str], text: &str) -> Result<(), String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let write_result = match child.stdin.take() {
+        Some(mut stdin) => stdin
+            .write_all(text.as_bytes())
+            .map_err(|err| err.to_string()),
+        None => Err("stdin unavailable".to_string()),
+    };
+    let status = child.wait().map_err(|err| err.to_string())?;
+    write_result?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("exited with {status}"))
+    }
+}
+
+fn clipboard_write_text_supported() -> bool {
+    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        return true;
+    }
+    clipboard_write_commands()
+        .iter()
+        .any(|(program, _)| program_available(program))
+}
+
+fn program_available(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+        .unwrap_or(false)
+}
+
+fn run_folder_pick(title: Option<&str>) -> Result<Value, nerve_runtime::RuntimeError> {
+    let title = dialog_title(title, "Choose a project folder", "folder picker title")?;
+    let path = pick_folder(&title)?;
+    if path.is_empty() {
+        return Err(nerve_runtime::RuntimeError::adapter(
+            "folder picker returned an empty path",
+        ));
+    }
+    Ok(json!({ "path": path }))
+}
+
+fn run_file_save_text(
+    title: Option<&str>,
+    default_name: Option<&str>,
+    text: &str,
+    token: &CancelToken,
+) -> Result<Value, nerve_runtime::RuntimeError> {
+    if token.is_cancelled() {
+        return Err(nerve_runtime::RuntimeError::cancelled());
+    }
+    validate_host_text("file text", text)?;
+    let title = dialog_title(title, "Save packet", "save panel title")?;
+    let default_name = dialog_default_name(default_name)?;
+    let path = pick_save_file(&title, &default_name)?;
+    if token.is_cancelled() {
+        return Err(nerve_runtime::RuntimeError::cancelled());
+    }
+    fs::write(&path, text.as_bytes()).map_err(|err| {
+        nerve_runtime::RuntimeError::adapter(format!("write selected file `{path}`: {err}"))
+    })?;
+    Ok(json!({ "path": path, "bytes": text.len() }))
+}
+
+fn validate_host_text(label: &str, text: &str) -> Result<(), nerve_runtime::RuntimeError> {
+    if text.len() > MAX_HOST_TEXT_BYTES {
+        return Err(nerve_runtime::RuntimeError::adapter(format!(
+            "{label} is too large: {} bytes exceeds {MAX_HOST_TEXT_BYTES}",
+            text.len()
+        )));
+    }
+    Ok(())
+}
+
+fn dialog_title(
+    title: Option<&str>,
+    fallback: &'static str,
+    label: &'static str,
+) -> Result<String, nerve_runtime::RuntimeError> {
+    let title = title.unwrap_or(fallback).trim();
+    if title.len() > MAX_DIALOG_TITLE_BYTES {
+        return Err(nerve_runtime::RuntimeError::adapter(format!(
+            "{label} is too large: {} bytes exceeds {MAX_DIALOG_TITLE_BYTES}",
+            title.len()
+        )));
+    }
+    Ok(if title.is_empty() { fallback } else { title }.to_string())
+}
+
+fn dialog_default_name(default_name: Option<&str>) -> Result<String, nerve_runtime::RuntimeError> {
+    let raw = default_name.unwrap_or("nerve-packet.md").trim();
+    if raw.len() > MAX_DIALOG_NAME_BYTES {
+        return Err(nerve_runtime::RuntimeError::adapter(format!(
+            "save default name is too large: {} bytes exceeds {MAX_DIALOG_NAME_BYTES}",
+            raw.len()
+        )));
+    }
+    let name = raw
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("nerve-packet.md");
+    Ok(if name.is_empty() {
+        "nerve-packet.md"
+    } else {
+        name
+    }
+    .to_string())
+}
+
+fn pick_folder(title: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    if cfg!(target_os = "macos") {
+        return run_macos_folder_picker(title);
+    }
+    if cfg!(target_os = "windows") {
+        return run_windows_folder_picker(title);
+    }
+    if cfg!(target_os = "linux") {
+        return run_linux_folder_picker(title);
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "native folder picker is unavailable on this platform",
+    ))
+}
+
+fn pick_save_file(title: &str, default_name: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    if cfg!(target_os = "macos") {
+        return run_macos_save_panel(title, default_name);
+    }
+    if cfg!(target_os = "windows") {
+        return run_windows_save_panel(title, default_name);
+    }
+    if cfg!(target_os = "linux") {
+        return run_linux_save_panel(title, default_name);
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "native save panel is unavailable on this platform",
+    ))
+}
+
+fn run_url_open(url: &str) -> Result<Value, nerve_runtime::RuntimeError> {
+    let url = validate_external_url(url)?;
+    open_external_url(&url)?;
+    Ok(json!({ "opened": true, "url": url }))
+}
+
+fn validate_external_url(url: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    let trimmed = url.trim();
+    if trimmed.len() > MAX_URL_BYTES {
+        return Err(nerve_runtime::RuntimeError::adapter(format!(
+            "url is too large: {} bytes exceeds {MAX_URL_BYTES}",
+            trimmed.len()
+        )));
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        Ok(trimmed.to_string())
+    } else {
+        Err(nerve_runtime::RuntimeError::adapter(
+            "host.url.open only accepts http(s) URLs",
+        ))
+    }
+}
+
+fn open_external_url(url: &str) -> Result<(), nerve_runtime::RuntimeError> {
+    if cfg!(target_os = "macos") {
+        return run_status_command("open", &[url]);
+    }
+    if cfg!(target_os = "windows") {
+        let Some(program) = windows_dialog_program() else {
+            return Err(nerve_runtime::RuntimeError::adapter(
+                "external URL opener is unavailable on this Windows host",
+            ));
+        };
+        return run_status_command(
+            program,
+            &["-NoProfile", "-Command", "Start-Process $args[0]", url],
+        );
+    }
+    if cfg!(target_os = "linux") {
+        if program_available("xdg-open") {
+            return run_status_command("xdg-open", &[url]);
+        }
+        if program_available("gio") {
+            return run_status_command("gio", &["open", url]);
+        }
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "external URL opener is unavailable on this platform",
+    ))
+}
+
+fn run_notification_show(
+    title: &str,
+    body: Option<&str>,
+) -> Result<Value, nerve_runtime::RuntimeError> {
+    validate_notification_text("title", title, MAX_NOTIFICATION_TITLE_BYTES)?;
+    let body = body.unwrap_or_default();
+    validate_notification_text("body", body, MAX_NOTIFICATION_BODY_BYTES)?;
+    show_notification(title.trim(), body.trim())?;
+    Ok(json!({ "shown": true }))
+}
+
+fn validate_notification_text(
+    field: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), nerve_runtime::RuntimeError> {
+    if field == "title" && value.trim().is_empty() {
+        return Err(nerve_runtime::RuntimeError::adapter(
+            "notification title cannot be empty",
+        ));
+    }
+    if value.len() > max_bytes {
+        return Err(nerve_runtime::RuntimeError::adapter(format!(
+            "notification {field} is too large: {} bytes exceeds {max_bytes}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+fn show_notification(title: &str, body: &str) -> Result<(), nerve_runtime::RuntimeError> {
+    if cfg!(target_os = "macos") {
+        return run_macos_notification(title, body);
+    }
+    if cfg!(target_os = "linux") && program_available("notify-send") {
+        return run_status_command("notify-send", &[title, body]);
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "host notifications are unavailable on this platform",
+    ))
+}
+
+fn run_macos_notification(title: &str, body: &str) -> Result<(), nerve_runtime::RuntimeError> {
+    run_status_command(
+        "osascript",
+        &[
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 2 of argv) with title (item 1 of argv)",
+            "-e",
+            "end run",
+            title,
+            body,
+        ],
+    )
+}
+
+fn run_macos_folder_picker(title: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    run_output_command(
+        "osascript",
+        &[
+            "-e",
+            "on run argv",
+            "-e",
+            "set promptText to item 1 of argv",
+            "-e",
+            "set pickedFolder to choose folder with prompt promptText",
+            "-e",
+            "return POSIX path of pickedFolder",
+            "-e",
+            "end run",
+            title,
+        ],
+        "osascript returned no folder path",
+        "folder selection cancelled",
+    )
+}
+
+fn run_macos_save_panel(
+    title: &str,
+    default_name: &str,
+) -> Result<String, nerve_runtime::RuntimeError> {
+    run_output_command(
+        "osascript",
+        &[
+            "-e",
+            "on run argv",
+            "-e",
+            "set promptText to item 1 of argv",
+            "-e",
+            "set defaultName to item 2 of argv",
+            "-e",
+            "set pickedFile to choose file name with prompt promptText default name defaultName",
+            "-e",
+            "return POSIX path of pickedFile",
+            "-e",
+            "end run",
+            title,
+            default_name,
+        ],
+        "osascript returned no save path",
+        "file save cancelled",
+    )
+}
+
+fn run_linux_folder_picker(title: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    if program_available("zenity") {
+        return run_output_command(
+            "zenity",
+            &["--file-selection", "--directory", "--title", title],
+            "zenity returned no folder path",
+            "folder selection cancelled",
+        );
+    }
+    if program_available("kdialog") {
+        return run_output_command(
+            "kdialog",
+            &["--title", title, "--getexistingdirectory"],
+            "kdialog returned no folder path",
+            "folder selection cancelled",
+        );
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "native folder picker is unavailable on this Linux host",
+    ))
+}
+
+fn run_linux_save_panel(
+    title: &str,
+    default_name: &str,
+) -> Result<String, nerve_runtime::RuntimeError> {
+    if program_available("zenity") {
+        return run_output_command(
+            "zenity",
+            &[
+                "--file-selection",
+                "--save",
+                "--confirm-overwrite",
+                "--title",
+                title,
+                "--filename",
+                default_name,
+            ],
+            "zenity returned no save path",
+            "file save cancelled",
+        );
+    }
+    if program_available("kdialog") {
+        return run_output_command(
+            "kdialog",
+            &["--title", title, "--getsavefilename", default_name],
+            "kdialog returned no save path",
+            "file save cancelled",
+        );
+    }
+    Err(nerve_runtime::RuntimeError::adapter(
+        "native save panel is unavailable on this Linux host",
+    ))
+}
+
+fn run_windows_folder_picker(title: &str) -> Result<String, nerve_runtime::RuntimeError> {
+    let Some(program) = windows_dialog_program() else {
+        return Err(nerve_runtime::RuntimeError::adapter(
+            "native folder picker is unavailable on this Windows host",
+        ));
+    };
+    run_output_command(
+        program,
+        &[
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            WINDOWS_FOLDER_PICKER_SCRIPT,
+            title,
+        ],
+        "PowerShell returned no folder path",
+        "folder selection cancelled",
+    )
+}
+
+fn run_windows_save_panel(
+    title: &str,
+    default_name: &str,
+) -> Result<String, nerve_runtime::RuntimeError> {
+    let Some(program) = windows_dialog_program() else {
+        return Err(nerve_runtime::RuntimeError::adapter(
+            "native save panel is unavailable on this Windows host",
+        ));
+    };
+    run_output_command(
+        program,
+        &[
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            WINDOWS_SAVE_FILE_SCRIPT,
+            title,
+            default_name,
+        ],
+        "PowerShell returned no save path",
+        "file save cancelled",
+    )
+}
+
+fn run_output_command(
+    program: &str,
+    args: &[&str],
+    empty_message: &'static str,
+    cancel_message: &'static str,
+) -> Result<String, nerve_runtime::RuntimeError> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| nerve_runtime::RuntimeError::adapter(format!("run {program}: {err}")))?;
+    if !output.status.success() {
+        return Err(nerve_runtime::RuntimeError::adapter(command_failure(
+            program,
+            output.status,
+            &output.stderr,
+            cancel_message,
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    if text.is_empty() {
+        return Err(nerve_runtime::RuntimeError::adapter(empty_message));
+    }
+    Ok(text)
+}
+
+fn run_status_command(program: &str, args: &[&str]) -> Result<(), nerve_runtime::RuntimeError> {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| nerve_runtime::RuntimeError::adapter(format!("run {program}: {err}")))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(nerve_runtime::RuntimeError::adapter(format!(
+                    "{program} exited with {status}"
+                )))
+            }
+        })
+}
+
+fn command_failure(
+    program: &str,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+    cancel_message: &'static str,
+) -> String {
+    let message = String::from_utf8_lossy(stderr).trim().to_string();
+    if dialog_cancelled(status, &message) {
+        return cancel_message.to_string();
+    }
+    if message.is_empty() {
+        format!("{program} exited with {status}")
+    } else {
+        format!("{program} exited with {status}: {message}")
+    }
+}
+
+fn dialog_cancelled(status: std::process::ExitStatus, message: &str) -> bool {
+    let code = status.code();
+    code == Some(2)
+        || message.contains("User canceled")
+        || message.contains("-128")
+        || (message.is_empty() && code == Some(1))
+}
+
+fn notifications_supported() -> bool {
+    if cfg!(target_os = "macos") {
+        return program_available("osascript");
+    }
+    cfg!(target_os = "linux") && program_available("notify-send")
+}
+
+fn host_appearance() -> (Option<String>, Option<String>, Option<String>) {
+    let scheme = system_color_scheme();
+    let accent = system_accent_color();
+    let accent_ink = accent.as_deref().and_then(accent_ink_color);
+    (scheme, accent, accent_ink)
+}
+
+fn system_color_scheme() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return macos_color_scheme();
+    }
+    if cfg!(target_os = "windows") {
+        return windows_color_scheme();
+    }
+    if cfg!(target_os = "linux") {
+        return linux_color_scheme();
+    }
+    None
+}
+
+fn system_accent_color() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return macos_accent_color();
+    }
+    if cfg!(target_os = "windows") {
+        return windows_accent_color();
+    }
+    if cfg!(target_os = "linux") {
+        return linux_accent_color();
+    }
+    None
+}
+
+fn macos_color_scheme() -> Option<String> {
+    if !program_available("defaults") {
+        return None;
+    }
+    let output = Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let value = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && value.trim().eq_ignore_ascii_case("Dark") {
+        Some("dark".into())
+    } else {
+        Some("light".into())
+    }
+}
+
+fn macos_accent_color() -> Option<String> {
+    let value = command_stdout("defaults", &["read", "-g", "AppleAccentColor"])?;
+    match value.trim().parse::<i32>().ok()? {
+        0 => Some("#ff3b30".into()),
+        1 => Some("#ff9500".into()),
+        2 => Some("#ffcc00".into()),
+        3 => Some("#34c759".into()),
+        4 => Some("#007aff".into()),
+        5 => Some("#af52de".into()),
+        6 => Some("#ff2d55".into()),
+        _ => None,
+    }
+}
+
+fn windows_color_scheme() -> Option<String> {
+    let program = windows_dialog_program()?;
+    let value = command_stdout(
+        program,
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize').AppsUseLightTheme",
+        ],
+    )?;
+    match value.trim() {
+        "0" => Some("dark".into()),
+        "1" => Some("light".into()),
+        _ => None,
+    }
+}
+
+fn windows_accent_color() -> Option<String> {
+    let program = windows_dialog_program()?;
+    let value = command_stdout(
+        program,
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\DWM').AccentColor",
+        ],
+    )?;
+    let raw = value.trim().parse::<i64>().ok()? as u32;
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        raw & 0xff,
+        (raw >> 8) & 0xff,
+        (raw >> 16) & 0xff
+    ))
+}
+
+fn linux_color_scheme() -> Option<String> {
+    let value = command_stdout(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "color-scheme"],
+    )?;
+    if value.contains("dark") {
+        Some("dark".into())
+    } else if value.contains("light") {
+        Some("light".into())
+    } else {
+        None
+    }
+}
+
+fn linux_accent_color() -> Option<String> {
+    let value = command_stdout(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "accent-color"],
+    )?;
+    match value.trim_matches(['\'', '"', ' ']) {
+        "blue" => Some("#3584e4".into()),
+        "teal" => Some("#2190a4".into()),
+        "green" => Some("#3a944a".into()),
+        "yellow" => Some("#c88800".into()),
+        "orange" => Some("#ed5b00".into()),
+        "red" => Some("#e62d42".into()),
+        "pink" => Some("#d56199".into()),
+        "purple" => Some("#9141ac".into()),
+        "slate" => Some("#6f8396".into()),
+        _ => None,
+    }
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn accent_ink_color(color: &str) -> Option<String> {
+    let (r, g, b) = parse_hex_color(color)?;
+    let luminance = u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114;
+    Some(
+        if luminance > 150_000 {
+            "#111111"
+        } else {
+            "#ffffff"
+        }
+        .into(),
+    )
+}
+
+fn parse_hex_color(color: &str) -> Option<(u8, u8, u8)> {
+    let hex = color.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn native_file_dialogs_supported() -> bool {
+    if cfg!(target_os = "macos") {
+        return program_available("osascript");
+    }
+    if cfg!(target_os = "windows") {
+        return windows_dialog_program().is_some();
+    }
+    cfg!(target_os = "linux") && (program_available("zenity") || program_available("kdialog"))
+}
+
+fn external_url_open_supported() -> bool {
+    if cfg!(target_os = "macos") {
+        return program_available("open");
+    }
+    if cfg!(target_os = "windows") {
+        return windows_dialog_program().is_some();
+    }
+    cfg!(target_os = "linux") && (program_available("xdg-open") || program_available("gio"))
+}
+
+fn windows_dialog_program() -> Option<&'static str> {
+    ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+        .into_iter()
+        .find(|program| program_available(program))
+}
+
+fn host_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    }
+}
+
+/// Platform clipboard writer commands, ordered by preference.
+fn clipboard_write_commands() -> &'static [(&'static str, &'static [&'static str])] {
+    const NO_ARGS: &[&str] = &[];
+    const XCLIP_ARGS: &[&str] = &["-selection", "clipboard"];
+    const XSEL_ARGS: &[&str] = &["--clipboard", "--input"];
+    const MACOS: &[(&str, &[&str])] = &[("pbcopy", NO_ARGS)];
+    const WINDOWS: &[(&str, &[&str])] = &[("clip", NO_ARGS)];
+    const LINUX: &[(&str, &[&str])] = &[
+        ("wl-copy", NO_ARGS),
+        ("xclip", XCLIP_ARGS),
+        ("xsel", XSEL_ARGS),
+    ];
+    if cfg!(target_os = "macos") {
+        MACOS
+    } else if cfg!(target_os = "windows") {
+        WINDOWS
+    } else {
+        LINUX
+    }
+}
+
 /// The OS file-manager opener for the current platform (used by `workspace.reveal`).
 fn workspace_opener() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -1123,16 +1931,25 @@ fn workspace_opener() -> &'static str {
     }
 }
 
+/// Map every protocol command to its single owning executor.
+///
+/// This is an **exhaustive** match on [`RuntimeCommand`] on purpose: it is the §10
+/// hard gate. Adding a new variant breaks this match at COMPILE time, forcing an
+/// explicit executor decision rather than letting the command fall through to the
+/// core hub by default. Do not add a wildcard arm.
 fn executor_for(command: &RuntimeCommand) -> Executor {
     match command {
         RuntimeCommand::AgentRun { .. } => Executor::AgentRun,
         RuntimeCommand::DelegateStart { .. }
         | RuntimeCommand::DelegateSteer { .. }
-        | RuntimeCommand::DelegateClose { .. }
-        // workspace.reveal is a host side-effect (open the root in the OS file
-        // manager); it rides the delegate executor, which already owns the served
-        // workspace root and host-process actions.
-        | RuntimeCommand::WorkspaceReveal { .. } => Executor::Delegate,
+        | RuntimeCommand::DelegateClose { .. } => Executor::Delegate,
+        RuntimeCommand::HostCapabilities
+        | RuntimeCommand::HostClipboardWriteText { .. }
+        | RuntimeCommand::HostNotificationShow { .. }
+        | RuntimeCommand::HostFolderPick { .. }
+        | RuntimeCommand::HostFileSaveText { .. }
+        | RuntimeCommand::HostUrlOpen { .. }
+        | RuntimeCommand::WorkspaceReveal { .. } => Executor::Host,
         RuntimeCommand::SessionStart { .. }
         | RuntimeCommand::SessionMessage { .. }
         | RuntimeCommand::SessionInterrupt { .. }
@@ -1208,7 +2025,17 @@ mod command_executor_partition {
     /// an executor decision in `every_runtime_command_has_exactly_one_executor`.
     fn representative(name: &str) -> RuntimeCommand {
         let fields: Value = match name {
-            "ping" | "tool.list" | "session.list" | "flow.list" | "workspace.reveal" => json!({}),
+            "ping" | "tool.list" | "session.list" | "flow.list" | "host.capabilities"
+            | "workspace.reveal" => json!({}),
+            "host.clipboard.write_text" => json!({ "text": "copy me" }),
+            "host.notification.show" => json!({ "title": "Nerve", "body": "Done" }),
+            "host.folder.pick" => json!({ "title": "Choose project folder" }),
+            "host.file.save_text" => json!({
+                "title": "Save packet",
+                "default_name": "packet.md",
+                "text": "# Packet"
+            }),
+            "host.url.open" => json!({ "url": "https://example.com/auth" }),
             "tool.call" => json!({ "name": "file_search" }),
             "agent.run" => json!({ "provider": "p", "model": "m", "task": "t" }),
             "session.start" => json!({ "provider": "p", "model": "m" }),
@@ -1284,6 +2111,7 @@ mod command_executor_partition {
         for executor in [
             Executor::AgentRun,
             Executor::Delegate,
+            Executor::Host,
             Executor::Session,
             Executor::Auth,
             Executor::Flow,
@@ -1315,6 +2143,21 @@ mod command_executor_partition {
         );
         assert_eq!(executor_for(&representative("auth.start")), Executor::Auth);
         for name in [
+            "host.capabilities",
+            "host.clipboard.write_text",
+            "host.notification.show",
+            "host.folder.pick",
+            "host.file.save_text",
+            "host.url.open",
+            "workspace.reveal",
+        ] {
+            assert_eq!(
+                executor_for(&representative(name)),
+                Executor::Host,
+                "`{name}` must route to the host executor"
+            );
+        }
+        for name in [
             "flow.start",
             "flow.steer",
             "flow.replay",
@@ -1329,6 +2172,38 @@ mod command_executor_partition {
                 "`{name}` must route to the flow executor"
             );
         }
+    }
+
+    #[test]
+    fn host_url_validation_accepts_only_external_http_urls() {
+        assert_eq!(
+            validate_external_url(" https://example.com/auth ").expect("https URL accepted"),
+            "https://example.com/auth"
+        );
+        assert_eq!(
+            validate_external_url("http://localhost:1455/auth/callback")
+                .expect("http loopback URL accepted"),
+            "http://localhost:1455/auth/callback"
+        );
+
+        for url in [
+            "file:///tmp/secret",
+            "nerve://auth/callback",
+            "javascript:alert(1)",
+            "mailto:security@example.com",
+            "",
+        ] {
+            assert!(
+                validate_external_url(url).is_err(),
+                "non-http(s) URL `{url}` must not reach the OS opener"
+            );
+        }
+
+        let oversized = format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES));
+        assert!(
+            validate_external_url(&oversized).is_err(),
+            "oversized URL must be rejected before invoking the host opener"
+        );
     }
 
     #[test]

@@ -8,6 +8,12 @@ Nerve Workstation is a deterministic, pure-Rust code-intelligence engine exposed
 runtime adapters over the **same** engine: an agent-facing **MCP server over stdio**, and
 **`nerve daemon`**, a local runtime for human-facing frontends. The single binary is `nerve`.
 
+**Product direction (2026-06-23):** the human-facing runtime is a **cockpit for orchestrating
+multiple external CLI coding agents** (Claude Code, Codex, Gemini CLI) through the `delegate.*` seam
+— managing/observing them and handing them Nerve's engine as MCP tools — rather than running its own
+LLM loop. The built-in `nerve-agent` engine (`session.*` / `agent.run`) is a **secondary, optional**
+path, not featured in the GUI. See `docs/designs/architecture-north-star.md` §1/§8.
+
 ## Commands
 
 ```bash
@@ -170,6 +176,7 @@ The long-term architecture and its invariants live in `docs/designs/architecture
 
   | Adding… | Seam to use |
   |---|---|
+  | **Managing / adding an external agent CLI (primary)** | the `delegate.*` seam (`delegate_runtime.rs`) — never a new face |
   | A first-party tool | `RuntimeToolAdapter` (in `nerve-runtime`) |
   | External / third-party tools | an MCP-client `RuntimeToolAdapter` (consume MCP servers) |
   | A model provider | `nerve_agent::provider::LlmProvider` (+ config for OpenAI-compatible) |
@@ -178,6 +185,9 @@ The long-term architecture and its invariants live in `docs/designs/architecture
   | Agent capabilities | Skills / Agent-Def data (loaded, not compiled) |
   | A new client surface (GUI/TUI/mobile) | the versioned runtime protocol (never a new bespoke RPC) |
 
-- **Roadmap priority:** P0 Session layer (fold the agent into the protocol) → P1 MCP client →
-  P2 provider registry/config → P3 skills + agent/workflow defs → P4 permission engine →
-  P5 persistence → P6 hooks + GUI/mobile.
+- **Roadmap priority (direction updated 2026-06-23):** the **headline is P7 — a multi-agent cockpit
+  over external CLI agents** (`delegate.*` primary; own-engine `session.*` / `agent.run` demoted to a
+  secondary, optional seam, not featured in the GUI). Prior foundation: P0 Session layer (fold the
+  agent into the protocol) → P1 MCP client → P2 provider registry/config → P3 skills + agent/workflow
+  defs → P4 permission engine → P5 persistence → P6 hooks + GUI/mobile. See
+  `docs/designs/architecture-north-star.md` §1/§8.

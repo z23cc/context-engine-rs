@@ -631,6 +631,84 @@
         }
       ]
     },
+    "HostCapabilities": {
+      "description": "Host-shell capabilities available to GUI/runtime clients through protocol commands. These are intentionally concrete native affordances, not product wishes: clients should only render native integration affordances when the host reports support here.",
+      "properties": {
+        "clipboardWriteText": {
+          "type": "boolean"
+        },
+        "externalUrlOpen": {
+          "default": false,
+          "type": "boolean"
+        },
+        "globalHotkey": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        },
+        "nativeContextMenu": {
+          "type": "boolean"
+        },
+        "nativeDragDrop": {
+          "type": "boolean"
+        },
+        "nativeFileDialogs": {
+          "type": "boolean"
+        },
+        "nativeSettingsWindow": {
+          "type": "boolean"
+        },
+        "nativeWindowChrome": {
+          "type": "boolean"
+        },
+        "osNotifications": {
+          "type": "boolean"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "richClipboard": {
+          "type": "boolean"
+        },
+        "systemAccentColor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "systemAccentInkColor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "systemColorScheme": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspaceReveal": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "clipboardWriteText",
+        "globalHotkey",
+        "host",
+        "nativeContextMenu",
+        "nativeDragDrop",
+        "nativeFileDialogs",
+        "nativeSettingsWindow",
+        "nativeWindowChrome",
+        "osNotifications",
+        "platform",
+        "richClipboard",
+        "workspaceReveal"
+      ],
+      "type": "object"
+    },
     "Join": {
       "description": "How parallel/vote results are folded — always in **declared `Step` order**, never completion order (design §3, the determinism invariant).",
       "oneOf": [
@@ -1534,7 +1612,137 @@
           "type": "object"
         },
         {
-          "description": "Reveal a served workspace root in the OS file manager (macOS Finder / Windows Explorer / Linux `xdg-open`). Pure protocol vocabulary: the host daemon runs the platform opener on the resolved root; `nerve-core` has no process knowledge. `workspace` selects which root when more than one is registered (defaults to the first). This is the GUI's \"open location\" affordance — clients reach it over `/rpc`, never via native IPC.",
+          "description": "Return concrete host/native affordances reachable through the daemon.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "host.capabilities"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Write plain text to the host OS clipboard through the daemon.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "host.clipboard.write_text"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Show a native OS notification through the host daemon.",
+          "properties": {
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "host.notification.show"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a native host folder picker and return the selected absolute path.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "host.folder.pick"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Save UTF-8 text through a native host save panel.",
+          "properties": {
+            "default_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "host.file.save_text"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open an external http(s) URL with the host OS default handler.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "host.url.open"
+              ],
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reveal a served workspace root in the OS file manager through the daemon.",
           "properties": {
             "kind": {
               "enum": [
@@ -3642,6 +3850,9 @@
     "approvalMode": {
       "$ref": "#/definitions/ApprovalMode"
     },
+    "hostCapabilities": {
+      "$ref": "#/definitions/HostCapabilities"
+    },
     "jsonValue": true,
     "runtimeCommand": {
       "$ref": "#/definitions/RuntimeCommand"
@@ -3691,6 +3902,7 @@
   },
   "required": [
     "approvalMode",
+    "hostCapabilities",
     "jsonValue",
     "runtimeCommand",
     "runtimeEvent",

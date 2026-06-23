@@ -27,11 +27,11 @@ pub use job::RuntimeJobErrorExt;
 pub use nerve_proto::{
     AgentEventKind, ApprovalMode, AuthEventKind, AuthStartFlow, BudgetSpec, ContextSplit,
     DelegateAutonomy, FailPolicy, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome, FlowSource,
-    FlowWorkerKind, Join, LedgerRef, RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent,
-    RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
-    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec,
-    SessionApprovalDecision, Step, Strategy, TaskTemplate, ToolCapability, WorkerRef,
-    WorkerSelector, WorkflowDef,
+    FlowWorkerKind, HostCapabilities, HostCapabilitySupport, Join, LedgerRef,
+    RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent, RuntimeJobCancelRequest,
+    RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
+    RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec, SessionApprovalDecision, Step,
+    Strategy, TaskTemplate, ToolCapability, WorkerRef, WorkerSelector, WorkflowDef,
 };
 pub use runtime::Runtime;
 

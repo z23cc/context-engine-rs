@@ -5,6 +5,7 @@
 //! `app.rs` to stay under the file-size gate.
 
 use crate::rpc::start_job_await;
+use nerve_proto::HostCapabilities;
 use serde_json::{Value, json};
 
 /// The local agent CLIs the GUI drives over the delegate path: `(id, label)`.
@@ -64,6 +65,14 @@ pub fn model_label<'a>(agent: &str, model: &'a str) -> &'a str {
         )
 }
 
+pub fn model_control_label(agent: &str, model: &str) -> String {
+    format!(
+        "Model for {}: {}",
+        agent_label(agent),
+        model_label(agent, model)
+    )
+}
+
 /// A short sidebar title from the first user message.
 pub(crate) fn truncate_title(text: &str) -> String {
     let line = text.lines().next().unwrap_or(text).trim();
@@ -75,6 +84,60 @@ pub(crate) fn truncate_title(text: &str) -> String {
         "New thread".into()
     } else {
         title
+    }
+}
+
+pub async fn fetch_host_capabilities(token: &str) -> Result<HostCapabilities, String> {
+    let result = start_job_await(token, json!({ "kind": "host.capabilities" })).await?;
+    serde_json::from_value::<HostCapabilities>(result)
+        .map_err(|err| format!("Invalid capability response: {err}"))
+}
+
+pub async fn pick_host_folder(token: &str, title: &str) -> Result<String, String> {
+    let result =
+        start_job_await(token, json!({ "kind": "host.folder.pick", "title": title })).await?;
+    result
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "folder picker returned no path".to_string())
+}
+
+pub async fn save_host_text_file(
+    token: &str,
+    title: &str,
+    default_name: &str,
+    text: String,
+) -> Result<String, String> {
+    let result = start_job_await(
+        token,
+        json!({
+            "kind": "host.file.save_text",
+            "title": title,
+            "default_name": default_name,
+            "text": text,
+        }),
+    )
+    .await?;
+    result
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "save panel returned no path".to_string())
+}
+
+pub async fn open_host_url(token: &str, url: &str) -> Result<(), String> {
+    let result = start_job_await(token, json!({ "kind": "host.url.open", "url": url })).await?;
+    if result
+        .get("opened")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Ok(())
+    } else {
+        Err("host URL opener returned no success marker".into())
     }
 }
 
@@ -135,6 +198,38 @@ pub async fn fetch_context(
         .ok()
 }
 
+#[derive(Clone, Default, serde::Deserialize)]
+pub struct SelectionRange {
+    #[serde(default)]
+    pub start_line: usize,
+    #[serde(default)]
+    pub end_line: usize,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Default, serde::Deserialize)]
+pub struct SelectionFile {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub display_path: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub ranges: Vec<SelectionRange>,
+    #[serde(default)]
+    pub token_estimate: usize,
+}
+
+#[derive(Clone, Default, serde::Deserialize)]
+pub struct SelectionSummary {
+    #[serde(default)]
+    pub files: Vec<SelectionFile>,
+    #[serde(default)]
+    pub total_tokens: usize,
+}
+
 /// Run a `manage_selection` op (get/add/remove/clear); returns its
 /// `structuredContent` (the selection summary with per-file token counts).
 pub async fn selection_op(
@@ -150,6 +245,18 @@ pub async fn selection_op(
     )
     .await
     .ok()
+}
+
+pub async fn selection_summary(token: &str, workspace: &str) -> SelectionSummary {
+    tool_job(
+        token,
+        "manage_selection",
+        with_ws(json!({ "op": "get" }), workspace),
+    )
+    .await
+    .ok()
+    .and_then(|sc| serde_json::from_value::<SelectionSummary>(sc).ok())
+    .unwrap_or_default()
 }
 
 /// Attach the active `workspace` selector to a tool's arguments so the dispatch

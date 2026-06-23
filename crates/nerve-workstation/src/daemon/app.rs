@@ -198,49 +198,50 @@ mod tests {
         assert_eq!(&APP_WASM[..4], b"\0asm");
     }
 
-    fn assert_gui_composer_source_contract(source: &str) {
-        assert!(source.contains("composer-modes"));
-        assert!(source.contains("\"Local\""));
-        assert!(source.contains("Worktree mode — coming soon"));
-        assert!(source.contains("Cloud mode — coming soon"));
-        assert!(source.contains("Describe a task…  /  for commands"));
-        assert!(source.contains("What should we work on?"));
-        assert!(source.contains("hero-sub"));
-        assert!(source.contains("No workspace selected"));
-        assert!(source.contains("role=\"group\" aria-label=\"Suggestions\""));
-        assert!(source.contains("focus_message_input();"));
-        assert!(source.contains("inspector_open"));
-        assert!(source.contains("class:with-inspector"));
-        assert!(source.contains("<aside class=\"inspector\">"));
-        assert!(source.contains(">\"Plan\"</button>"));
-        assert!(source.contains(">\"Files\"</button>"));
-        assert!(source.contains(">\"Changes\"</button>"));
-        assert!(source.contains("No tool activity in this thread yet."));
-        assert!(source.contains("fetch_file_tree"));
-        assert!(source.contains("fetch_diff"));
-        assert!(source.contains(">\"Ask\"</button>"));
-        assert!(source.contains(">\"Explain this repo\"</button>"));
+    fn assert_gui_composer_source_contract(app_source: &str, composer: &str, hero_chips: &str) {
+        // Composer shell (now in composer.rs): the Local-workspace execution pill
+        // and the per-thread agent picker.
+        assert!(composer.contains("composer-modes"));
+        assert!(composer.contains("Local workspace"));
+        assert!(composer.contains("Execution target"));
+        assert!(composer.contains("Describe a task"));
+        assert!(composer.contains("Agent CLI"));
+        // Empty-state hero + quick-start cards.
+        assert!(app_source.contains("Work with code, context first"));
+        assert!(app_source.contains("hero-sub"));
+        assert!(app_source.contains("No workspace selected"));
+        assert!(app_source.contains("class:with-inspector"));
+        assert!(app_source.contains("HeroChips"));
+        assert!(hero_chips.contains("aria-label=\"Quick start\""));
+        assert!(hero_chips.contains("Plan a change"));
+        assert!(hero_chips.contains("Build context"));
+        assert!(hero_chips.contains("chip-icon"));
     }
 
-    fn assert_gui_chrome_source_contract(topbar: &str, sidebar: &str, render: &str) {
+    fn assert_gui_chrome_source_contract(
+        topbar: &str,
+        sidebar: &str,
+        render: &str,
+        inspector: &str,
+    ) {
         assert!(topbar.contains("model-menu"));
         assert!(topbar.contains("model-popover"));
         assert!(topbar.contains("Model picker"));
         assert!(topbar.contains("agent.set(event_target_value(&ev))"));
         assert!(topbar.contains("model.set(event_target_value(&ev))"));
-        assert!(topbar.contains("Terminal — coming soon"));
-        assert!(topbar.contains("Pop out — coming soon"));
-        assert!(topbar.contains("aria-disabled=\"true\""));
         assert!(sidebar.contains("aria-label=\"Workspace navigation\""));
-        assert!(sidebar.contains(">\"Chats\"</span>"));
-        assert!(sidebar.contains(">\"Projects\"</span>"));
-        assert!(sidebar.contains(">\"Threads\"</div>"));
+        assert!(sidebar.contains(">\"Threads\"</span>"));
+        assert!(sidebar.contains(">\"Context\"</span>"));
         assert!(sidebar.contains("thread-rail-wrap"));
         assert!(sidebar.contains("rail-sub"));
         assert!(sidebar.contains("nav-svg"));
         assert!(render.contains("Thought for this step"));
         assert!(render.contains("tool-dot"));
         assert!(!render.contains("tool-badge"));
+        // Inspector tabs, incl. the Agents dashboard.
+        assert!(inspector.contains(">\"Tools\"</button>"));
+        assert!(inspector.contains(">\"Agents\"</button>"));
+        assert!(inspector.contains(">\"Changes\"</button>"));
     }
 
     fn assert_gui_settings_source_contract(
@@ -250,7 +251,7 @@ mod tests {
         styles: &str,
     ) {
         assert!(settings.contains("accent: RwSignal<String>"));
-        assert!(settings.contains("set_var(&style, \"--accent\""));
+        assert!(settings.contains("set_var(style, \"--accent\""));
         assert!(settings.contains("set_var(&style, \"--font-code\""));
         assert!(settings.contains("token_input(font_ui"));
         assert!(settings.contains("font_code"));
@@ -265,8 +266,8 @@ mod tests {
     }
 
     fn assert_gui_style_source_contract(styles: &str) {
-        assert!(styles.contains("--bg: #fbfbfa;"));
-        assert!(styles.contains("--border: #e7e7e3;"));
+        assert!(styles.contains("--bg: #f7f6f3;"));
+        assert!(styles.contains("--border: #e1dfd8;"));
         assert!(styles.contains("--sidebar-width: 260px;"));
         assert!(styles.contains("--r-card: 12px;"));
         assert!(styles.contains("font-size: var(--fs-label);"));
@@ -293,7 +294,7 @@ mod tests {
         assert!(APP_INDEX_HTML.contains("font_code: \"--font-code\""));
         assert!(APP_INDEX_HTML.contains("el.style.setProperty(vars[key], value)"));
         assert!(APP_INDEX_HTML.contains("data-vibrancy"));
-        assert!(APP_CSS.contains("--bg: #fbfbfa;"));
+        assert!(APP_CSS.contains("--bg: #f7f6f3;"));
         assert!(APP_CSS.contains("--sidebar-width: 260px;"));
         assert!(APP_CSS.contains("background: var(--inspector);"));
         assert!(APP_CSS.contains("text-transform: uppercase;"));
@@ -317,16 +318,19 @@ mod tests {
         // close to the composer. Worktree/Cloud are deliberately disabled until
         // their execution semantics exist, but the visual shell is present.
         let source = include_str!("../../../nerve-gui/src/app.rs");
+        let composer = include_str!("../../../nerve-gui/src/composer.rs");
+        let hero_chips = include_str!("../../../nerve-gui/src/hero_chips.rs");
         let topbar = include_str!("../../../nerve-gui/src/topbar.rs");
         let sidebar = include_str!("../../../nerve-gui/src/sidebar.rs");
         let render = include_str!("../../../nerve-gui/src/render.rs");
+        let inspector = include_str!("../../../nerve-gui/src/inspector.rs");
         let settings = include_str!("../../../nerve-gui/src/settings.rs");
         let settings_auth = include_str!("../../../nerve-gui/src/settings_auth.rs");
         let index = include_str!("../../../nerve-gui/index.html");
         let styles = include_str!("../../../nerve-gui/styles.css");
 
-        assert_gui_composer_source_contract(source);
-        assert_gui_chrome_source_contract(topbar, sidebar, render);
+        assert_gui_composer_source_contract(source, composer, hero_chips);
+        assert_gui_chrome_source_contract(topbar, sidebar, render, inspector);
         assert_gui_settings_source_contract(settings, settings_auth, index, styles);
         assert_gui_style_source_contract(styles);
         assert_gui_dist_contract();
@@ -347,19 +351,16 @@ mod tests {
         // Dist-sync guard for the primary `/app` bundle: the daemon-served WASM
         // must carry the visible composer mode shell, not just the Rust source.
         // Use distinctive UI strings instead of generic words like "Local".
-        assert!(bytes_contain(APP_WASM, "Execution mode"));
-        assert!(bytes_contain(APP_WASM, "Worktree mode"));
-        assert!(bytes_contain(APP_WASM, "Cloud mode"));
+        assert!(bytes_contain(APP_WASM, "Local workspace"));
         assert!(bytes_contain(APP_WASM, "Describe a task"));
-        assert!(bytes_contain(APP_WASM, "What should we work on?"));
         assert!(bytes_contain(APP_WASM, "No workspace selected"));
-        assert!(bytes_contain(APP_WASM, "Suggestions"));
-        assert!(bytes_contain(APP_WASM, "Explain this repo"));
+        assert!(bytes_contain(APP_WASM, "Quick start"));
+        assert!(bytes_contain(APP_WASM, "Plan a change"));
+        assert!(bytes_contain(APP_WASM, "Build context"));
+        assert!(bytes_contain(APP_WASM, "Agent CLI"));
         assert!(bytes_contain(APP_WASM, "Model picker"));
-        assert!(bytes_contain(APP_WASM, "Terminal"));
-        assert!(bytes_contain(APP_WASM, "Pop out"));
+        assert!(bytes_contain(APP_WASM, "Agents"));
         assert!(bytes_contain(APP_WASM, "Threads"));
-        assert!(bytes_contain(APP_WASM, "Chats"));
         assert!(bytes_contain(APP_WASM, "Workspace navigation"));
         assert!(bytes_contain(APP_WASM, "Thought for this step"));
         assert!(bytes_contain(APP_WASM, "Inspector"));
