@@ -10,7 +10,7 @@
 //!
 //! Deterministic and snapshot-backed: the diff is parsed deterministically, symbol
 //! spans come from the same tree-sitter extraction as every other tool, and the
-//! shared per-snapshot indexed-file set ([`shared_indexed_files`]) is reused. It is
+//! shared per-snapshot indexed-file set (`shared_indexed_files`) is reused. It is
 //! **not** a scope/type resolver — a symbol is "affected" purely when its span
 //! overlaps a changed line.
 

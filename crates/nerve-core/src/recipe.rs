@@ -1,7 +1,7 @@
 //! Context recipes: named presets that fix WHICH sections an assembled
 //! `workspace_context` contains — modeled on RepoPrompt CE's copy presets
 //! (Standard / Plan / Review / Diff Follow-Up / Manual). Pure data; the assembly
-//! itself stays deterministic in [`crate::workspace_context`].
+//! itself stays deterministic in the `workspace_context` module.
 
 use crate::workspace_context::WorkspaceContextInclude;
 

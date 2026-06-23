@@ -262,7 +262,7 @@ pub enum RuntimeCommand {
     },
     /// Steer a live flow branch with a follow-up message, running one more turn
     /// against the same live worker session (design §4 / Wave C3a). Reuses the C0
-    /// [`WorkerSession::steer`] port per-worker, exactly as `delegate.steer` does
+    /// `WorkerSession::steer` port per-worker, exactly as `delegate.steer` does
     /// for a single delegated session: the host job manager looks up the live
     /// worker for `target` in the live-flow worker registry and continues it;
     /// progress streams back as [`crate::RuntimeEvent::FlowNodeAgent`]. Only a
@@ -279,7 +279,7 @@ pub enum RuntimeCommand {
         message: String,
     },
     /// Deterministically REPLAY a recorded flow offline (the audit verb, design §3/§4).
-    /// The host loads the recorded [`WorkerLedger`] from the `FlowStore` by
+    /// The host loads the recorded `WorkerLedger` from the `FlowStore` by
     /// [`LedgerRef`], runs the SAME deterministic engine in REPLAY mode — a
     /// `ReplayWorker` re-emits the recorded `WorkerEvent`s/`TurnResult`s instead of
     /// calling any LLM/subprocess — and re-emits the `flow_*` event stream. Runs as

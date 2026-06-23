@@ -197,7 +197,7 @@ impl<G: WeixinGateway, N: NerveControl> Bridge<G, N> {
     }
 
     /// Run the long-poll loop. Transient transport errors (network blips) are
-    /// retried with backoff up to [`MAX_CONSECUTIVE_ERRORS`] in a row; a fatal error
+    /// retried with backoff up to `MAX_CONSECUTIVE_ERRORS` in a row; a fatal error
     /// (gateway/session/parse/daemon) returns so the supervisor can restart (the
     /// persisted session makes a restart cheap). The gateway long-poll blocks, so a
     /// healthy loop is not busy.

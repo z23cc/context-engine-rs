@@ -30,7 +30,7 @@ const MAX_RANGES_PER_FILE: usize = 5;
 pub struct ScoutRequest {
     /// What to find — natural language or identifiers.
     pub query: String,
-    /// Maximum files to return citations for (default [`DEFAULT_SCOUT_FILES`]).
+    /// Maximum files to return citations for (default `DEFAULT_SCOUT_FILES`).
     pub max_files: Option<usize>,
     /// Optional files that seed the repo-map's personalized PageRank, biasing the
     /// ranking toward these files and their references.

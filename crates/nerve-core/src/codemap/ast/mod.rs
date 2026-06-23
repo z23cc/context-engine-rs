@@ -7,7 +7,7 @@ mod pattern;
 const META_PREFIX: &str = "__ctx_meta_";
 const LITERAL_PREFIX: &str = "__ctx_lit";
 
-/// One structural match from [`ast_search`]: the `@match` region's line and
+/// One structural match from `ast_search`: the `@match` region's line and
 /// text, plus any other captures as metavariables.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AstMatch {
