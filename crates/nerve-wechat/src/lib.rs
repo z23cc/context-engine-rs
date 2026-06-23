@@ -28,6 +28,7 @@ pub mod gateway;
 pub mod http;
 pub mod login;
 pub mod nerve_client;
+pub mod session_store;
 pub mod types;
 
 pub use bridge::{Bridge, BridgeError, NerveControl, NerveReply, SenderAllowlist, chat_key};
@@ -36,4 +37,5 @@ pub use error::{WeixinError, WeixinResult};
 pub use gateway::{CDN_BASE_URL, DEFAULT_BASE_URL, IlinkGateway, WeixinGateway};
 pub use login::{QrStart, QrStatus, WeixinSession, poll_qr_once, qr_login, start_qr_login};
 pub use nerve_client::DelegateNerve;
+pub use session_store::{load_session, save_session};
 pub use types::{GetUpdatesResp, MessageItem, WeixinMessage};

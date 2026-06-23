@@ -12,6 +12,7 @@
 
 use crate::error::{WeixinError, WeixinResult};
 use crate::http;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -66,8 +67,9 @@ pub struct QrStart {
 }
 
 /// A logged-in account: the durable bot token and the server-selected API base URL
-/// to use for all subsequent gateway calls.
-#[derive(Debug, Clone)]
+/// to use for all subsequent gateway calls. Serializable so it can be cached to
+/// disk (see [`crate::session_store`]) and survive a restart without re-scanning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeixinSession {
     pub bot_token: String,
     pub base_url: String,

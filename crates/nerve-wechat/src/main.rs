@@ -8,7 +8,7 @@
 
 use nerve_wechat::{
     Bridge, DelegateNerve, IlinkGateway, SenderAllowlist, WechatConfig, WeixinSession, http,
-    qr_login,
+    load_session, qr_login, save_session,
 };
 use std::process::ExitCode;
 use std::time::Duration;
@@ -60,13 +60,21 @@ fn run() -> Result<(), String> {
     bridge.run().map_err(|err| err.to_string())
 }
 
-/// Use a saved session if configured, otherwise run QR login (printing the QR URL).
+/// Obtain a session: an explicit env session wins; else a session cached on disk
+/// (skips QR across restarts); else QR login, caching the result when a state path
+/// is configured.
 fn obtain_session(cfg: &WechatConfig) -> Result<WeixinSession, String> {
     if let Some(session) = &cfg.preset_session {
         return Ok(session.clone());
     }
+    if let Some(path) = &cfg.state_path
+        && let Some(session) = load_session(path)
+    {
+        eprintln!("nerve-wechat: reusing saved session ({})", path.display());
+        return Ok(session);
+    }
     let agent = http::agent(Duration::from_secs(40));
-    qr_login(
+    let session = qr_login(
         &agent,
         &cfg.bootstrap_base_url,
         &cfg.bot_type,
@@ -78,5 +86,14 @@ fn obtain_session(cfg: &WechatConfig) -> Result<WeixinSession, String> {
             );
         },
     )
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?;
+    if let Some(path) = &cfg.state_path
+        && let Err(err) = save_session(path, &session)
+    {
+        eprintln!(
+            "nerve-wechat: warning: could not cache session to {}: {err}",
+            path.display()
+        );
+    }
+    Ok(session)
 }

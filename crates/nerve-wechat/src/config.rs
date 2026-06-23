@@ -10,6 +10,7 @@
 //! | `NERVE_WECHAT_AGENT` | delegate agent (`claude`/`codex`/`gemini`) | `claude` |
 //! | `NERVE_WECHAT_AUTONOMY` | `read_only`/`edit`/`full` granted to delegated turns | `read_only` |
 //! | `NERVE_WECHAT_BASE_URL` | login bootstrap host | iLink default |
+//! | `NERVE_WECHAT_STATE` | path to cache the logged-in session (skips QR on restart; 0o600) | (no persistence) |
 //! | `NERVE_WECHAT_TOKEN` + `..._SESSION_BASE_URL` + `..._USER_ID` [+ `..._ACCOUNT_ID`] | a saved session to skip QR login | (QR login) |
 
 use crate::gateway::DEFAULT_BASE_URL;
@@ -26,8 +27,11 @@ pub struct WechatConfig {
     pub bot_type: String,
     pub bootstrap_base_url: String,
     pub owners: Vec<String>,
-    /// A pre-obtained session (from a prior login) to skip the QR flow.
+    /// A pre-obtained session (from env) to skip the QR flow entirely.
     pub preset_session: Option<WeixinSession>,
+    /// Where to cache the logged-in session on disk so a restart skips QR login
+    /// (`NERVE_WECHAT_STATE`). `None` disables persistence.
+    pub state_path: Option<PathBuf>,
 }
 
 impl WechatConfig {
@@ -49,6 +53,7 @@ impl WechatConfig {
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             owners: parse_owners(opt("NERVE_WECHAT_OWNERS").as_deref().unwrap_or("")),
             preset_session: preset_session_from_env(),
+            state_path: opt("NERVE_WECHAT_STATE").map(PathBuf::from),
         })
     }
 }
