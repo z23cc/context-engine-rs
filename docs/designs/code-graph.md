@@ -6,8 +6,9 @@ ReferenceGraph), PR1c (shared inverted definition index; `find_references` rerou
 `SnapshotMemo<T>` consolidating the three T0 caches, and `detect_changes` (unified diff → touched symbols)
 and `trace_path` (shortest call chain between two symbols, BFS composing
 `call_hierarchy`) — the first two new agent-facing tools, the build-side of the PR5 query
-surface brought forward as pure deterministic core tools. PR2 (confidence-tiered resolver) next.
-Governs a structural change — read `docs/designs/architecture-north-star.md` first.
+surface brought forward as pure deterministic core tools. The Phase-1 measurement gate is DONE
+(see §6) — its data green-lights **T1 (on-disk persistence + incremental re-index)** as the next
+major step. Governs a structural change — read `docs/designs/architecture-north-star.md` first.
 Date: 2026-06-23
 Related: `architecture-north-star.md` (determinism boundary, seam table, P7 cockpit),
 `agent-long-term-memory.md` (the *agent-fact* memory — a different subsystem; see §8).
@@ -166,12 +167,17 @@ goldens + a `RESOLVER_VERSION` const. codebase-memory-mcp supplies **no** consta
 - **PR2** — `graph/resolver.rs`: confidence-tiered resolution; constants re-derived + golden
   + `RESOLVER_VERSION`; public `Confidence{High,Low}` preserved, bands additive; the
   `incremental==cold` band-stability fixture lands here.
-- **Phase-1 measurement gate (before PR3)** — instrument T0 hit-rate + real fast-path cost,
-  per-call nav/build_context latency on a large repo, cold-build latency, resident RAM (one
-  large repo **and** many-workspaces-in-one-daemon), daemon-restart cost, memo-lock contention
-  under N concurrent agents, and whether the cockpit's bottleneck is nav latency or
-  GUI/observability. **A negative result is explicit licence to stop after PR1–PR2.** Also
-  decides the T2 (concept-search) build-vs-consume question.
+- **Phase-1 measurement gate (before PR3) — DONE; T1 JUSTIFIED.** `crates/nerve-core/benches/
+  engine_hot_paths.rs::bench_code_graph` measures cold (fresh snapshot every call) vs warm
+  (stable cached snapshot, memo hot) per-call latency on a 4096-file synthetic corpus. Median:
+  `find_references` 1.48 s → 3.9 µs; `get_repo_map` 1.70 s → 42 ms (PageRank not memoized);
+  `detect_changes` 1.60 s → 1.84 ms. **Verdict:** the PR1/PR1b/PR1c memoization is validated
+  (warm is orders of magnitude cheaper), and the ~1.5–1.7 s cold rebuild (catalog rescan + parse
+  + cross-file derivation) — re-paid on every edit / 5 s TTL lapse / daemon restart, ≈ tens of
+  seconds at Linux-kernel scale — is the recurring bottleneck. This is the data-driven green
+  light for **T1 (on-disk persistence + incremental re-index)** as the next major investment.
+  Cheap follow-up the data surfaced: memoize no-query PageRank (the 42 ms warm `get_repo_map`).
+  Resident RAM / many-workspaces / memo-lock-contention remain unmeasured (secondary).
 - **PR3 (gated)** — first extract `crate::persist` out of the (removed) semantic island's
   shape into a shared module (its own PR), then add `graph-cache` + `graph/persist.rs`:
   cold-load content-addressed graph, fail-closed; new CI job; `cached == cold` golden.
