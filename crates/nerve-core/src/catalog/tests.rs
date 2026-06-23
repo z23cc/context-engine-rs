@@ -75,7 +75,7 @@ fn cache_reuses_snapshot_within_ttl() {
 }
 
 #[test]
-fn invalidation_clears_snapshot_and_codemap_cache() {
+fn invalidation_retains_signature_validated_codemap_cache() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("lib.rs");
     fs::write(&path, "pub fn one() {}\n").expect("write one");
@@ -88,8 +88,25 @@ fn invalidation_clears_snapshot_and_codemap_cache() {
         .expect("codemap")
         .expect("parse");
     assert_eq!(provider.codemap_cache_len(), 1);
+
+    // invalidate() drops the snapshot (forcing a fresh scan) but RETAINS the
+    // signature-validated parse cache, so unchanged files are not re-parsed on the
+    // next query — incremental parsing across edits / TTL lapses.
     provider.invalidate();
-    assert_eq!(provider.codemap_cache_len(), 0);
+    assert_eq!(provider.codemap_cache_len(), 1);
+
+    // A content change is still reflected: the (mtime,size) signature mismatches,
+    // so the next read re-parses rather than serving the stale cached symbols.
+    fs::write(&path, "pub fn one() {}\npub fn two() {}\n").expect("rewrite");
+    let parsed = provider
+        .code_symbols_for_path(&path, "lib.rs")
+        .expect("codemap")
+        .expect("parse")
+        .expect("symbols");
+    assert!(
+        parsed.symbols.iter().any(|symbol| symbol.name == "two"),
+        "edit must be reflected via signature mismatch, not served stale"
+    );
 }
 
 #[test]

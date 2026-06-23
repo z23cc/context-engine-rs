@@ -170,7 +170,16 @@ impl FsCatalogProvider {
     pub fn invalidate(&self) {
         *crate::sync::write_recover(&self.cache.snapshot) = None;
         self.cache.generation.fetch_add(1, AtomicOrdering::SeqCst);
-        crate::sync::write_recover(&self.cache.codemap).clear();
+        // The codemap parse cache is deliberately NOT cleared: it is keyed by the
+        // per-file (mtime,size) signature and re-validated on every read, so a
+        // changed file misses and re-parses while UNCHANGED files are reused. This
+        // turns the post-edit / post-TTL re-query loop into incremental parsing
+        // (only changed files re-parse) instead of a full re-parse — the dominant
+        // cold cost the engine_hot_paths bench measured. Correctness is unchanged:
+        // signature validation guards stale reads, and the generation guard (in
+        // `code_symbols_for_allowed`) blocks a stale background warmer from
+        // inserting. The cache stays bounded by the live path set (a changed file
+        // overwrites its own key).
         if let Some(warming) = crate::sync::lock_recover(&self.cache.codemap_warming).take() {
             warming.cancel.cancel();
         }
