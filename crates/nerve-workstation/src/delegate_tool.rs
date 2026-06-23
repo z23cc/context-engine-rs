@@ -35,7 +35,7 @@ use crate::delegate_runtime::{self, DelegateAgent, DelegateError, DelegateParser
 use crate::sandbox::SandboxLauncher;
 use nerve_agent::{AgentError, AgentResult, ToolBox, ToolSpec};
 use nerve_core::CancelToken;
-use nerve_runtime::DelegateAutonomy;
+use nerve_runtime::{DelegateAutonomy, DelegateRole};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -95,6 +95,11 @@ impl<T: ToolBox> DelegateAgentToolBox<T> {
                 "delegate_agent requires a non-empty `task`".into(),
             ));
         }
+        // DA-7: expand the role preset. `scout` wraps the task in the read-only
+        // explore-and-cite instruction and forces read-only autonomy regardless of
+        // the requested mode; `standard` is a passthrough.
+        let (task, autonomy) = crate::delegate_roles::apply_role(args.role, task, args.autonomy);
+        let task = task.as_str();
         let agent = DelegateAgent::from_name(&args.agent).map_err(delegate_tool_error)?;
         // Delegation must confine the child to a concrete root; without one there
         // is nothing to scope `cwd` against, so refuse rather than run unconfined.
@@ -113,7 +118,7 @@ impl<T: ToolBox> DelegateAgentToolBox<T> {
             agent,
             task,
             &cwd,
-            args.autonomy,
+            autonomy,
             args.model.as_deref(),
             &mcp_disable_flags,
         );
@@ -197,6 +202,8 @@ struct DelegateArgs {
     #[serde(default)]
     autonomy: DelegateAutonomy,
     #[serde(default)]
+    role: DelegateRole,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     timeout_secs: Option<u64>,
@@ -216,7 +223,10 @@ fn delegate_agent_spec() -> ToolSpec {
             "self-contained investigation or change to another agent. READ-ONLY by default ",
             "(`autonomy: read_only`): the child may only read the workspace — pass ",
             "`autonomy: edit` to let it modify files or `autonomy: full` to also let it run ",
-            "commands. The child runs in the workspace with network access (it calls its own ",
+            "commands. Pass `role: scout` to offload read-only repository EXPLORATION to a ",
+            "cheap sub-agent that returns compact `path:line-range` citations (forces ",
+            "read-only) — use it to find where code lives without spending your own context. ",
+            "The child runs in the workspace with network access (it calls its own ",
             "LLM) and authenticates with its OWN on-disk login; nerve's credentials are never ",
             "shared. Each call is permission-gated. Returns ",
             "{ agent, ok, result, exit_code, usage, cost_usd, timed_out }."
@@ -242,6 +252,13 @@ fn delegate_agent_spec() -> ToolSpec {
                     "type": "string",
                     "enum": ["read_only", "edit", "full"],
                     "description": "Permission level granted to the child (default read_only)."
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["standard", "scout"],
+                    "description": "Behavior preset (default standard). `scout` = read-only \
+                        repository explorer: wraps the task in an explore-and-cite instruction \
+                        and forces read-only, returning compact path:line-range citations."
                 },
                 "model": {
                     "type": "string",
@@ -521,6 +538,44 @@ mod tests {
         assert!(
             seen.1.iter().any(|a| a == "bypassPermissions"),
             "{:?}",
+            seen.1
+        );
+    }
+
+    #[test]
+    fn scout_role_forces_read_only_argv_even_with_full_autonomy() {
+        // DA-7: role=scout must force read-only regardless of the requested autonomy.
+        // A claude scout with autonomy=full still gets --permission-mode plan (read-only),
+        // never bypassPermissions.
+        let launcher = Arc::new(RecordingLauncher::new(""));
+        let tools = delegate_box(FakeInner, launcher.clone(), true, None);
+        tools
+            .call(
+                DELEGATE_AGENT,
+                &json!({
+                    "agent": "claude",
+                    "task": "where is auth handled?",
+                    "role": "scout",
+                    "autonomy": "full"
+                }),
+                &CancelToken::never(),
+            )
+            .expect("scout runs");
+        let seen = launcher
+            .seen
+            .lock()
+            .expect("seen lock")
+            .clone()
+            .expect("seen");
+        assert_eq!(seen.0, "claude");
+        assert!(
+            seen.1.iter().any(|a| a == "plan"),
+            "scout forces read-only (plan): {:?}",
+            seen.1
+        );
+        assert!(
+            !seen.1.iter().any(|a| a == "bypassPermissions"),
+            "scout must not honor full autonomy: {:?}",
             seen.1
         );
     }
