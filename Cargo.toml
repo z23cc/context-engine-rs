@@ -20,7 +20,7 @@ excessive_nesting = "deny"
 strip = true
 
 [workspace.package]
-version = "0.0.66"
+version = "0.0.67"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"

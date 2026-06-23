@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-agent"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "base64",
  "directories",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-core"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "aho-corasick",
  "criterion",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-gui"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-proto"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "schemars",
  "serde",
@@ -2151,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-runtime"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "anyhow",
  "nerve-core",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-tui"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "nerve-workstation"
-version = "0.0.66"
+version = "0.0.67"
 dependencies = [
  "anyhow",
  "base64",
