@@ -1,9 +1,10 @@
 # CodeGraph — a deterministic, persistent cross-file code-intelligence engine
 
-Status: **in progress** — PR0 (deterministic kernel), PR1 (shared snapshot-memoized index)
-and PR1b (memoized derived ReferenceGraph) shipped on branch `feat/deterministic-kernel`, all
-CI gates green; PR1c (shared inverted definition index for navigate scans) / PR2 next. Governs
-a structural change — read `docs/designs/architecture-north-star.md` first.
+Status: **in progress** — PR0 (deterministic kernel), PR1 (shared snapshot-memoized index),
+PR1b (memoized derived ReferenceGraph) and PR1c (shared inverted definition index;
+`find_references` rerouted) shipped on branch `feat/deterministic-kernel`, all CI gates green;
+PR2 (confidence-tiered resolver) next. Governs a structural change — read
+`docs/designs/architecture-north-star.md` first.
 Date: 2026-06-23
 Related: `architecture-north-star.md` (determinism boundary, seam table, P7 cockpit),
 `agent-long-term-memory.md` (the *agent-fact* memory — a different subsystem; see §8).
@@ -146,9 +147,19 @@ goldens + a `RESOLVER_VERSION` const. codebase-memory-mcp supplies **no** consta
   cross-file graph build), so `get_repo_map` + `build_context` reuse one graph while the
   provider serves the same snapshot Arc. Byte-identical by construction (`ReferenceGraph::build`
   is a pure fn of `&[IndexedFile]`, ignores `query_match`); zero golden diffs; FsCatalogProvider
-  `hit==miss` + ptr_eq tests. *Still deferred:* the navigate per-query definition scans
-  (`definition_file_indexes` etc.) reusing a shared inverted index (PR1c), and collapsing the
-  `build_context` repo-map/indexed_files double walk.
+  `hit==miss` + ptr_eq tests.
+- **PR1c — SHIPPED (`41a7272`)** — `graph/definitions.rs` `shared_definition_index`: a third
+  snapshot-Arc memo holding an unpruned inverted index `name → [file idx per defining symbol
+  occurrence]`. `find_references` (`definition_file_indexes` + `count_definitions`) now does
+  O(occurrences) lookups instead of two O(repo·symbols) scans, reused across calls on the same
+  snapshot. Byte-identical (references' predicate is exactly `symbol.name == name` + the
+  unchanged per-file `language_matches`); zero golden diffs; `hit==miss` + ptr_eq + count-parity
+  tests. **De-risk finding:** only `find_references` shares the plain name+language predicate;
+  `find_referencing_symbols`/`analyze_impact` add kind+path filters and repomap's
+  `definition_index` is HDF-pruned, so those are NOT byte-identically unifiable and keep their
+  own derivation — this index can later *pre-filter* their scans by name (candidates) as a
+  separate change. *Still deferred:* collapsing the `build_context` repo-map/indexed_files
+  double walk (needs unifying `analyze_files` + `indexed_files`).
 - **PR2** — `graph/resolver.rs`: confidence-tiered resolution; constants re-derived + golden
   + `RESOLVER_VERSION`; public `Confidence{High,Low}` preserved, bands additive; the
   `incremental==cold` band-stability fixture lands here.
