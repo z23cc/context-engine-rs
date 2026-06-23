@@ -22,21 +22,23 @@ mod symbols;
 mod tests;
 
 pub(crate) use analysis::{IndexedFile, indexed_files_cancellable};
+pub(crate) use graph::ReferenceGraph;
 pub(crate) use imports::resolve_import_reference;
 
 use crate::{
     cancel::CancelToken,
     codemap::CodeSymbol,
+    graph::shared_reference_graph,
     models::{Diagnostic, NerveError},
     port::CatalogProvider,
     snapshot::CatalogSnapshot,
 };
 use analysis::{FileAnalysisResult, analyze_files_cancellable};
-use graph::ReferenceGraph;
 use query::{normalize_seed_paths, normalized_query, query_terms};
 use rank::{DAMPING, ITERATIONS, page_rank_cancellable, personalization, score_cmp, seed_indices};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use symbols::key_symbols;
 
 #[cfg(test)]
@@ -114,14 +116,21 @@ pub fn get_repo_map<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &RepoMapRequest,
 ) -> Result<RepoMapResponse, NerveError> {
-    get_repo_map_cancellable(provider, snapshot, request, &CancelToken::never())
+    // A freshly-built `Arc` is never `Arc::ptr_eq` to a memo entry, so this is a
+    // deliberate memo miss (rebuild) — byte-identical output.
+    get_repo_map_cancellable(
+        provider,
+        &Arc::new(snapshot.clone()),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Build a PageRank repo-map from the catalog snapshot, checking `cancel` in
 /// file analysis, graph construction, and each PageRank iteration.
 pub fn get_repo_map_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &RepoMapRequest,
     cancel: &CancelToken,
 ) -> Result<RepoMapResponse, NerveError> {
@@ -146,7 +155,7 @@ pub fn get_repo_map_cancellable<P: CatalogProvider + Sync>(
 
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    let graph = ReferenceGraph::build(&files);
+    let graph = shared_reference_graph(provider, snapshot, cancel)?;
     let seed_indices = seed_indices(&files, &seed_paths, &query_terms);
     let seed_count = seed_indices.len();
     let personalization = personalization(files.len(), &seed_indices);

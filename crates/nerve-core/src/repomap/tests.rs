@@ -326,6 +326,7 @@ fn pre_cancelled_repo_map_returns_cancelled() {
     let token = CancelToken::new();
     token.cancel();
 
+    let snapshot = std::sync::Arc::new(snapshot);
     let err = get_repo_map_cancellable(&provider, &snapshot, &RepoMapRequest::default(), &token)
         .expect_err("repo-map should cancel");
     assert!(matches!(err, NerveError::Cancelled));
@@ -339,6 +340,7 @@ fn repo_map_cancel_after_n_checks_is_deterministic() {
     ]);
     let token = CancelToken::cancel_after_checks(3);
 
+    let snapshot = std::sync::Arc::new(snapshot);
     let err = get_repo_map_cancellable(&provider, &snapshot, &RepoMapRequest::default(), &token)
         .expect_err("repo-map should cancel after injected check count");
     assert!(matches!(err, NerveError::Cancelled));

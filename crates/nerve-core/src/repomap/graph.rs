@@ -12,18 +12,19 @@ use super::{
 const IMPORT_EDGE_WEIGHT: f64 = 8.0;
 
 #[derive(Debug)]
-pub(super) struct ReferenceGraph {
+pub(crate) struct ReferenceGraph {
     pub(crate) edges: Vec<Vec<(usize, f64)>>,
     pub(crate) symbols_indexed: usize,
     pub(crate) edge_count: usize,
 }
 
 impl ReferenceGraph {
-    pub(super) fn build(files: &[IndexedFile]) -> Self {
+    #[cfg(test)]
+    pub(crate) fn build(files: &[IndexedFile]) -> Self {
         Self::build_cancellable(files, &CancelToken::never()).expect("never-cancel token")
     }
 
-    pub(super) fn build_cancellable(
+    pub(crate) fn build_cancellable(
         files: &[IndexedFile],
         cancel: &CancelToken,
     ) -> Result<Self, NerveError> {
