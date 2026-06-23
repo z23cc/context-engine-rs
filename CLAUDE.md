@@ -180,6 +180,12 @@ The long-term architecture and its invariants live in `docs/designs/architecture
   | Agent capabilities | Skills / Agent-Def data (loaded, not compiled) |
   | A new client surface (GUI/TUI/mobile) | the versioned runtime protocol (never a new bespoke RPC) |
 
+- **Scout has two faces.** Besides the deterministic `scout` engine tool (no LLM), the `delegate.*`
+  seam carries a read-only **scout role** (DA-7): `delegate.start { role: "scout" }` — also the
+  in-chat `delegate_agent role=scout` tool and TUI `/delegate scout <agent> <query>` — runs an
+  *existing* CLI agent forced read-only with an explore-and-cite prompt (`delegate_roles.rs`),
+  offloading repository exploration to a cheaper model. It reuses the seam, not a new entry point.
+
 - **Roadmap priority (direction updated 2026-06-23):** the **headline is P7 — a multi-agent cockpit
   over external CLI agents** (`delegate.*` primary; own-engine `session.*` / `agent.run` demoted to a
   secondary, optional seam, not featured in the GUI). Prior foundation: P0 Session layer (fold the
