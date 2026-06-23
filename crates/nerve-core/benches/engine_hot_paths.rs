@@ -8,6 +8,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tempfile::TempDir;
 
@@ -202,11 +203,93 @@ fn bench_path_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// A provider whose snapshot cache effectively never expires, so warm benches
+/// measure a *pure* memo hit (stable snapshot `Arc`) without a mid-measurement
+/// TTL rebuild.
+fn warm_provider_for(root: &Path) -> FsCatalogProvider {
+    FsCatalogProvider::new(
+        RootPolicy::new(vec![root.to_path_buf()]).expect("root policy"),
+        ScanOptions {
+            max_entries: FILE_COUNT + 128,
+            snapshot_cache_ttl: Duration::from_secs(3_600),
+            ..ScanOptions::default()
+        },
+    )
+}
+
+/// Quantify the CodeGraph T0 memoization (PR1/PR1b/PR1c) in the two scenarios a
+/// cockpit actually hits:
+///   * **cold** — a fresh snapshot every call (the first query, or right after an
+///     edit invalidates the snapshot, or after the cache TTL lapses / a daemon
+///     restart): full catalog rescan + parse + cross-file derivation, O(repo).
+///   * **warm** — repeated queries against a stable cached snapshot: the shared
+///     index / reference graph / definition index are memoized on the snapshot
+///     `Arc`, so derivation collapses to an O(1) lookup.
+/// The cold time is the per-call cost that gates whether on-disk persistence +
+/// incremental re-index (T1) is worth building; the warm time is what the shipped
+/// memoization already delivers for the steady-state query loop.
+///
+/// Caveat: the synthetic corpus has definitions but almost no cross-file
+/// references, so warm `find_references` mainly reflects the memo eliminating the
+/// rebuild (its residual reference scan is near-zero here); warm `get_repo_map`
+/// still pays PageRank (not memoized) over the cached graph; warm `detect_changes`
+/// is bounded by the one changed file, not repo size.
+fn bench_code_graph(c: &mut Criterion) {
+    let corpus = build_corpus();
+    let cold_provider = provider_for(&corpus.root);
+    let warm_provider = warm_provider_for(&corpus.root);
+
+    let find_references = json!({
+        "name": "find_references",
+        "arguments": { "symbol": "bench_needle_00000_000", "max_results": 1_000 }
+    });
+    let repo_map = json!({ "name": "get_repo_map", "arguments": { "max_files": 50 } });
+    let detect_changes = json!({
+        "name": "detect_changes",
+        "arguments": { "diff":
+            "--- a/module_00/file_00000.rs\n+++ b/module_00/file_00000.rs\n@@ -1 +1 @@\n-old\n+new\n"
+        }
+    });
+
+    // Prime the warm provider's snapshot + every memo once, so each measured warm
+    // iteration is a pure hit.
+    for params in [&find_references, &repo_map, &detect_changes] {
+        handle_tool_call(&warm_provider, params).expect("prime warm memo");
+    }
+
+    let mut group = c.benchmark_group("code_graph");
+    group.throughput(Throughput::Elements(corpus.files as u64));
+
+    let mut cold = |label: &str, params: &serde_json::Value| {
+        group.bench_function(BenchmarkId::new(label, corpus.files), |b| {
+            b.iter(|| {
+                cold_provider.invalidate();
+                handle_tool_call(&cold_provider, params).expect("cold tool call")
+            });
+        });
+    };
+    cold("find_references_cold", &find_references);
+    cold("get_repo_map_cold", &repo_map);
+    cold("detect_changes_cold", &detect_changes);
+
+    let mut warm = |label: &str, params: &serde_json::Value| {
+        group.bench_function(BenchmarkId::new(label, corpus.files), |b| {
+            b.iter(|| handle_tool_call(&warm_provider, params).expect("warm tool call"));
+        });
+    };
+    warm("find_references_warm", &find_references);
+    warm("get_repo_map_warm", &repo_map);
+    warm("detect_changes_warm", &detect_changes);
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_catalog_scan,
     bench_content_search,
     bench_path_search,
-    bench_repeated_tool_search
+    bench_repeated_tool_search,
+    bench_code_graph
 );
 criterion_main!(benches);
