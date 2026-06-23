@@ -212,7 +212,6 @@ fn warm_provider_for(root: &Path) -> FsCatalogProvider {
         ScanOptions {
             max_entries: FILE_COUNT + 128,
             snapshot_cache_ttl: Duration::from_secs(3_600),
-            ..ScanOptions::default()
         },
     )
 }
@@ -227,6 +226,7 @@ fn warm_provider_for(root: &Path) -> FsCatalogProvider {
 ///   * **warm** — repeated queries against a stable cached snapshot: the shared
 ///     index / reference graph / definition index are memoized on the snapshot
 ///     `Arc`, so derivation collapses to an O(1) lookup.
+///
 /// Together they gate further work (on-disk persistence would only help the one-time
 /// full-parse cold start) and show what the shipped memoization delivers steady-state.
 ///
