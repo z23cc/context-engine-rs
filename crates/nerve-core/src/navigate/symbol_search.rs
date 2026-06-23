@@ -20,13 +20,18 @@ pub fn symbol_search<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &SymbolSearchRequest,
 ) -> Result<SymbolSearchResponse, NerveError> {
-    symbol_search_cancellable(provider, snapshot, request, &CancelToken::never())
+    symbol_search_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`symbol_search`].
 pub fn symbol_search_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &SymbolSearchRequest,
     cancel: &CancelToken,
 ) -> Result<SymbolSearchResponse, NerveError> {
@@ -35,9 +40,9 @@ pub fn symbol_search_cancellable<P: CatalogProvider + Sync>(
         return Ok(empty_response(request));
     }
 
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let mut matches = Vec::new();
-    for file in &files {
+    for file in files.iter() {
         cancel.check_cancelled()?;
         if !language_matches(request.language.as_deref(), &file.language) {
             continue;

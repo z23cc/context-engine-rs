@@ -6,20 +6,25 @@ pub fn goto_definition<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &NavigateRequest,
 ) -> Result<DefinitionResponse, NerveError> {
-    goto_definition_cancellable(provider, snapshot, request, &CancelToken::never())
+    goto_definition_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`goto_definition`].
 pub fn goto_definition_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &NavigateRequest,
     cancel: &CancelToken,
 ) -> Result<DefinitionResponse, NerveError> {
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let mut sources = Sources::new(provider);
     let mut definitions = Vec::new();
-    for file in &files {
+    for file in files.iter() {
         if !language_matches(request.language.as_deref(), &file.language) {
             continue;
         }

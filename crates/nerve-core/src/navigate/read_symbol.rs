@@ -13,17 +13,22 @@ pub fn read_symbol<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &ReadSymbolRequest,
 ) -> Result<ReadSymbolResponse, NerveError> {
-    read_symbol_cancellable(provider, snapshot, request, &CancelToken::never())
+    read_symbol_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`read_symbol`].
 pub fn read_symbol_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &ReadSymbolRequest,
     cancel: &CancelToken,
 ) -> Result<ReadSymbolResponse, NerveError> {
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let mut sources = Sources::new(provider);
     let mut matches = collect_matches(&files, &mut sources, request, cancel)?;
     matches.sort_by(|left, right| symbol_location_cmp(&left.location, &right.location));

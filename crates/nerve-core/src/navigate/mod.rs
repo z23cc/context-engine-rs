@@ -14,16 +14,25 @@
 use crate::{
     cancel::CancelToken,
     codemap::{block_span, containing_block_span},
+    graph::shared_indexed_files,
     models::NerveError,
     port::CatalogProvider,
-    repomap::{IndexedFile, indexed_files_cancellable, resolve_import_reference},
+    repomap::{IndexedFile, resolve_import_reference},
     snapshot::CatalogSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
+
+/// Wrap a borrowed snapshot in a fresh owned `Arc` for the non-cancellable
+/// public entry points. A freshly-built `Arc` is never `Arc::ptr_eq` to a memo
+/// entry, so it is a deliberate memo miss (rebuild) — byte-identical output.
+fn owned_arc(snapshot: &CatalogSnapshot) -> Arc<CatalogSnapshot> {
+    Arc::new(snapshot.clone())
+}
 
 /// Caveat surfaced on every navigation response so callers (and models) know the
 /// results are syntactic name matches, not compiler-accurate resolution.

@@ -6,7 +6,12 @@ pub fn call_hierarchy<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &CallHierarchyRequest,
 ) -> Result<CallHierarchyResponse, NerveError> {
-    call_hierarchy_cancellable(provider, snapshot, request, &CancelToken::never())
+    call_hierarchy_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`call_hierarchy`].
@@ -18,11 +23,11 @@ pub fn call_hierarchy<P: CatalogProvider + Sync>(
 /// best-effort (see the response note).
 pub fn call_hierarchy_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &CallHierarchyRequest,
     cancel: &CancelToken,
 ) -> Result<CallHierarchyResponse, NerveError> {
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let mut sources = Sources::new(provider);
     let mut span_cache = SpanCache::default();
     let want_incoming = matches!(

@@ -5,12 +5,13 @@ use super::{
 use crate::{
     CancelToken, CatalogEntry, CatalogProvider, CatalogSnapshot, NerveError, Selection,
     SelectionMode, WorkspaceContextInclude, WorkspaceContextRequest,
+    graph::shared_indexed_files,
     repomap::IndexedFile,
-    repomap::indexed_files_cancellable,
     selection::SelectionKey,
     workspace_context::{RenderCache, workspace_context_for_selection_cached},
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 const REFERENCE_EXPANSION_LIMIT: usize = 8;
 
@@ -28,7 +29,7 @@ struct ExpansionCandidate {
 
 pub(super) fn expand_reference_codemap_selection<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     selection: &mut Selection,
     token_budget: usize,
     cancel: &CancelToken,
@@ -38,7 +39,7 @@ pub(super) fn expand_reference_codemap_selection<P: CatalogProvider + Sync>(
         return Ok(ReferenceExpansionOutcome::default());
     }
 
-    let indexed_files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let indexed_files = shared_indexed_files(provider, snapshot, cancel)?;
     let selected_paths = selected_paths(selection);
     let candidate_paths = candidate_paths(expansion_candidates(&indexed_files, &selected_paths));
     let entries_by_path = entries_by_path(snapshot);

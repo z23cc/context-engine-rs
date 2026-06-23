@@ -101,7 +101,7 @@ where
 
 fn read_symbol_for_rename<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &crate::CatalogSnapshot,
+    snapshot: &std::sync::Arc<crate::CatalogSnapshot>,
     args: &RenameSymbolArgs,
     cancel: &CancelToken,
 ) -> Result<crate::navigate::ReadSymbolResponse, NerveError> {
@@ -122,7 +122,7 @@ fn read_symbol_for_rename<P: CatalogProvider + Sync>(
 
 fn references_for_rename<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &crate::CatalogSnapshot,
+    snapshot: &std::sync::Arc<crate::CatalogSnapshot>,
     args: &RenameSymbolArgs,
     cancel: &CancelToken,
 ) -> Result<crate::navigate::ReferencesResponse, NerveError> {
@@ -142,7 +142,7 @@ fn references_for_rename<P: CatalogProvider + Sync>(
 
 fn rename_allowed_display_paths<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &crate::CatalogSnapshot,
+    snapshot: &std::sync::Arc<crate::CatalogSnapshot>,
     args: &RenameSymbolArgs,
     definition: &crate::navigate::SymbolLocation,
     cancel: &CancelToken,
@@ -156,7 +156,7 @@ fn rename_allowed_display_paths<P: CatalogProvider + Sync>(
             shadowed_importer: None,
         });
     }
-    let files = crate::repomap::indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = crate::graph::shared_indexed_files(provider, snapshot, cancel)?;
     let Some(definition_index) = files
         .iter()
         .position(|file| file.display_path == definition.display_path)

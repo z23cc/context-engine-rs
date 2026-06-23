@@ -25,17 +25,22 @@ pub fn analyze_impact<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &ImpactAnalysisRequest,
 ) -> Result<ImpactAnalysisResponse, NerveError> {
-    analyze_impact_cancellable(provider, snapshot, request, &CancelToken::never())
+    analyze_impact_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`analyze_impact`].
 pub fn analyze_impact_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &ImpactAnalysisRequest,
     cancel: &CancelToken,
 ) -> Result<ImpactAnalysisResponse, NerveError> {
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let max_depth = request.max_depth.max(1);
     let max_results = request.max_results.max(1);
     let mut sources = Sources::new(provider);

@@ -21,6 +21,7 @@ pub use sensitive::BuildContextSensitiveFinding;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 const DEFAULT_MAX_FILES: usize = 20;
@@ -93,13 +94,18 @@ pub fn build_context<P: CatalogProvider + Sync>(
     snapshot: &crate::CatalogSnapshot,
     request: &BuildContextRequest,
 ) -> Result<BuildContextResponse, NerveError> {
-    build_context_cancellable(provider, snapshot, request, &CancelToken::never())
+    build_context_cancellable(
+        provider,
+        &Arc::new(snapshot.clone()),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Build context with cooperative cancellation.
 pub fn build_context_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &crate::CatalogSnapshot,
+    snapshot: &Arc<crate::CatalogSnapshot>,
     request: &BuildContextRequest,
     cancel: &CancelToken,
 ) -> Result<BuildContextResponse, NerveError> {

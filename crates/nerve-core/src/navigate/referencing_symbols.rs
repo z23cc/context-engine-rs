@@ -19,17 +19,22 @@ pub fn find_referencing_symbols<P: CatalogProvider + Sync>(
     snapshot: &CatalogSnapshot,
     request: &FindReferencingSymbolsRequest,
 ) -> Result<FindReferencingSymbolsResponse, NerveError> {
-    find_referencing_symbols_cancellable(provider, snapshot, request, &CancelToken::never())
+    find_referencing_symbols_cancellable(
+        provider,
+        &owned_arc(snapshot),
+        request,
+        &CancelToken::never(),
+    )
 }
 
 /// Cancellable [`find_referencing_symbols`].
 pub fn find_referencing_symbols_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
-    snapshot: &CatalogSnapshot,
+    snapshot: &Arc<CatalogSnapshot>,
     request: &FindReferencingSymbolsRequest,
     cancel: &CancelToken,
 ) -> Result<FindReferencingSymbolsResponse, NerveError> {
-    let files = indexed_files_cancellable(provider, snapshot, cancel)?;
+    let files = shared_indexed_files(provider, snapshot, cancel)?;
     let mut sources = Sources::new(provider);
     let mut spans = SpanCache::default();
     let definitions = target_definitions(&files, &mut sources, request);
