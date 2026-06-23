@@ -22,9 +22,10 @@ pub fn find_references_cancellable<P: CatalogProvider + Sync>(
     cancel: &CancelToken,
 ) -> Result<ReferencesResponse, NerveError> {
     let files = shared_indexed_files(provider, snapshot, cancel)?;
+    let defs = shared_definition_index(provider, snapshot, cancel)?;
     let mut sources = Sources::new(provider);
-    let definition_count = count_definitions(&files, request);
-    let mut references = collect_references(&files, &mut sources, request);
+    let definition_count = count_definitions(&defs, &files, request);
+    let mut references = collect_references(&defs, &files, &mut sources, request);
     references.sort_by(reference_cmp);
 
     let total = references.len();
@@ -43,26 +44,28 @@ pub fn find_references_cancellable<P: CatalogProvider + Sync>(
     })
 }
 
-pub(super) fn count_definitions(files: &[IndexedFile], request: &NavigateRequest) -> usize {
-    files
+pub(super) fn count_definitions(
+    defs: &DefinitionNameIndex,
+    files: &[IndexedFile],
+    request: &NavigateRequest,
+) -> usize {
+    // Each occurrence is one defining symbol (repeats per same-named symbol in a
+    // file); applying the per-file language filter reproduces the prior
+    // symbol-count-over-language-matching-files scan exactly.
+    defs.occurrences(&request.symbol)
         .iter()
-        .filter(|file| language_matches(request.language.as_deref(), &file.language))
-        .map(|file| {
-            file.symbols
-                .iter()
-                .filter(|symbol| symbol.name == request.symbol)
-                .count()
-        })
-        .sum()
+        .filter(|&&idx| language_matches(request.language.as_deref(), &files[idx].language))
+        .count()
 }
 
 pub(super) fn collect_references<P: CatalogProvider + Sync>(
+    defs: &DefinitionNameIndex,
     files: &[IndexedFile],
     sources: &mut Sources<P>,
     request: &NavigateRequest,
 ) -> Vec<ReferenceLocation> {
-    let def_files = definition_file_indexes(files, request);
-    let unambiguous = count_definitions(files, request) <= 1;
+    let def_files = definition_file_indexes(defs, files, request);
+    let unambiguous = count_definitions(defs, files, request) <= 1;
     let mut references = Vec::new();
     for (idx, file) in files.iter().enumerate() {
         let confidence = reference_confidence(files, idx, &def_files, unambiguous);
@@ -72,19 +75,16 @@ pub(super) fn collect_references<P: CatalogProvider + Sync>(
 }
 
 pub(super) fn definition_file_indexes(
+    defs: &DefinitionNameIndex,
     files: &[IndexedFile],
     request: &NavigateRequest,
 ) -> HashSet<usize> {
-    files
+    // Dedup occurrences into the set of defining files, applying the unchanged
+    // per-file language filter — identical to the prior all-files scan.
+    defs.occurrences(&request.symbol)
         .iter()
-        .enumerate()
-        .filter(|(_, file)| language_matches(request.language.as_deref(), &file.language))
-        .filter(|(_, file)| {
-            file.symbols
-                .iter()
-                .any(|symbol| symbol.name == request.symbol)
-        })
-        .map(|(idx, _)| idx)
+        .copied()
+        .filter(|&idx| language_matches(request.language.as_deref(), &files[idx].language))
         .collect()
 }
 

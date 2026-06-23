@@ -7,8 +7,10 @@
 //! determinism guarantees. Later PRs grow this module into the full
 //! `CodeGraph` (resolver, persistence) described in `docs/designs/code-graph.md`.
 
+mod definitions;
 mod derived;
 mod memo;
 
+pub(crate) use definitions::{DefinitionNameIndex, shared_definition_index};
 pub(crate) use derived::shared_reference_graph;
 pub(crate) use memo::shared_indexed_files;

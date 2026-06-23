@@ -14,7 +14,7 @@
 use crate::{
     cancel::CancelToken,
     codemap::{block_span, containing_block_span},
-    graph::shared_indexed_files,
+    graph::{DefinitionNameIndex, shared_definition_index, shared_indexed_files},
     models::NerveError,
     port::CatalogProvider,
     repomap::{IndexedFile, resolve_import_reference},
