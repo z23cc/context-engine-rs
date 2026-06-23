@@ -3,11 +3,11 @@
 Status: **in progress** — shipped on branch `feat/deterministic-kernel` (all CI gates green):
 PR0 (deterministic kernel), PR1 (shared snapshot-memoized index), PR1b (memoized derived
 ReferenceGraph), PR1c (shared inverted definition index; `find_references` rerouted), a generic
-`SnapshotMemo<T>` consolidating the three T0 caches, and `detect_changes` (the first new
-agent-facing tool — a unified diff → touched symbols, the build-side of the PR5 query surface
-brought forward as a pure deterministic core tool). PR2 (confidence-tiered resolver) /
-`trace_path` next. Governs a structural change — read `docs/designs/architecture-north-star.md`
-first.
+`SnapshotMemo<T>` consolidating the three T0 caches, and `detect_changes` (unified diff → touched symbols)
+and `trace_path` (shortest call chain between two symbols, BFS composing
+`call_hierarchy`) — the first two new agent-facing tools, the build-side of the PR5 query
+surface brought forward as pure deterministic core tools. PR2 (confidence-tiered resolver) next.
+Governs a structural change — read `docs/designs/architecture-north-star.md` first.
 Date: 2026-06-23
 Related: `architecture-north-star.md` (determinism boundary, seam table, P7 cockpit),
 `agent-long-term-memory.md` (the *agent-fact* memory — a different subsystem; see §8).
