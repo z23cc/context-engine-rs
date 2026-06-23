@@ -18,7 +18,14 @@ use crate::error::WeixinError;
 use crate::gateway::WeixinGateway;
 use crate::types::WeixinMessage;
 use std::collections::{BTreeSet, HashMap};
+use std::time::Duration;
 use thiserror::Error;
+
+/// Consecutive transient failures tolerated in the run loop before giving up (the
+/// supervisor/human then restarts — the persisted session makes that cheap).
+const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+/// Backoff between transient-error retries in the run loop.
+const RETRY_BACKOFF: Duration = Duration::from_secs(3);
 
 /// Reply sent when an allowed owner sends a media-only message (image/file/voice):
 /// media relay is not implemented yet, so acknowledge rather than silently drop.
@@ -189,13 +196,35 @@ impl<G: WeixinGateway, N: NerveControl> Bridge<G, N> {
         Ok(handled)
     }
 
-    /// Run the long-poll loop until an error surfaces (the caller decides whether to
-    /// restart). The gateway's long poll blocks, so this is not a busy loop.
+    /// Run the long-poll loop. Transient transport errors (network blips) are
+    /// retried with backoff up to [`MAX_CONSECUTIVE_ERRORS`] in a row; a fatal error
+    /// (gateway/session/parse/daemon) returns so the supervisor can restart (the
+    /// persisted session makes a restart cheap). The gateway long-poll blocks, so a
+    /// healthy loop is not busy.
     pub fn run(&mut self) -> Result<(), BridgeError> {
+        let mut consecutive = 0u32;
         loop {
-            self.poll_once()?;
+            match self.poll_once() {
+                Ok(_) => consecutive = 0,
+                Err(err) if is_retryable(&err) && consecutive < MAX_CONSECUTIVE_ERRORS => {
+                    consecutive += 1;
+                    eprintln!(
+                        "nerve-wechat: transient error ({err}); retry {consecutive}/{MAX_CONSECUTIVE_ERRORS}"
+                    );
+                    std::thread::sleep(RETRY_BACKOFF);
+                }
+                Err(err) => return Err(err),
+            }
         }
     }
+}
+
+/// Whether a run-loop error is a transient network blip worth retrying. Only a
+/// transport error qualifies; a gateway code (e.g. session timeout), a parse
+/// failure, a login error, or a daemon-side error is fatal (needs a restart /
+/// re-login, not a blind retry).
+fn is_retryable(err: &BridgeError) -> bool {
+    matches!(err, BridgeError::Weixin(WeixinError::Transport(_)))
 }
 
 #[cfg(test)]
@@ -357,6 +386,18 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0, "u_owner");
         assert!(sent[0].2.contains("text messages"));
+    }
+
+    #[test]
+    fn only_transport_errors_are_retryable() {
+        assert!(is_retryable(&BridgeError::Weixin(WeixinError::Transport(
+            "connection reset".into()
+        ))));
+        // A gateway code (session timeout etc.), parse, or daemon error is fatal.
+        assert!(!is_retryable(&BridgeError::Weixin(WeixinError::Gateway {
+            ret: -14
+        })));
+        assert!(!is_retryable(&BridgeError::Nerve("daemon closed".into())));
     }
 
     #[test]
