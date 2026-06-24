@@ -87,10 +87,10 @@ pub fn aggregate_status(checks: &[CheckResult], required: &[bool]) -> VerdictSta
 
 /// Content address for a [`Verdict`]: lowercase-hex SHA-256 over the verdict's
 /// load-bearing identity — the run it grounds, the diff it covers, the checkspec
-/// + closure it ran against, and the per-check digests in order. The
+/// and closure it ran against, and the per-check digests in order. The
 /// host-supplied `verified_at_ms` and the verdict's own derived ids are **not**
 /// folded in, so re-verifying the same checks against the same closure yields a
-/// reproducible id (INV-R2). Field separators (`\n`) keep the pre-image
+/// reproducible id (INV-R2). Newline field separators keep the pre-image
 /// unambiguous across variable-length parts.
 #[must_use]
 pub fn verdict_content_id(

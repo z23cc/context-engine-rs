@@ -63,11 +63,47 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for DelegateToolAdapter {
     }
 }
 
+impl RuntimeToolAdapter<WorkspaceRegistry> for crate::substrate_mcp::SubstrateToolAdapter {
+    fn tool_specs(&self) -> Vec<Value> {
+        // UFCS so this resolves to the inherent method, not this trait method.
+        crate::substrate_mcp::SubstrateToolAdapter::tool_specs(self)
+    }
+
+    fn handle_tool_call(
+        &self,
+        registry: &WorkspaceRegistry,
+        params: &Value,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !self.owns(name) {
+            return Ok(None);
+        }
+        // The L5 substrate tools (verify/replay/receipt/runs) read the served root's
+        // `.nerve/*` stores, so resolve the workspace root like the delegate adapter.
+        let root = registry
+            .resolve_workspace(None)
+            .ok()
+            .and_then(|ws| ws.roots().first().map(|r| r.path.clone()));
+        let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+        crate::substrate_mcp::SubstrateToolAdapter::handle_tool_call(
+            self,
+            name,
+            &args,
+            root.as_deref(),
+        )
+        .map(Some)
+    }
+}
+
 pub(crate) fn runtime(registry: WorkspaceRegistry) -> NerveRuntime {
     Runtime::new(registry)
         .with_adapter(XaiToolAdapter)
         .with_adapter(OpenAiToolAdapter)
         .with_adapter(DelegateToolAdapter)
+        .with_adapter(crate::substrate_mcp::SubstrateToolAdapter)
 }
 
 #[cfg(test)]

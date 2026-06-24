@@ -26,6 +26,7 @@ pub mod receipt;
 pub mod receipt_gate;
 pub mod recipe;
 pub mod repomap;
+pub mod runpin;
 pub mod search;
 pub mod security;
 pub mod selection;

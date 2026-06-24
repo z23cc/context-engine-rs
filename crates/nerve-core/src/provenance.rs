@@ -68,6 +68,9 @@ pub fn build_ledger(events: &[Event]) -> (Vec<LedgerEntry>, String) {
 /// host metadata carried for display and are **never** hashed (only `events` are),
 /// so wall-clock never perturbs the content address.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // reason: one cohesive seal call (delegates to
+// build_run_attested); the run identity, host timestamps, the tape, and the pinned
+// inputs are independent — bundling them adds indirection without isolating a concern.
 pub fn build_run(
     session_id: impl Into<String>,
     agent: impl Into<String>,

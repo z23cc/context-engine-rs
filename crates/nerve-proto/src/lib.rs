@@ -33,7 +33,7 @@ pub mod tool_spec;
 pub mod verdict;
 
 pub use command::{
-    ApprovalMode, AuthStartFlow, DelegateAutonomy, DelegateRole, FlowSource, LedgerRef,
+    ApprovalMode, AuthStartFlow, DelegateAutonomy, DelegateRole, FlowSource, LedgerRef, OtelSource,
     RUNTIME_COMMAND_NAMES, RuntimeCommand, SessionApprovalDecision, WorkerSelector,
 };
 pub use event::{

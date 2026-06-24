@@ -344,11 +344,12 @@ impl JobManager {
             Executor::AgentRun => self.run_agent_command(&job_id, command, &token),
             Executor::Delegate => self.run_delegate_command(&job_id, command, &token),
             Executor::Run => self.run_run_command(command),
-            Executor::Trust => Err(nerve_runtime::RuntimeError::adapter(format!(
-                "trust-substrate command `{}` is accepted protocol vocabulary; its host \
-                 handler is wired in the next wave",
-                command.name()
-            ))),
+            Executor::Replay => self.run_replay_command(&job_id, command, &token),
+            Executor::Ledger => self.run_ledger_command(command),
+            Executor::Verify => self.run_verify_command(command, &token),
+            Executor::Policy => self.run_policy_command(command),
+            Executor::Receipt => self.run_receipt_command(command),
+            Executor::Outcome => self.run_outcome_command(command),
             Executor::Host => self.run_host_command(command, &token),
             Executor::Session => self.sessions.handle_command(command, &token),
             Executor::Auth => self.auth.handle_command(command, &token),
@@ -511,10 +512,313 @@ impl JobManager {
             RuntimeCommand::RunGet { run_id } => {
                 crate::run_store::run_run_get(&run_id, self.run_store().as_ref())
             }
+            RuntimeCommand::OtelIngest { source, .. } => {
+                let local = match source {
+                    nerve_runtime::OtelSource::Inline { trace } => {
+                        crate::otel_ingest::OtelSource::Inline { trace }
+                    }
+                    nerve_runtime::OtelSource::Path { trace_path } => {
+                        crate::otel_ingest::OtelSource::Path { trace_path }
+                    }
+                };
+                crate::otel_ingest::handle_otel_ingest(
+                    &local,
+                    self.run_store().as_ref(),
+                    self.delegate_root().ok().as_deref(),
+                )
+            }
             _ => Err(nerve_runtime::RuntimeError::adapter(
                 "expected a run.* command",
             )),
         }
+    }
+
+    /// L0c — `replay.start`: re-drive a captured Run's tape and verify its content
+    /// address (handler in `crate::replay`).
+    fn run_replay_command(
+        &self,
+        job_id: &str,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::ReplayStart { run_id } => {
+                let emit = |event: RuntimeEvent| self.emit(event);
+                crate::replay::handle_replay_start(
+                    &run_id,
+                    job_id,
+                    self.run_store().as_ref(),
+                    &emit,
+                    token,
+                )
+            }
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected replay.* command",
+            )),
+        }
+    }
+
+    /// L1 — `ledger.query`: read the append-only evidence ledger (handler in
+    /// `crate::ledger_store`).
+    fn run_ledger_command(
+        &self,
+        command: RuntimeCommand,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::LedgerQuery {
+                run_id,
+                agent,
+                diff_hash,
+                outcome,
+                record_kind,
+                limit,
+            } => Ok(crate::ledger_store::run_ledger_query(
+                self.ledger_store().as_ref(),
+                run_id.as_deref(),
+                agent.as_deref(),
+                diff_hash.as_deref(),
+                outcome,
+                record_kind.as_deref(),
+                limit.unwrap_or(200),
+            )),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected ledger.* command",
+            )),
+        }
+    }
+
+    /// L2 — `verify.*`: re-run the org's checks in the closure and seal/fetch the
+    /// borrowed verdict (handlers in `crate::verify_runner`). On a fresh verify it
+    /// also announces `VerificationCompleted` and appends the verdict to the ledger.
+    fn run_verify_command(
+        &self,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::VerifyStart {
+                run_id,
+                reruns,
+                only,
+            } => {
+                let root = self.delegate_root()?;
+                let verdict = crate::verify_runner::handle_verify_start(
+                    self.run_store().as_ref(),
+                    self.verify_store().as_ref(),
+                    &self.delegate_launcher,
+                    &root,
+                    &run_id,
+                    reruns,
+                    only.as_deref(),
+                    token,
+                    now_ms(),
+                )?;
+                self.emit(RuntimeEvent::VerificationCompleted {
+                    run_id: verdict.run_id.clone(),
+                    verdict_id: verdict.verdict_id.clone(),
+                    status: verdict.status,
+                    check_count: verdict.checks.len() as u64,
+                });
+                crate::ledger_store::append_evidence(
+                    self.ledger_store().as_ref(),
+                    nerve_core::ledger::LedgerKind::Verdict {
+                        run_id: verdict.run_id.clone(),
+                        diff_hash: verdict.diff_hash.clone(),
+                        verdict: verdict.status,
+                        checks: verdict.checks.clone(),
+                        advisory_llm_judge: None,
+                    },
+                );
+                self.issue_receipt_for_verdict(&run_id, &verdict);
+                serde_json::to_value(&verdict)
+                    .map(|verdict| json!({ "verdict": verdict }))
+                    .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))
+            }
+            RuntimeCommand::VerifyGet { verdict_id } => {
+                crate::verify_runner::handle_verify_get(&verdict_id, self.verify_store().as_ref())
+            }
+            RuntimeCommand::VerifyList { run_id } => Ok(crate::verify_runner::handle_verify_list(
+                self.verify_store().as_ref(),
+                run_id.as_deref(),
+            )),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected verify.* command",
+            )),
+        }
+    }
+
+    /// L3 — `policy.*`: serve the sealed policy doc + decision evidence (handlers in
+    /// `crate::policy_plane`).
+    fn run_policy_command(
+        &self,
+        command: RuntimeCommand,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        let plane = self.policy_plane();
+        match command {
+            RuntimeCommand::PolicyGet => Ok(crate::policy_plane::run_policy_get(plane.as_ref())),
+            RuntimeCommand::PolicyDecisions { session_id } => Ok(
+                crate::policy_plane::run_policy_decisions(session_id.as_deref(), plane.as_ref()),
+            ),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected policy.* command",
+            )),
+        }
+    }
+
+    /// L4 — `receipt.get`: fetch a signed Verification Receipt (handler in
+    /// `crate::receipt_store`).
+    fn run_receipt_command(
+        &self,
+        command: RuntimeCommand,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::ReceiptGet { receipt_id } => {
+                crate::receipt_store::run_receipt_get(&receipt_id, self.receipt_store().as_ref())
+            }
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected receipt.* command",
+            )),
+        }
+    }
+
+    /// L6 — `outcome.*`: append/get/query human/CI outcome labels (handlers in
+    /// `crate::outcome_store`); a label append announces `OutcomeLabeled`.
+    fn run_outcome_command(
+        &self,
+        command: RuntimeCommand,
+    ) -> Result<Value, nerve_runtime::RuntimeError> {
+        match command {
+            RuntimeCommand::OutcomeLabel {
+                run_id,
+                outcome,
+                source,
+                actor,
+                note,
+                verdict_ref,
+            } => {
+                let (payload, run_id, labels_root, label_count) =
+                    crate::outcome_store::handle_outcome_label(
+                        &run_id,
+                        outcome,
+                        source,
+                        actor,
+                        note,
+                        verdict_ref,
+                        self.outcome_store().as_ref(),
+                    )?;
+                self.emit(RuntimeEvent::OutcomeLabeled {
+                    run_id,
+                    session_id: None,
+                    outcome,
+                    labels_root,
+                    label_count,
+                });
+                Ok(payload)
+            }
+            RuntimeCommand::OutcomeGet { run_id } => {
+                crate::outcome_store::handle_outcome_get(&run_id, self.outcome_store().as_ref())
+            }
+            RuntimeCommand::OutcomeQuery {
+                agent,
+                outcome,
+                limit,
+            } => Ok(crate::outcome_store::handle_outcome_query(
+                agent.as_deref(),
+                outcome,
+                limit.unwrap_or(200),
+                self.outcome_store().as_ref(),
+            )),
+            _ => Err(nerve_runtime::RuntimeError::adapter(
+                "expected outcome.* command",
+            )),
+        }
+    }
+
+    /// L1 evidence ledger store for the served root (mirrors `run_store`).
+    fn ledger_store(&self) -> Option<crate::ledger_store::LedgerStore> {
+        crate::ledger_store::LedgerStore::for_scope(self.delegate_root().ok().as_deref()).ok()
+    }
+
+    /// L2 verdict store for the served root.
+    fn verify_store(&self) -> Option<crate::verify_store::VerifyStore> {
+        crate::verify_store::VerifyStore::for_scope(self.delegate_root().ok().as_deref()).ok()
+    }
+
+    /// L4 receipt store for the served root.
+    fn receipt_store(&self) -> Option<crate::receipt_store::ReceiptStore> {
+        crate::receipt_store::ReceiptStore::for_scope(self.delegate_root().ok().as_deref()).ok()
+    }
+
+    /// L6 outcome corpus store for the served root.
+    fn outcome_store(&self) -> Option<crate::outcome_store::OutcomeStore> {
+        crate::outcome_store::OutcomeStore::for_scope(self.delegate_root().ok().as_deref()).ok()
+    }
+
+    /// L3 policy plane for the served root (sealed policy doc + a null evidence sink;
+    /// the ledger-backed sink is wired when L3↔L1 is promoted).
+    fn policy_plane(&self) -> Option<crate::policy_plane::PolicyPlane> {
+        Some(crate::policy_plane::PolicyPlane::resolve(
+            self.delegate_root().ok().as_deref(),
+        ))
+    }
+
+    /// L4 — issue a signed Verification Receipt binding a sealed verdict (best-effort),
+    /// so `receipt.get` returns a portable, offline-re-verifiable attestation. Reloads
+    /// the run, maps the verdict's per-check results, signs via the local ed25519
+    /// signer, persists, and announces `ReceiptIssued`. A missing run/store is a silent
+    /// no-op — issuing a receipt never fails the verify turn.
+    fn issue_receipt_for_verdict(&self, run_id: &str, verdict: &nerve_core::verdict::Verdict) {
+        let Some(run) = self
+            .run_store()
+            .and_then(|store| store.load_record(run_id).ok())
+        else {
+            return;
+        };
+        let checks: Vec<nerve_core::receipt::ReceiptCheck> = verdict
+            .checks
+            .iter()
+            .map(|check| nerve_core::receipt::ReceiptCheck {
+                name: check.name.clone(),
+                kind: check.kind,
+                verdict: check_status_to_verdict(check.status),
+                reproducible: check.reproducible,
+                evidence_hash: None,
+            })
+            .collect();
+        let toolchain_digest =
+            (!run.inputs.toolchain_digest.is_empty()).then(|| run.inputs.toolchain_digest.clone());
+        if let Some(issued) = crate::receipt_store::issue_receipt_for_run(
+            &run,
+            checks,
+            toolchain_digest,
+            None,
+            None,
+            now_ms(),
+            &self.signer(),
+            self.receipt_store().as_ref(),
+        ) {
+            self.emit(RuntimeEvent::ReceiptIssued {
+                session_id: run.session_id.clone(),
+                run_id: issued.run_id,
+                receipt_id: issued.receipt_id,
+                verdict: issued.verdict,
+            });
+        }
+    }
+
+    /// The local ed25519 receipt signer, keyed under `config_home()/keys` (stable
+    /// across projects), falling back to the served root's `.nerve/keys`.
+    fn signer(&self) -> crate::signer::LocalEd25519Signer {
+        let dir = nerve_agent::auth::config_home()
+            .map(|home| home.join("keys"))
+            .ok()
+            .or_else(|| {
+                self.delegate_root()
+                    .ok()
+                    .map(|root| root.join(".nerve").join("keys"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(".nerve/keys"));
+        crate::signer::LocalEd25519Signer::load_or_create(&dir)
     }
 
     /// Execute a host-side command. These commands are the declared runtime seam
@@ -1164,7 +1468,11 @@ impl JobManager {
             // L0c pinned inputs (repo-snapshot + toolchain digest) are wired in the
             // capture path in a follow-up; absent here, so the content address is
             // unchanged from pre-L0c (None -> skip_serialized).
-            inputs: None,
+            // L0c: pin the run's executed closure (repo snapshot + toolchain digest)
+            // in-band so its content address commits to *what ran*, not just output.
+            inputs: Some(crate::toolchain_pin::resolve_run_inputs(
+                self.delegate_root().ok().as_deref(),
+            )),
         });
         writer.push(nerve_core::provenance::EventKind::TurnStarted { turn: 0 });
         let launch = {
@@ -1256,7 +1564,11 @@ impl JobManager {
             agent: agent.to_string(),
             task: task.to_string(),
             cwd: Some(cwd.display().to_string()),
-            inputs: None,
+            // L0c: pin the run's executed closure (repo snapshot + toolchain digest)
+            // in-band so its content address commits to *what ran*, not just output.
+            inputs: Some(crate::toolchain_pin::resolve_run_inputs(
+                self.delegate_root().ok().as_deref(),
+            )),
         });
         let mut last_ok = true;
         for (index, captured) in turns.iter().enumerate() {
@@ -1309,6 +1621,19 @@ impl JobManager {
 /// for one turn from a parsed [`DelegateUsage`](delegate_runtime::DelegateUsage) +
 /// reported USD cost. Shared by the one-shot and live capture paths; cost is stored
 /// as integer micro-USD (no floats in the hashed bytes — INV-R2).
+/// Map a per-check status to the verdict vocabulary a receipt check carries.
+fn check_status_to_verdict(
+    status: nerve_core::verdict::CheckStatus,
+) -> nerve_core::verdict::VerdictStatus {
+    use nerve_core::verdict::{CheckStatus, VerdictStatus};
+    match status {
+        CheckStatus::Pass => VerdictStatus::Passed,
+        CheckStatus::Fail => VerdictStatus::Failed,
+        CheckStatus::Flaky => VerdictStatus::Inconclusive,
+        CheckStatus::Error => VerdictStatus::Error,
+    }
+}
+
 fn delegate_usage_event(
     turn: u64,
     usage: &delegate_runtime::DelegateUsage,
@@ -1468,12 +1793,20 @@ enum Executor {
     /// The host L0 run store (`run.*` family): enumerate/fetch captured Runs from
     /// the persisted [`RunStore`](crate::run_store) (read-only).
     Run,
-    /// The trust-substrate L0c–L6 command families (`replay.*` / `ledger.*` /
-    /// `verify.*` / `policy.*` / `receipt.*` / `otel.*` / `outcome.*`). The protocol
-    /// vocabulary + pure kernels + persistent stores all exist (contract wave); the
-    /// host handlers are wired in the next wave, so this executor currently returns a
-    /// clear "handler pending" error rather than fabricating a result.
-    Trust,
+    /// L0c deterministic replay (`replay.start`): re-drive a captured Run's tape and
+    /// verify its content address against the recording.
+    Replay,
+    /// L1 evidence ledger (`ledger.query`): query the append-only cross-run log.
+    Ledger,
+    /// L2 execution-grounded verify (`verify.*`): re-run the org's checks in the
+    /// pinned closure and seal/fetch the borrowed verdict.
+    Verify,
+    /// L3 policy plane (`policy.*`): serve the sealed policy doc + decision evidence.
+    Policy,
+    /// L4 receipt store (`receipt.get`): fetch a signed Verification Receipt.
+    Receipt,
+    /// L6 outcome corpus (`outcome.*`): append/get/query human/CI outcome labels.
+    Outcome,
     /// The runtime host/native shell side-effects (`host.*` / `workspace.*`).
     Host,
     /// The host `SessionManager` (`session.*` family).
@@ -2266,19 +2599,19 @@ fn executor_for(command: &RuntimeCommand) -> Executor {
         | RuntimeCommand::DelegateClose { .. }
         | RuntimeCommand::DelegateGet { .. }
         | RuntimeCommand::DelegateList => Executor::Delegate,
-        RuntimeCommand::RunList | RuntimeCommand::RunGet { .. } => Executor::Run,
-        RuntimeCommand::ReplayStart { .. }
-        | RuntimeCommand::LedgerQuery { .. }
-        | RuntimeCommand::VerifyStart { .. }
+        RuntimeCommand::RunList
+        | RuntimeCommand::RunGet { .. }
+        | RuntimeCommand::OtelIngest { .. } => Executor::Run,
+        RuntimeCommand::ReplayStart { .. } => Executor::Replay,
+        RuntimeCommand::LedgerQuery { .. } => Executor::Ledger,
+        RuntimeCommand::VerifyStart { .. }
         | RuntimeCommand::VerifyGet { .. }
-        | RuntimeCommand::VerifyList { .. }
-        | RuntimeCommand::PolicyGet
-        | RuntimeCommand::PolicyDecisions { .. }
-        | RuntimeCommand::ReceiptGet { .. }
-        | RuntimeCommand::OtelIngest { .. }
-        | RuntimeCommand::OutcomeLabel { .. }
+        | RuntimeCommand::VerifyList { .. } => Executor::Verify,
+        RuntimeCommand::PolicyGet | RuntimeCommand::PolicyDecisions { .. } => Executor::Policy,
+        RuntimeCommand::ReceiptGet { .. } => Executor::Receipt,
+        RuntimeCommand::OutcomeLabel { .. }
         | RuntimeCommand::OutcomeGet { .. }
-        | RuntimeCommand::OutcomeQuery { .. } => Executor::Trust,
+        | RuntimeCommand::OutcomeQuery { .. } => Executor::Outcome,
         RuntimeCommand::HostCapabilities
         | RuntimeCommand::HostClipboardWriteText { .. }
         | RuntimeCommand::HostNotificationShow { .. }
@@ -2467,7 +2800,12 @@ mod command_executor_partition {
             Executor::AgentRun,
             Executor::Delegate,
             Executor::Run,
-            Executor::Trust,
+            Executor::Replay,
+            Executor::Ledger,
+            Executor::Verify,
+            Executor::Policy,
+            Executor::Receipt,
+            Executor::Outcome,
             Executor::Host,
             Executor::Session,
             Executor::Auth,

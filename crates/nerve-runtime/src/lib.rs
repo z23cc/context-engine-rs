@@ -28,11 +28,11 @@ pub use nerve_proto::{
     AgentEventKind, ApprovalMode, AuthEventKind, AuthStartFlow, BudgetSpec, ContextSplit,
     DelegateAutonomy, DelegateRole, FailPolicy, FlowDecisionKind, FlowNodeUsage, FlowRunOutcome,
     FlowSource, FlowWorkerKind, HostCapabilities, HostCapabilitySupport, Join, LedgerRef,
-    RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent, RuntimeJobCancelRequest,
-    RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot,
-    RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec, SessionApprovalDecision, Step,
-    Strategy, TaskTemplate, ToolCapability, WechatEventKind, WorkerRef, WorkerSelector,
-    WorkflowDef,
+    OtelSource, RUNTIME_COMMAND_NAMES, RiskTier, RuntimeCommand, RuntimeEvent,
+    RuntimeJobCancelRequest, RuntimeJobError, RuntimeJobGetRequest, RuntimeJobListRequest,
+    RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus, RuntimeToolSpec,
+    SessionApprovalDecision, Step, Strategy, TaskTemplate, ToolCapability, WechatEventKind,
+    WorkerRef, WorkerSelector, WorkflowDef,
 };
 pub use runtime::Runtime;
 
