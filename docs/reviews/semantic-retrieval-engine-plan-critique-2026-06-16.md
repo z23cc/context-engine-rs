@@ -4,6 +4,8 @@
 numbers spot-checked against `crates/nerve-core/src/{search,port,catalog}.rs` and are
 accurate. Critique only — no scope additions.
 
+> **Superseded / historical (2026-06-24):** the in-kernel semantic/embeddings retrieval engine this critique reviews was removed — the determinism boundary keeps learned models / embeddings out of `nerve-core` (PR0 ONNX removal validated; semantic recall, if any, is MCP-consumed and tagged `deterministic:false`) — see `docs/designs/trust-substrate.md` (INV-R2) and `docs/designs/code-graph.md`. Kept as a record; do not treat as current direction.
+
 ## 1. Top 3 under-specified seams
 
 1. **Chunk-level BM25 reuse (`search.rs` ~627–711).** The plan (Items 2, 9) treats

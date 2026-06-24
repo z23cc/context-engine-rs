@@ -8,11 +8,17 @@ Nerve Workstation is a deterministic, pure-Rust code-intelligence engine exposed
 runtime adapters over the **same** engine: an agent-facing **MCP server over stdio**, and
 **`nerve daemon`**, a local runtime for human-facing frontends. The single binary is `nerve`.
 
-**Product direction (2026-06-23):** the human-facing runtime is a **cockpit for orchestrating
-multiple external CLI coding agents** (Claude Code, Codex, Gemini CLI) through the `delegate.*` seam
-— managing/observing them and handing them Nerve's engine as MCP tools — rather than running its own
-LLM loop. The built-in `nerve-agent` engine (`session.*` / `agent.run`) is a **secondary, optional**
-path, not featured in the GUI. See `docs/designs/architecture-north-star.md` §1/§8.
+**Product direction (sharpened 2026-06-24 — governed by `docs/designs/trust-substrate.md`):** Nerve is
+the **deterministic flight-recorder + execution-grounded re-verifier for fleets of external coding
+agents.** The human-facing runtime is a **cockpit** that orchestrates external CLI agents (Claude Code,
+Codex, Gemini CLI) through the `delegate.*` seam — but the cockpit is the **distribution body**, not
+the moat. The **moat** is that every agent run is captured as a content-addressed, bit-for-bit
+replayable **Run** and gated by a portable, signed **Verification Receipt** whose verdict is borrowed
+from the org's own tests. **Court reporter, not judge:** Nerve proves *what an agent did, that it is
+replayable, and that it cleared the org's own bar* — never that the code is "correct" (INV-R1).
+Generation is the commodity Nerve orchestrates and hands its engine to (as MCP tools); the built-in
+`nerve-agent` LLM loop (`session.*` / `agent.run`) stays **demoted** (INV-R4 — owning a generator
+poisons neutrality). See `docs/designs/trust-substrate.md` and `architecture-north-star.md` §1/§3/§8.
 
 ## Commands
 
@@ -120,8 +126,8 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
      and is **fail-closed** — with no `--root`, catalog/read/search are refused.
   2. **`nerve daemon`** (`daemon/`): frontend-facing local runtime that executes commands as
      cancellable in-memory **jobs** (`jobs.rs`); job state disappears when the daemon exits.
-  Also: the CLI (`cli.rs` — `mcp serve` / `daemon` / `agent` / `config` / `warm` / `auth` / `cache` /
-  `install`), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
+  Also: the CLI (`cli.rs` — `mcp serve` / `daemon` / `doctor` / `config` / `auth` / `agent` /
+  `install` / `chat` / `flow` [hidden]), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
   `nerve agent run/login`), the xAI/Grok tools (`xai/`), and the xAI-only `nerve auth` alias
   (`auth/`, a thin adapter over `nerve-agent::auth`, which now owns all provider credentials).
 
@@ -186,9 +192,12 @@ The long-term architecture and its invariants live in `docs/designs/architecture
   *existing* CLI agent forced read-only with an explore-and-cite prompt (`delegate_roles.rs`),
   offloading repository exploration to a cheaper model. It reuses the seam, not a new entry point.
 
-- **Roadmap priority (direction updated 2026-06-23):** the **headline is P7 — a multi-agent cockpit
-  over external CLI agents** (`delegate.*` primary; own-engine `session.*` / `agent.run` demoted to a
-  secondary, optional seam, not featured in the GUI). Prior foundation: P0 Session layer (fold the
-  agent into the protocol) → P1 MCP client → P2 provider registry/config → P3 skills + agent/workflow
-  defs → P4 permission engine → P5 persistence → P6 hooks + GUI/mobile. See
-  `docs/designs/architecture-north-star.md` §1/§8.
+- **Roadmap priority (headline reframed 2026-06-24):** the **headline is the trust substrate** — the
+  deterministic flight-recorder + execution-grounded re-verifier (capture every delegated run as a
+  replayable **Run**, gate it with a signed **Verification Receipt** = the org's own tests, land it as
+  a GitHub/GitLab merge-gate; see `docs/designs/trust-substrate.md` §8). **P7 — the multi-agent cockpit
+  over external CLI agents** (`delegate.*` primary; own-engine `session.*` / `agent.run` demoted) is the
+  substrate's **distribution body**. First bricks: the credibility floor (`delegate.list`/`delegate.get`
+  + durable resumable sessions) → L0 Run capture → Receipt + merge-gate. Prior foundation: P0 Session
+  layer → P1 MCP client → P2 provider registry/config → P3 skills + agent/workflow defs → P4 permission
+  engine → P5 persistence → P6 hooks + GUI/mobile. See `architecture-north-star.md` §1/§8.

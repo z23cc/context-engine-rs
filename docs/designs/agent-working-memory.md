@@ -5,6 +5,8 @@ Date: 2026-06-18
 Updated: 2026-06-22
 Related: `docs/designs/architecture-north-star.md` (seams, determinism boundary).
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc describes a within-session working-memory convenience feature above the kernel — supporting, not strategic, and not part of the moat.
+
 ## 1. Problem
 
 `nerve-agent`'s loop (`orchestrator.rs`) keeps the full turn history and, once

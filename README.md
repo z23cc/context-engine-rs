@@ -3,23 +3,32 @@
 A deterministic **code-intelligence engine** exposed through two runtime adapters:
 agent-facing MCP over stdio, and `nerve daemon`, a local Nerve Runtime for
 frontends. One pure-Rust binary gives MCP hosts (Claude Code, Codex, …) and
-runtime clients fast search, codemaps, symbol navigation, structural edits, and
-semantic retrieval over a codebase — no language server or GUI required.
+runtime clients fast search, codemaps, symbol navigation, and structural edits
+over a codebase — no language server or GUI required.
+
+> **Direction (2026-06-24):** Nerve is becoming the **deterministic flight-recorder +
+> execution-grounded re-verifier for fleets of external coding agents** — the `nerve daemon`
+> cockpit orchestrates external CLI agents, and every run is captured as a content-addressed,
+> replayable **Run** gated by a portable, signed **Verification Receipt** (the verdict is the
+> org's own tests, not ours). *Court reporter, not judge.* The deterministic engine below is the
+> grounding for that evidence. See [`docs/designs/trust-substrate.md`](docs/designs/trust-substrate.md).
 
 ## Highlights
 
 - **38 MCP tools**: tool discovery, search, read, tree, codemap, repo-map,
   fuzzy symbol search, impact analysis, symbol body reads/replace/insert/import-backed rename, symbol nav, call hierarchy, structural AST search/rewrite, selection preview/promote/demote,
-  a 4-mode edit engine, read-only git, semantic search, context assembly, plus optional xAI/Grok tools when OAuth is configured.
+  a 4-mode edit engine, read-only git, context assembly, plus optional xAI/Grok tools when OAuth is configured.
 - **Codemap over 11 languages** (tree-sitter): signatures **with return types**,
   class/struct members, references, shebang-based script detection, Markdown fenced-code extraction,
   and deterministic repo-map ranking — Rust, Python, JS, TS/TSX, Go, Java, C, C++, C#, Ruby, PHP.
 - **Deterministic** by design: snapshot-centered, golden-tested, reproducible
   (the lexical/structural tools give the same output for the same input), with
   context/file hashes for downstream prompt-cache and dedupe keys.
-- **Hybrid search**: ripgrep-style path/content (BM25) **plus** a built-in
-  semantic engine — local ONNX embeddings + ANN + cross-encoder rerank, fused via
-  RRF (on by default; see below).
+- **Deterministic search**: ripgrep-style path/content with real BM25 ranking,
+  fused with deterministic repo-map (PageRank) centrality — same input, same
+  output, every time. (Semantic recall, if wanted, is consumed via the MCP-client
+  seam, never an in-kernel vector stack — see
+  [`docs/designs/code-graph.md`](docs/designs/code-graph.md).)
 - **Symbol intelligence** (`symbol_search` / `analyze_impact` / `find_referencing_symbols` / `read_symbol` /
   `replace_symbol_body` / `insert_before_symbol` / `insert_after_symbol` / `rename_symbol` / `goto_definition` / `find_references` / `call_hierarchy`) with partial-name discovery,
   bounded impact analysis, referencing-symbol context, one-shot body reads, conservative symbolic edits (including import-backed rename that preserves local aliases), confidence scoring, and line:column locations — the structured layer agentic coders otherwise have to approximate with grep.
@@ -50,8 +59,6 @@ One command registers Nerve as an MCP server (idempotent, writes an absolute `--
 
 ```bash
 nerve install            # both; root = current dir   (--claude / --codex / --dry-run)
-nerve warm               # optional: prebuild the current project's semantic index
-nerve cache purge        # delete the current project's semantic index cache
 nerve auth login xai     # optional: browser OAuth for xAI Grok subscription access
 nerve auth status        # show xAI OAuth status without printing secrets
 nerve auth logout        # remove stored xAI OAuth credentials
@@ -160,35 +167,18 @@ Grok/API entitlement.
 |---|---|
 | Search / read | `file_search` (path+content, BM25, smart-case, glob `include`/`exclude`/`extensions`, `output_mode`, asymmetric context, optional invalid-regex literal fallback (`regex_fallback="literal"`); per-file cap + round-robin so one file can't monopolize results), `read_file` (line ranges, hashline view, **structural `summary` view** — signatures kept, bodies elided, supported Markdown fences summarized on host lines, with concrete re-read ranges), `get_file_tree` (budgeted ASCII tree, `mode="selected"` ignores depth so selected files stay visible, with `*` selected / `+` codemap-capable markers) |
 | Code intelligence | `get_code_structure` (codemap + signatures/fields + per-file `token_count`, including no-extension scripts with supported shebangs and supported Markdown fenced code), `get_repo_map`, `symbol_search`, `read_symbol`, `analyze_impact`, `find_referencing_symbols`, `goto_definition`, `find_references`, `call_hierarchy`; navigation structuredContent includes line:column locations for definitions/references |
-| Semantic | `semantic_search` (hybrid dense + BM25 + rerank; structured `index_state` = `ready`/`warming`/`bm25_only` + snapshot `generation` for freshness) |
 | Edit | `edit` (`replace`/`patch`/`apply_patch`/`hashline`) / `write` / `delete` / `move` / `replace_symbol_body` / `insert_before_symbol` / `insert_after_symbol` / `rename_symbol` (conservative same-file + import-backed symbol rename) — root-gated, with unified diff (configurable context, optional ignore-whitespace), syntax diagnostics, atomic batch preflight, stale-hash rejection, and selection rebase metadata |
 | Context / ops | `tool_search` (intent search over the built-in tool catalog; works without workspace routing), `manage_selection` (full/slices/codemap-only; root-prefixed paths; preview/promote/demote; optional `auto_codemap`; slice `label`/`description` preserved through rebase), `workspace_context` (optional selected `tree` + `code` sections), `build_context` (ranked context + per-signal score breakdowns + allocation/budget trace + structured sensitive-content diagnostics), `git` (read-only; diff `detail="summary"|"files"|"patches"|"bundle"|"full"`, with churn-sorted bounded patches and structured bundle handoff metadata), `manage_workspaces` |
 | xAI / Grok | `xai_models`, `xai_responses`, `x_search` (preferred), `xai_x_search`, `web_search` (preferred), `xai_web_search`, `xai_image_generate`, `xai_tts`, `xai_transcribe`, `xai_video_generate` |
 
-## Semantic search (built in, on by default)
+## Context assembly
 
-`semantic_search` works out of the box. The first call returns **BM25 results
-immediately** while the dense index warms in the background, then auto-upgrades to
-full hybrid (embeddings + ANN + rerank).
-
-- **Model**: downloaded once **per machine** to `~/Library/Caches/nerve-workstation`
-  (`~/.cache/...` on Linux), shared across all projects — never re-downloaded per
-  directory. ~300 MB on first semantic use.
-- **Index**: persisted **per project** (keyed by canonical roots + model + scope +
-  version), so projects stay isolated and a warm index loads instantly.
-- **Opt out**: `nerve mcp serve --no-semantic`. If you never call `semantic_search`, nothing
-  is downloaded or built.
-- **Tune**: `--semantic-cache-dir`, `--semantic-model-cache-dir`, `--semantic-no-rerank`,
-  and scope flags (`--semantic-include` / `--semantic-exclude` / `--semantic-extension`).
-- `build_context` automatically folds semantic candidates into its ranking when a
-  warm index is available, then does a deterministic 1-hop type-reference expansion:
-  files defining symbols the seed files reference are pulled in as codemap-only context.
-  Its manifest also reports per-signal score breakdowns, allocation/budget trace
-  entries, and sensitive-content findings for included full/slice content without
-  echoing matched secret values.
-- Structural summaries (`read_file view="summary"`) are memoized by content hash + fold options.
-
-`build_context` / `read_file` etc. fall back gracefully when the index is cold.
+`build_context` assembles a ranked working set **deterministically** (BM25 + repo-map
+PageRank + path), then does a 1-hop type-reference expansion: files defining symbols the
+seed files reference are pulled in as codemap-only context. Its manifest reports per-signal
+score breakdowns, allocation/budget trace entries, and sensitive-content findings for
+included full/slice content without echoing matched secret values. Structural summaries
+(`read_file view="summary"`) are memoized by content hash + fold options.
 
 ## Build & quality gates
 
@@ -196,7 +186,7 @@ The runtime protocol schema is generated from the `nerve-runtime` Rust types.
 
 ```bash
 cargo build
-cargo test                                    # add --features semantic for the engine
+cargo test                                    # whole workspace
 cargo clippy --all-targets -- -D warnings     # functions <=100 lines, nesting capped
 cargo fmt --check
 ./Scripts/check-file-size.sh                  # files <=600 non-test lines

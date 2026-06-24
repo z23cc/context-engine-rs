@@ -1,7 +1,8 @@
 # Architecture North Star
 
 Status: **governing** — read before any structural change. Referenced as a binding rule from `CLAUDE.md`.
-Date: 2026-06-18 · reconciled to implementation 2026-06-19 · **product direction updated 2026-06-23**
+Date: 2026-06-18 · reconciled to implementation 2026-06-19 · product direction updated 2026-06-23 ·
+**positioning sharpened 2026-06-24 — §1 superseded by `docs/designs/trust-substrate.md`**
 
 This is the long-term architectural contract for Nerve Workstation. It exists so that every
 incremental change is **locally optimal _and_ globally aligned**: each feature plugs into a declared
@@ -9,23 +10,33 @@ seam instead of bolting on a new bespoke entry point. When in doubt, the seam wi
 
 ## 1. North star
 
-> **Nerve = a deterministic code-intelligence kernel (exposed as tools) + a protocol-defined runtime
-> that is a _cockpit for orchestrating multiple external CLI coding agents_ (Claude Code, Codex,
-> Gemini CLI, …) side by side — "everything else is a plugin behind a port."**
+> Positioning is governed by **`docs/designs/trust-substrate.md`** (decision record, 2026-06-24,
+> validated by an unconstrained adversarial tournament). This section is the binding summary.
 
-**Product identity (set 2026-06-23).** Nerve's job is to **manage and observe external agent CLIs,
-not to be one.** The deterministic engine is offered *to* those agents (as MCP tools); the runtime
-drives them through the `delegate.*` seam, surfaces their tool calls / approvals / output in one
-cockpit, and lets you run several agents across projects concurrently. The built-in `nerve-agent`
-LLM loop (the `agent.run` / `session.*` own-engine path) is **demoted to a secondary, optional
-seam** — retained for headless/embedded use, but no longer the primary product surface and not
-featured in the GUI. This **reverses** the earlier "runtime session as the primary cockpit" framing;
-see the dated note in §2, the scorecard in §5, and the roadmap in §8.
+> **Nerve is the deterministic flight-recorder + execution-grounded re-verifier for fleets of
+> external coding agents.** It orchestrates the best stochastic agents (Claude Code, Codex, Gemini, …)
+> as userland through the `delegate.*` cockpit (the **body** / distribution), and its **moat** is that
+> every agent run is captured as a content-addressed, bit-for-bit replayable **Run** and gated by a
+> portable, signed **Verification Receipt** whose verdict is borrowed from the org's own tests — not
+> invented by us. **Court reporter, not judge:** we prove *what an agent did, that it is replayable,
+> and that it cleared the org's own bar* — never that the code is "correct."**
+
+**What changed (2026-06-24).** The 2026-06-23 framing — "a cockpit for orchestrating external CLI
+agents" — is **correct but incomplete**: the cockpit is the body, not the moat. Orchestration is a
+commodity the agent vendors are absorbing; the durable, uncopyable asset is **reproducibility of the
+run and the record** (determinism buys *that*, never correctness — see INV-R1/R3). Generation is the
+commodity we orchestrate; **adjudicated, replayable provenance is the product.** The own-engine
+`nerve-agent` loop stays **demoted** (INV-R4: owning a generator poisons the neutrality that is the
+moat). See INV-R1..R6 in §3, the headline in §8, the anti-goals in §9, and the full thesis +
+named contracts (Run / Ledger / Verdict / Receipt / Policy) in `trust-substrate.md`.
 
 - The **kernel** (`nerve-core`) is pure and deterministic; golden-tested; never extended by runtime
-  plugins. Its tools are the value Nerve hands to the agents it orchestrates.
+  plugins. Its tools are the value Nerve hands to the agents it orchestrates **and** the grounding for
+  the evidence it records.
 - Non-determinism (the external agent CLIs, LLMs, third-party tools, sessions, network, time) lives
-  strictly **above** the kernel.
+  strictly **above** the kernel. **Capture / replay / ledger / verdict** are non-deterministic-world
+  concerns and live in `nerve-runtime` / `nerve-workstation` (INV-R2); only the pure event
+  canonicalization/hashing may live in the kernel.
 - Extending the system means **implementing a declared seam** — never editing the kernel and never
   opening a new ad-hoc host entry point. Supporting a new agent CLI = the **`delegate` seam**, not a
   new face.
@@ -103,7 +114,8 @@ cockpit's differentiator is orchestrating *many* such CLIs at once (§8), not a 
    `nerve-core`. It is **three subsystems behind one port**, not one store — durable
    distilled facts (small, always-injected → `FileMemoryStore` over `.nerve/memory.md`),
    episodic / session history (large, queryable → P5 persistence; SQLite when needed), and
-   semantic recall (**reuse the `semantic` core feature**, never a second vector stack).
+   semantic recall (**consumed via the MCP-client seam, tagged `deterministic:false`** — never a
+   kernel-resident vector stack; the in-kernel ONNX engine was removed, INV-R2 / `code-graph.md`).
    Write enters via the `ToolBox` seam (`remember`), recall via the `Hook::on_start` seam
    (zero `nerve-agent` change). Promote a backend (file → SQLite) only on a *measured*
    trigger — always-inject token budget exceeded, real write contention, or a structured-
@@ -119,11 +131,35 @@ cockpit's differentiator is orchestrating *many* such CLIs at once (§8), not a 
    daemon/remote run must require a strong-isolation backend or refuse). See
    `docs/designs/agent-exec-sandbox.md`.
 
+**Trust-substrate invariants (added 2026-06-24; full detail in `docs/designs/trust-substrate.md`).**
+These extend — never weaken — invariants 1–9.
+
+10. **INV-R1 — Reproducibility, not correctness.** The substrate attests that a run *happened*, is
+    *bit-for-bit replayable* from recorded inputs, and *met the org's own acceptance bar reproducibly*.
+    It must **never** assert a change is "correct" (correctness-of-intent is undecidable + model-bound).
+11. **INV-R2 — Determinism boundary holds for the substrate.** Event canonicalization, hashing, and
+    the Run/Ledger DAG schema are pure (golden-testable, may live in `nerve-core`/`nerve-proto`).
+    Capture, replay execution, ledger I/O, signing, and verification touch the non-deterministic world
+    and live in `nerve-runtime`/`nerve-workstation`, never in `nerve-core` (consistent with §3.1).
+12. **INV-R3 — Verdict is execution-grounded only.** The authoritative verdict bottoms out in the
+    org's own tests/typecheck/build/lint (+ property/mutation/contamination checks) re-run in the
+    hermetic closure. LLM-judge panels are advisory, quarantined, never load-bearing. (Deprecates the
+    `verify_completion` self-grade opt-in named in §2.)
+13. **INV-R4 — Neutrality.** Nerve ships no first-party generation model as a product; the own-engine
+    loop stays a demoted headless/test fixture. A verifier that owns a generator is a self-grader —
+    neutrality is the moat, protect it.
+14. **INV-R5 — Receipts & ledger are portable, signed, append-only, additive protocol data.** Open the
+    Receipt schema (third-party re-verifiable); keep the replay kernel + calibration closed. Wire
+    vocabulary is added per §3.3 (additive, versioned, `nerve-proto` authority, drift-checked).
+15. **INV-R6 — Ride distribution; own nothing upstream.** Run *on top of* external agents and land on
+    incumbent rails (merge-gate / MCP / OTel). Never try to *be* the execution cloud or the merge
+    platform, or out-distribute the agents.
+
 ## 4. Crates & layers (current)
 
 ```
 nerve-core       deterministic kernel — CatalogProvider port → immutable CatalogSnapshot;
-  ▲   ▲          tools (search/read/tree/codemap/repomap/navigate/edit/semantic/build_context);
+  ▲   ▲          tools (search/read/tree/codemap/repomap/navigate/edit/build_context/scout);
   │   │          dispatch hub entry (handle_tool_call*). Golden-tested. Depends on nothing internal.
   │   │
   │   └── nerve-agent   LLM layer — LlmProvider trait + Anthropic/OpenAI-Responses/xAI adapters,
@@ -161,7 +197,7 @@ code 2026-06-19 — the layers the original draft marked ✗ have since landed.)
 | Policy / Permission | `policy.rs` | ✅ `PolicyToolBox` outermost gate (invariant 9); `policy.json` global-authoritative + project tighten-only; CLI-interactive / daemon-deny / session-protocol approvers | the orthogonal `SandboxLauncher` containment half (exec) |
 | Hooks | `hooks.rs` + `nerve-agent::Hook` | ✅ wired via `Orchestrator::with_hooks` — `on_start` (environment + memory recall) and request-time checkpoint capture | further points (response/end) are additive when needed |
 | Persistence | `session.rs` | ✅ `SessionStore` versioned transcripts (`schema_version` + `migrate_to_current` scaffold) under `.nerve/sessions`; resume via the session layer; credentials persisted by `nerve-agent::auth` | live daemon **jobs** stay in-memory by design; SQLite only on a measured trigger |
-| Agent memory (`MemoryStore`) | `nerve-workstation` (`memory.rs`) | ✅ working-memory checkpoint (`Hook::on_request`) **and** long-term file-first (`FileMemoryStore` over `.nerve/memory.md`, `remember` tool, `on_start` recall, opt-in distillation) | promote file→SQLite on measured triggers; episodic history; recall reuses `semantic` (not a 2nd vector stack) |
+| Agent memory (`MemoryStore`) | `nerve-workstation` (`memory.rs`) | ✅ working-memory checkpoint (`Hook::on_request`) **and** long-term file-first (`FileMemoryStore` over `.nerve/memory.md`, `remember` tool, `on_start` recall, opt-in distillation) | promote file→SQLite on measured triggers; episodic history; semantic recall is MCP-consumed (`deterministic:false`), never a kernel vector stack |
 
 ## 6. Plugin architecture — layered by audience
 
@@ -202,13 +238,20 @@ Do not build one plugin system; layer by what is being extended, each with the r
 8. **Extract a thin `nerve-protocol` crate** when third-party Rust plugins/clients appear, so they
    depend on protocol types only, not all of `nerve-runtime`.
 
-## 8. Roadmap (status — reconciled to code 2026-06-22; **direction updated 2026-06-23**)
+## 8. Roadmap (status — reconciled to code 2026-06-22; direction updated 2026-06-23; **headline reframed 2026-06-24**)
 
-- **P7 — Multi-agent cockpit over external CLIs (NEW headline direction, 2026-06-23). ◑ In progress.**
+- **HEADLINE — Trust substrate (2026-06-24). ○ New.** The moat is the **deterministic flight-recorder
+  + execution-grounded re-verifier**: capture every delegated run as a content-addressed, replayable
+  **Run** (L0), gate it with a portable signed **Verification Receipt** whose verdict is the org's own
+  tests (L2/L4), and land it as a GitHub/GitLab merge-gate (L5). P7 (below) is its **distribution
+  body**, not the moat. Build order and named contracts: `docs/designs/trust-substrate.md` §8. First
+  bricks: the credibility floor (`delegate.list`/`delegate.get` + durable resumable sessions), then L0
+  Run capture, then the Receipt + merge-gate wedge.
+- **P7 — Multi-agent cockpit over external CLIs (the substrate's body; 2026-06-23). ◑ In progress.**
   The product's defining capability is **managing many CLI coding agents at once**: each thread bound
   to an agent (claude / codex / gemini …), several running concurrently across projects, a live
   "agents" dashboard (status / current task / pending approvals), and **cross-agent context handoff**
-  built on the deterministic engine (`build_context` / repomap / semantic) plus Nerve-as-MCP-tools.
+  built on the deterministic engine (`build_context` / repomap / scout) plus Nerve-as-MCP-tools.
   The foundation already exists — the `delegate.*` seam + `SandboxLauncher` (P4); remaining work is
   GUI surfacing + a small, additive management vocabulary (list/observe running agents). The
   own-engine `session.*` / `agent.run` path is **demoted to a secondary seam** (kept, not featured) —
@@ -258,13 +301,24 @@ Do not build one plugin system; layer by what is being extended, each with the r
 - **Security before openness.** Ship the permission engine + trust gates (P4) **before** enabling
   third-party MCP servers or script-bearing skills. A plugin is arbitrary code execution.
 - **Versioned or dead.** Once a protocol / provider / skill contract ships, it is additive-only.
-- **Don't rebuild what the agent CLIs already do — orchestrate them.** Nerve competes on
-  deterministic code-intelligence + multi-agent orchestration, not on being a better single agent
-  loop. Investing in the built-in `nerve-agent` engine is **not** a priority while the cockpit is the
-  goal; spend effort on the `delegate.*` management surface instead.
+- **Don't rebuild what the agent CLIs already do — orchestrate them, then record them.** Nerve does
+  not compete on being a better single agent loop, nor (after 2026-06-24) merely on orchestration —
+  orchestration is the *body*, the moat is the **replayable-Run + Receipt trust substrate** (§1,
+  INV-R1..R6). Investing in the built-in `nerve-agent` engine is **not** a priority (INV-R4); spend
+  effort on the `delegate.*` capture surface + the Run/Ledger/Receipt layers instead.
+- **Never claim a correctness verdict (INV-R1/R3).** "This code is correct" is undecidable + model-
+  bound and goes radioactive on the first proven-wrong receipt. Attest reproducibility + the org's own
+  bar only; LLM-judge panels are advisory, never load-bearing; `verify_completion` self-grade is
+  deprecated.
+- **Never own a generator as a product (INV-R4).** Neutrality is the moat a model vendor structurally
+  cannot have (a self-grader the field distrusts). Rent frontier models as userland.
+- **Ride distribution; don't out-distribute (INV-R6).** Land on GitHub/GitLab/MCP/OTel rails; do not
+  try to *be* the execution cloud, the merge platform, or an "AWS of agents". Keep semantic recall (if
+  any) a **consumed**, `deterministic:false`, MCP-side feature (`code-graph.md`), never a kernel moat.
 - **Anti-goals:** no premature WASM plugin host; no bespoke plugin protocol (MCP is the standard);
   no kitchen-sink protocol (a session is not strings stuffed into `JobProgress`); no premature crate
-  splitting (split only when independent versioning is needed, e.g. `nerve-protocol`).
+  splitting (split only when independent versioning is needed, e.g. `nerve-protocol`); no learned model
+  or embedding store inside `nerve-core` (PR0's ONNX removal stands — INV-R2).
 
 ## 10. Governance — how the invariants stay true
 

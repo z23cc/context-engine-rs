@@ -4,6 +4,8 @@ Status: in progress. The "keystone" beyond P0's one-shot `agent.run` — see
 `architecture-north-star.md` (the interactive Session layer the roadmap names as the
 prerequisite for a conversational GUI, approvals, and resume).
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc specs the durable, resumable session/job store that is now a precondition (the credibility floor) for the substrate — extend it to the delegate seam and the Run/Ledger so state survives restart and is enumerable/replayable.
+
 ## Goal
 
 Turn one-shot `agent.run` into interactive, multi-turn **sessions**: send a message →

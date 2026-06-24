@@ -1,5 +1,7 @@
 # Borrowed-techniques implementation plan
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is an implementation plan recording borrowed deterministic engine/UX techniques; it makes no directional claim that supersedes the thesis, so only this pointer is added.
+
 Source: analysis of `oh-my-pi` and `repoprompt-ce` for techniques a deterministic,
 non-LLM, pure-Rust code-intelligence MCP engine can adopt. This plan covers the two
 highest-value, self-contained items. Others (ast-grep pattern mode, search per-file

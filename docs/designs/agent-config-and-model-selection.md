@@ -3,6 +3,8 @@
 status: proposed
 date: 2026-06-19
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc covers provider/model selection, which stays config-driven and BYO-provider — Nerve rents frontier models and never ships a first-party generation model as a product (INV-R4).
+
 ## Problem
 `nerve chat` and `nerve agent run` require `--provider` and `--model` on every
 invocation (`chat.ts` exits 2 if missing; `agent.rs` errors unless `--agent`

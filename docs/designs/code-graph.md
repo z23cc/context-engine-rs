@@ -13,13 +13,16 @@ Date: 2026-06-23
 Related: `architecture-north-star.md` (determinism boundary, seam table, P7 cockpit),
 `agent-long-term-memory.md` (the *agent-fact* memory — a different subsystem; see §8).
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is VALIDATED: it builds deterministic edges in-core and consumes non-deterministic/semantic recall via the MCP-client seam tagged `deterministic:false` — deterministic code-intel is a grounding FEATURE for evidence, never a kernel moat (INV-R2).
+
 ## 1. Problem & ambition
 
 The headline direction (2026-06-23) is a **cockpit orchestrating external CLI coding
 agents** (Claude Code, Codex, Gemini) that are handed Nerve's engine as MCP tools. The
-engine is therefore the product's moat, and the bar is **absolute industry leadership** in
-agent-facing code intelligence: best-in-class on the axes that matter to a delegated agent —
-**determinism, token-efficiency, latency, and large-repo scale**.
+engine is therefore a **grounding FEATURE for evidence — not the moat (2026-06-24)** (the moat
+is the deterministic flight-recorder + execution-grounded re-verifier; see
+`docs/designs/trust-substrate.md`), and the bar for it is best-in-class on the axes that
+matter to a delegated agent — **determinism, token-efficiency, latency, and large-repo scale**.
 
 Today the lexical/structural tools are excellent and deterministic, but each
 navigation/repo-map call **re-derives the whole cross-file index from scratch**:
@@ -44,8 +47,8 @@ three derived-cache tiers; non-deterministic edge families consumed via the exis
 MCP-client seam, never built into the kernel.
 
 The build-vs-consume line **is the determinism boundary itself**:
-- **BUILD in `nerve-core`** (the moat): symbol / definition / reference / import / call edges
-  + confidence — pure, re-computable, golden-testable.
+- **BUILD in `nerve-core`** (a grounding feature, not the moat (2026-06-24)): symbol /
+  definition / reference / import / call edges + confidence — pure, re-computable, golden-testable.
 - **CONSUME via MCP** (`McpClientToolAdapter`, above the kernel): every non-deterministic /
   peripheral family — community/architecture clustering, model-free or embedding similarity,
   git co-change coupling, route/cross-service rendezvous, infra/k8s scanning — and

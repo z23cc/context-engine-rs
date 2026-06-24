@@ -1,5 +1,7 @@
 # Optimization pass — 2026-06-24
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is a dated engineering pass whose findings stand on their own; only its directional framing of the cockpit as "the headline" is realigned below.
+
 A multi-dimensional audit (deps · code quality · functionality/architecture · CI/tooling)
 followed by green, reversible changesets. Every item below was verified against the
 real code before acting — two audit findings turned out to be **misreads** and were
@@ -80,5 +82,5 @@ build.rs rebuild) in CI; a `wasm-bindgen-test` harness for DOM/reactive paths.
 1. Review `main` (green, releasable) — cut **v0.0.69** if you want the deps/CI/wechat
    work shipped.
 2. Greenlight schemars 1.x as a standalone reviewed PR (protocol-schema diff to inspect).
-3. Pick a big rock: P7 cockpit (headline), device-code (provide provider specifics),
+3. Pick a big rock: P7 cockpit (the distribution body, not the moat — the moat is the flight-recorder + execution-grounded re-verifier) (2026-06-24), device-code (provide provider specifics),
    or wechat media (provide a live `bot_type`).

@@ -1,5 +1,10 @@
 # semantic_search parity notes
 
+> **Superseded / historical (2026-06-24):** the in-kernel `semantic`/ONNX engine and the
+> `semantic_search` tool were **removed** (no `semantic` cargo feature exists). Semantic recall, if
+> wanted, is now consumed via the MCP-client seam tagged `deterministic:false` — see
+> `docs/designs/trust-substrate.md` (INV-R2) and `docs/designs/code-graph.md`. Kept as a parity record.
+
 `semantic_search` is available only in native builds compiled with `--features semantic`.
 Default builds do not list the tool and keep the existing on-demand/no-persistent-index behavior.
 

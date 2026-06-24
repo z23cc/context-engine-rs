@@ -1,5 +1,7 @@
 # Self-Contained Semantic + Hybrid Retrieval Engine: Plan
 
+> **Superseded / historical (2026-06-24):** the in-kernel semantic/embedding (ONNX) retrieval engine planned here was subsequently removed (PR0 ONNX removal), and INV-R2 now forbids learned models in `nerve-core`; semantic recall, if any, is MCP-consumed and tagged `deterministic:false` — see `docs/designs/trust-substrate.md` (INV-R2) and `docs/designs/code-graph.md`. Kept as a record; do not treat as current direction.
+
 ## Goal
 
 Add an Augment-style semantic retrieval layer to Nerve Workstation — local code embeddings

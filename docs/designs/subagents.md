@@ -3,6 +3,8 @@
 Status: in progress. Multi-agent orchestration: a running agent can delegate a
 subtask to a fresh sub-agent and continue with its result.
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc describes how sub-agent roles feed candidate generation; a read-only reviewer/oracle/scout sub-agent is purely advisory (INV-R3) and never produces an authoritative correctness verdict.
+
 ## Goal
 
 Let an agent delegate a subtask to a **sub-agent** (its own conversation /

@@ -11,6 +11,8 @@ Date: 2026-06-19
 Related: `docs/designs/architecture-north-star.md` (P4 permission engine, seams),
 the prior sandbox analysis (cross-platform isolation asymmetry).
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is the hermetic closure (SandboxLauncher + strong-isolation backend) that the Run capture (L0) and execution-grounded verdict (L2) depend on — so finishing strong isolation is now load-bearing for trustworthy replay, not optional.
+
 ## 1. Problem
 
 nerve's agent can search / read / navigate / **edit** code, but it has **no way to

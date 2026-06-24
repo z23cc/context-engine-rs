@@ -3,15 +3,19 @@
 Status: **proposed** (design) — governed by `docs/designs/architecture-north-star.md`; read that first.
 Date: 2026-06-20
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc describes the `flow.*` strategies (mapreduce/debate/hierarchical/vote) as heterogeneous CANDIDATE GENERATION feeding the execution-grounded verdict — the reduce/judge node emits a Receipt-attested PR, and any vote/debate/judge tally is ADVISORY input (INV-R3), never the authoritative correctness verdict.
+
 This is the long-term design for turning Nerve Workstation into a **super AI workspace**: a
 deterministic conductor that drives a fleet of heterogeneous AI workers — external agentic CLIs
 (`codex` / `claude` / `gemini`) and in-process providers (xAI-Grok / OpenAI / Anthropic with the full
 Nerve tool surface) — under human approval, all over **one versioned runtime protocol**.
 
-The thesis, stated once: **Nerve's moat is not "another orchestrator." It is that the conductor's
-control flow is deterministic Rust over transport-neutral data, replayable from a recorded tape,
-golden-testable, permission-gated, budget-bounded, and auditable — while the workers stay
-nondeterministic.** Determinism of the *plan*, never of the *results*.
+The thesis, stated once: **the conductor is not "another orchestrator," and the orchestration engine
+is not itself the moat (2026-06-24) — the moat is the flight-recorder + execution-grounded re-verifier
+(`docs/designs/trust-substrate.md`).** What the conductor buys is that its control flow is deterministic
+Rust over transport-neutral data, replayable from a recorded tape, golden-testable, permission-gated,
+budget-bounded, and auditable — feeding that re-verification substrate — while the workers stay
+nondeterministic. Determinism of the *plan*, never of the *results*.
 
 This design is the **convergence of the existing roadmap**, not a new subsystem. It is P3's pending
 "workflow defs" given a runtime executor, governed by P4 (`PolicyToolBox` + `ApprovalHub`), persisted

@@ -8,6 +8,17 @@ Nerve Workstation is a deterministic, pure-Rust code-intelligence engine exposed
 runtime adapters over the **same** engine: an agent-facing **MCP server over stdio**, and
 **`nerve daemon`**, a local runtime for human-facing frontends. The single binary is `nerve`.
 
+**Product direction (sharpened 2026-06-24 — governed by `docs/designs/trust-substrate.md`):** Nerve is
+the **deterministic flight-recorder + execution-grounded re-verifier for fleets of external coding
+agents.** The human-facing runtime is a **cockpit** that orchestrates external CLI agents (Claude Code,
+Codex, Gemini CLI) through the `delegate.*` seam — but the cockpit is the **distribution body**, not the
+moat. The **moat** is that every agent run is captured as a content-addressed, bit-for-bit replayable
+**Run** and gated by a portable, signed **Verification Receipt** whose verdict is borrowed from the org's
+own tests. **Court reporter, not judge:** prove *what an agent did, that it is replayable, and that it
+cleared the org's own bar* — never that the code is "correct" (INV-R1). The built-in `nerve-agent` LLM
+loop stays **demoted** (INV-R4 — owning a generator poisons neutrality). See
+`docs/designs/trust-substrate.md` and `docs/designs/architecture-north-star.md` §1/§3/§8.
+
 ## Commands
 
 ```bash
@@ -15,9 +26,8 @@ runtime adapters over the **same** engine: an agent-facing **MCP server over std
 cargo build                                   # whole workspace
 cargo build -p nerve-workstation --bin nerve  # just the nerve binary
 
-# Test (default features). The semantic engine is behind a feature flag:
+# Test
 cargo test --workspace
-cargo test -p nerve-core --features semantic            # exercises embeddings/ANN/rerank
 cargo test --workspace golden_build_context             # run a single test by name substring
 
 # Golden snapshots (insta) — after an *intentional* change to tool output:
@@ -25,7 +35,6 @@ cargo insta test --review                               # or: cargo insta accept
 
 # CI gates (all enforced; clippy runs with -D warnings)
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p nerve-core --all-targets --features semantic -- -D warnings
 cargo fmt --all --check
 ./Scripts/check-file-size.sh                            # files <= 600 non-test lines (hard gate)
 
@@ -64,7 +73,7 @@ Which tool to reach for:
 | "Which files are central" | `get_repo_map` (deterministic PageRank; seed with `query` or `seed_paths`) |
 | "Where is X defined / who calls it / how is it wired" | `goto_definition`, `find_references`, `call_hierarchy` |
 | Structural match/rewrite text search can't express | `ast_search`, `ast_edit` (tree-sitter `query` mode **or** `$META` pattern mode) |
-| "Find code about <concept>" (don't know the name) | `semantic_search` (hybrid dense+BM25+rerank) |
+| "Where does code about <concept> live" (don't know the name) | `scout` (query → ranked `path:line-range` citations; reuses `build_context` ranking — BM25 + repo-map PageRank + path; deterministic, no LLM) |
 | Edit files | `edit` (`replace`/`patch`/`apply_patch`/`hashline`), `write`, `delete`, `move` |
 | Assemble a working set for a question | `build_context`, then `manage_selection` / `workspace_context` |
 | Read-only history | `git` (`status`/`diff`/`log`/`blame`/`show`) |
@@ -76,11 +85,12 @@ Usage notes that bite if you don't know them:
   1-based line numbers, then `edit mode="hashline"`. A stale tag is rejected with `StaleHash` +
   `reread_hint` — re-read with `view="hashline"` and retry. `edit` returns a unified diff + syntax
   diagnostics and is root-gated.
-- **Semantic freshness:** `semantic_search` returns `index_state` (`ready` / `warming` / `bm25_only`)
-  plus a snapshot `generation`. The first call may be BM25-only while the dense index warms in the
-  background — re-query for the upgraded hybrid results. The tool only exists when the server was
-  built `--features semantic` (the default `cargo build` / `nerve install` binary omits it; first
-  semantic use downloads a ~300 MB model).
+- **Scout vs build_context:** `scout` is the cheap "where does X live" locator — given a query it
+  returns compact `path:line-range` citations without pulling file bodies into context. Reach for
+  `build_context` when you want the assembled context *text* for a question. Both are deterministic and
+  share the same ranking (BM25 + repo-map PageRank + path). There is **no** semantic/embedding retrieval
+  in the kernel — the in-kernel ONNX engine was removed; semantic recall, if wanted, is consumed via the
+  MCP-client seam (tagged `deterministic:false`), see `docs/designs/code-graph.md`.
 - **Fail-closed:** without `--root`, catalog/read/search are refused. The xAI/Grok tools are out of
   scope for code work here.
 
@@ -92,7 +102,7 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
   through the `CatalogProvider` port (`port.rs`); operations run against immutable
   `CatalogSnapshot` values (`snapshot.rs`). This snapshot-centered design is *why* the
   lexical/structural tools are deterministic and golden-testable. Tools live here
-  (search, read, tree, `codemap`, `repomap`, `navigate`, `edit`, `semantic`, `build_context`).
+  (search, read, tree, `codemap`, `repomap`, `navigate`, `edit`, `build_context`, `scout`).
   The transport-neutral MCP dispatch entry point is `dispatch/` (`handle_tool_call*` in
   `dispatch/mod.rs`): it takes a JSON `tools/call` params object and returns a JSON result.
   Core errors are `NerveError`; dispatch surfaces `DispatchError`.
@@ -115,8 +125,8 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
      and is **fail-closed** — with no `--root`, catalog/read/search are refused.
   2. **`nerve daemon`** (`daemon/`): frontend-facing local runtime that executes commands as
      cancellable in-memory **jobs** (`jobs.rs`); job state disappears when the daemon exits.
-  Also: the CLI (`cli.rs` — `mcp serve` / `daemon` / `agent` / `config` / `warm` / `auth` / `cache` /
-  `install`), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
+  Also: the CLI (`cli.rs` — `mcp serve` / `daemon` / `doctor` / `config` / `auth` / `agent` /
+  `install` / `chat` / `flow` [hidden]), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
   `nerve agent run/login`), the xAI/Grok tools (`xai/`), and the xAI-only `nerve auth` alias
   (`auth/`, a thin adapter over `nerve-agent::auth`, which now owns all provider credentials).
 
@@ -131,10 +141,11 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
   pinned by golden snapshots in `crates/nerve-core/tests/snapshots/*.snap` (insta). Behavioral
   differences vs. RepoPrompt are tracked in `docs/parity/` (`captures.json` is historical recorded
   I/O — treat it as a fixture, not editable config).
-- **Semantic search is opt-in.** It is gated behind the `semantic` cargo feature (default build is
-  OFF): local ONNX embeddings (`fastembed`) + ANN (`hnsw_rs`) + cross-encoder rerank, RRF-fused with
-  BM25. First semantic use downloads a ~300 MB model **once per machine**; the index is persisted
-  **per project**. Don't trigger it in tests/CI unless you mean to.
+- **Retrieval is lexical + graph, by design.** Search/ranking is BM25 + repo-map PageRank + path —
+  fully deterministic, golden-tested. The earlier in-kernel ONNX semantic engine (`fastembed`/`hnsw_rs`/
+  rerank) was **removed** to keep `nerve-core` pure (INV-R2); semantic recall, if wanted, is **consumed**
+  via the MCP-client seam and tagged `deterministic:false` (see `docs/designs/code-graph.md`), never a
+  second in-kernel vector stack.
 - **Two providers.** `MemoryCatalogProvider` (in-memory) backs most tests; `FsCatalogProvider` is the
   real filesystem provider. Codemap parses are cached by `(mtime, size)`.
 
@@ -178,6 +189,12 @@ The long-term architecture and its invariants live in `docs/designs/architecture
   | Agent capabilities | Skills / Agent-Def data (loaded, not compiled) |
   | A new client surface (GUI/TUI/mobile) | the versioned runtime protocol (never a new bespoke RPC) |
 
-- **Roadmap priority:** P0 Session layer (fold the agent into the protocol) → P1 MCP client →
-  P2 provider registry/config → P3 skills + agent/workflow defs → P4 permission engine →
-  P5 persistence → P6 hooks + GUI/mobile.
+- **Roadmap priority (headline reframed 2026-06-24):** the **headline is the trust substrate** — the
+  deterministic flight-recorder + execution-grounded re-verifier (capture every delegated run as a
+  replayable **Run**, gate it with a signed **Verification Receipt** = the org's own tests, land it as a
+  GitHub/GitLab merge-gate; see `docs/designs/trust-substrate.md` §8). **P7 — the multi-agent cockpit
+  over external CLI agents** (`delegate.*` primary; own-engine `session.*` / `agent.run` demoted) is the
+  substrate's **distribution body**. First bricks: the credibility floor (`delegate.list`/`delegate.get`
+  + durable resumable sessions) → L0 Run capture → Receipt + merge-gate. Prior foundation: P0 Session
+  layer → P1 MCP client → P2 provider registry/config → P3 skills + agent/workflow defs → P4 permission
+  engine → P5 persistence → P6 hooks + GUI/mobile.

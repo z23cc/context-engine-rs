@@ -2,6 +2,8 @@
 
 Date: 2026-06-17
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc documents the crate layering that enforces INV-R2: capture/replay/ledger/verdict live above `nerve-core` (in `nerve-runtime`/`nerve-workstation`), while pure event canonicalization/hashing/DAG schema may live in `nerve-core`/`nerve-proto`.
+
 ## Goal
 
 Keep public behavior stable while making the workspace easier to extend. The guiding rule is to make each module own one seam: CLI parsing, command execution, workspace construction, JSON-RPC serving, tool aggregation, authentication, provider integrations, repository-map ranking, and filesystem catalog scanning should evolve independently.

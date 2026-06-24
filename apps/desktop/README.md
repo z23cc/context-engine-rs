@@ -1,5 +1,7 @@
 # Nerve Workstation — Desktop shell (Tauri 2)
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is the desktop shell that ships the cockpit GUI to humans — a native wrapper over the runtime protocol, not part of the moat itself.
+
 A thin native wrapper around the Nerve daemon GUI. It owns **no UI of its own**:
 desktop builds are local-first and spawn the engine's HTTP daemon as a managed
 child, while mobile builds are remote-only and point the window at an already

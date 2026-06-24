@@ -4,6 +4,8 @@ Status: **proposed** (design). Follows `agent-working-memory.md` (the within-ses
 Date: 2026-06-18
 Related: `docs/designs/architecture-north-star.md`, `docs/designs/agent-working-memory.md`.
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc describes a convenience feature behind a `MemoryStore` port — not the moat and not a data/learning flywheel (the only load-bearing ML is L6 cross-agent outcome calibration, not per-org memory or distillation).
+
 ## 1. Problem
 
 The working-memory checkpoint (shipped v0.0.39) is **within-session** — it dies when

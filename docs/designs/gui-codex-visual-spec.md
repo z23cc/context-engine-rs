@@ -8,6 +8,8 @@ seam is frozen — every change here is CSS / Leptos `view!` markup only. **No n
 
 Date: 2026-06-21
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc is the visual spec for the cockpit — the surfaces it styles (structured delegate events, the Review accept/reject gate, and Run-replay/Receipt) are what render that flight-recorder + re-verifier to the human.
+
 ## 1. Scope & honesty caveat
 
 Goal: make `crates/nerve-gui` read as a sibling of the **OpenAI Codex desktop app** without

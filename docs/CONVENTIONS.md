@@ -32,6 +32,5 @@ for cheap context and review while avoiding a maze of tiny files.
 
 ```bash
 cargo clippy --all-targets -- -D warnings            # functions ≤ 100, nesting
-cargo clippy --all-targets --features semantic -- -D warnings
 ./Scripts/check-file-size.sh                          # hard file-size gate
 ```

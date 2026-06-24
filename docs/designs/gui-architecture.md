@@ -8,6 +8,8 @@ wins; this document only *specializes* it for the GUI.
 
 Date: 2026-06-21
 
+> **Positioning note (2026-06-24):** governed by `docs/designs/trust-substrate.md` — Nerve's moat is the deterministic flight-recorder + execution-grounded re-verifier (replayable **Run** + signed **Receipt**); the `delegate.*` cockpit is the distribution body. Under that thesis, this doc specifies the human cockpit surface, which must become a server-authoritative fleet dashboard (`delegate.list`/`get`), a structured per-agent event view, an accept/reject Review gate (not a copy-packet), and Run-replay + Receipt surfaces — all over the same versioned protocol seam.
+
 This is the long-term contract for Nerve Workstation's GUI / client surface — the window a human
 opens onto the engine. It exists because "what the UI looks like" and "how the UI is authored" are
 easy to conflate with "how the UI talks to the engine," and only the last of those is governed by the
