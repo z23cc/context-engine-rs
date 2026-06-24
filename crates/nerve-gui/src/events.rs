@@ -190,7 +190,11 @@ mod tests {
         let mut c = empty_chat();
         append_assistant_text(&mut c, "hello ");
         append_assistant_text(&mut c, "world");
-        assert_eq!(c.turns.len(), 1, "chunks coalesce into a single streaming turn");
+        assert_eq!(
+            c.turns.len(),
+            1,
+            "chunks coalesce into a single streaming turn"
+        );
         assert!(matches!(c.turns[0].role, Role::Assistant));
         assert!(c.turns[0].streaming);
         assert_eq!(c.turns[0].text, "hello world");
@@ -221,8 +225,18 @@ mod tests {
     #[test]
     fn message_and_reasoning_route_to_distinct_fields() {
         let mut c = empty_chat();
-        apply_agent_event(AgentEventKind::Reasoning { text: "thinking".into() }, &mut c);
-        apply_agent_event(AgentEventKind::Message { text: "answer".into() }, &mut c);
+        apply_agent_event(
+            AgentEventKind::Reasoning {
+                text: "thinking".into(),
+            },
+            &mut c,
+        );
+        apply_agent_event(
+            AgentEventKind::Message {
+                text: "answer".into(),
+            },
+            &mut c,
+        );
         let turn = c.turns.last().expect("turn");
         assert_eq!(turn.reasoning, "thinking");
         assert_eq!(turn.text, "answer");
@@ -247,7 +261,11 @@ mod tests {
             &mut c,
         );
         let tools = &c.turns.last().expect("turn").tools;
-        assert_eq!(tools.len(), 1, "finish updates the started card, not a new one");
+        assert_eq!(
+            tools.len(),
+            1,
+            "finish updates the started card, not a new one"
+        );
         assert_eq!(tools[0].ok, Some(true));
         assert_eq!(tools[0].output, "ok");
         assert!(tools[0].input.contains("path"));
