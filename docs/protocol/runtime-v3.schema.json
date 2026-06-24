@@ -1,19 +1,17 @@
 {
-  "definitions": {
+  "$defs": {
     "AgentEventKind": {
-      "description": "Payload of a [`RuntimeEvent::Agent`] — one step of the agent loop. Defined as transport-neutral data; the host maps its own agent events onto these.",
+      "description": "Payload of a [`RuntimeEvent::Agent`] — one step of the agent loop. Defined as\ntransport-neutral data; the host maps its own agent events onto these.",
       "oneOf": [
         {
           "properties": {
             "kind": {
-              "enum": [
-                "turn_started"
-              ],
+              "const": "turn_started",
               "type": "string"
             },
             "turn": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -26,9 +24,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "message"
-              ],
+              "const": "message",
               "type": "string"
             },
             "text": {
@@ -44,9 +40,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "reasoning"
-              ],
+              "const": "reasoning",
               "type": "string"
             },
             "text": {
@@ -63,9 +57,7 @@
           "properties": {
             "arguments": true,
             "kind": {
-              "enum": [
-                "tool_started"
-              ],
+              "const": "tool_started",
               "type": "string"
             },
             "tool": {
@@ -73,18 +65,16 @@
             }
           },
           "required": [
-            "arguments",
             "kind",
-            "tool"
+            "tool",
+            "arguments"
           ],
           "type": "object"
         },
         {
           "properties": {
             "kind": {
-              "enum": [
-                "tool_finished"
-              ],
+              "const": "tool_finished",
               "type": "string"
             },
             "ok": {
@@ -99,18 +89,16 @@
           },
           "required": [
             "kind",
+            "tool",
             "ok",
-            "output",
-            "tool"
+            "output"
           ],
           "type": "object"
         },
         {
           "properties": {
             "kind": {
-              "enum": [
-                "interrupted"
-              ],
+              "const": "interrupted",
               "type": "string"
             },
             "reason": {
@@ -128,16 +116,16 @@
             "cache_creation_tokens": {
               "description": "Prompt tokens written into the provider's prompt cache, when reported.",
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
               ]
             },
             "cache_read_tokens": {
-              "description": "Prompt tokens served from the provider's prompt cache, when reported. Additive and optional: producers that don't track caching omit it.",
+              "description": "Prompt tokens served from the provider's prompt cache, when reported.\nAdditive and optional: producers that don't track caching omit it.",
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -145,24 +133,22 @@
             },
             "input_tokens": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "kind": {
-              "enum": [
-                "usage"
-              ],
+              "const": "usage",
               "type": "string"
             },
             "output_tokens": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
           "required": [
-            "input_tokens",
             "kind",
+            "input_tokens",
             "output_tokens"
           ],
           "type": "object"
@@ -170,33 +156,27 @@
       ]
     },
     "ApprovalMode": {
-      "description": "Per-session approval posture controlling how high a [`RiskTier`] the gate may auto-approve without prompting. Pure protocol data; the host gate (P2) maps each tool's tier against [`Self::max_auto_tier`].",
+      "description": "Per-session approval posture controlling how high a [`RiskTier`] the gate may\nauto-approve without prompting. Pure protocol data; the host gate (P2) maps\neach tool's tier against [`Self::max_auto_tier`].",
       "oneOf": [
         {
+          "const": "always_ask",
           "description": "Prompt for everything above read-only.",
-          "enum": [
-            "always_ask"
-          ],
           "type": "string"
         },
         {
+          "const": "write",
           "description": "Auto-approve reads and edits; prompt for exec.",
-          "enum": [
-            "write"
-          ],
           "type": "string"
         },
         {
+          "const": "yolo",
           "description": "Auto-approve everything, including exec.",
-          "enum": [
-            "yolo"
-          ],
           "type": "string"
         }
       ]
     },
     "AuthEventKind": {
-      "description": "Authentication lifecycle event kind. Defined as pure protocol data; hosts map concrete credential/login implementation details onto these states.",
+      "description": "Authentication lifecycle event kind. Defined as pure protocol data; hosts map\nconcrete credential/login implementation details onto these states.",
       "enum": [
         "login_pending",
         "login_completed",
@@ -209,23 +189,19 @@
       "description": "Login flow requested by `auth.start`.",
       "oneOf": [
         {
+          "const": "browser",
           "description": "Browser authorization-code + PKCE flow over loopback/manual paste.",
-          "enum": [
-            "browser"
-          ],
           "type": "string"
         },
         {
+          "const": "device_code",
           "description": "OAuth 2.0 device authorization flow for remote/mobile clients.",
-          "enum": [
-            "device_code"
-          ],
           "type": "string"
         }
       ]
     },
     "BudgetSpec": {
-      "description": "The fleet budget envelope (design §6). C1 threads it as a placeholder; C3 wires the deterministic debit/cancel loop. All fields optional — an omitted budget caps nothing (the engine still bounds concurrency separately).",
+      "description": "The fleet budget envelope (design §6). C1 threads it as a placeholder; C3\nwires the deterministic debit/cancel loop. All fields optional — an omitted\nbudget caps nothing (the engine still bounds concurrency separately).",
       "properties": {
         "max_total_cost_usd": {
           "description": "Total USD ceiling across the whole tree.",
@@ -238,7 +214,7 @@
         "max_total_tokens": {
           "description": "Total token ceiling across the whole tree.",
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -247,7 +223,7 @@
         "max_workers": {
           "description": "Maximum number of workers across the whole tree (the global semaphore).",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -257,20 +233,18 @@
       "type": "object"
     },
     "ContextSplit": {
-      "description": "How a [`Strategy::MapReduce`] splits its shared context across map workers. Defined-ahead for C5; C1 never reads it.",
+      "description": "How a [`Strategy::MapReduce`] splits its shared context across map workers.\nDefined-ahead for C5; C1 never reads it.",
       "oneOf": [
         {
           "description": "Split a build_context selection into `n` roughly equal shards.",
           "properties": {
             "kind": {
-              "enum": [
-                "shards"
-              ],
+              "const": "shards",
               "type": "string"
             },
             "n": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -293,61 +267,49 @@
               "type": "array"
             },
             "kind": {
-              "enum": [
-                "paths"
-              ],
+              "const": "paths",
               "type": "string"
             }
           },
           "required": [
-            "groups",
-            "kind"
+            "kind",
+            "groups"
           ],
           "type": "object"
         }
       ]
     },
     "DelegateAutonomy": {
-      "description": "Autonomy posture handed to a delegated external agent CLI, mapping to each vendor's sandbox/permission flag: codex `--sandbox`, claude `--permission-mode`, gemini `--approval-mode` (read-only | edit | full). Defaults to the most restricted ([`Self::ReadOnly`]) so an omitted field never grants more than read access.",
+      "description": "Autonomy posture handed to a delegated external agent CLI, mapping to each\nvendor's sandbox/permission flag: codex `--sandbox`, claude `--permission-mode`,\ngemini `--approval-mode` (read-only | edit | full). Defaults to the most\nrestricted ([`Self::ReadOnly`]) so an omitted field never grants more than read\naccess.",
       "oneOf": [
         {
+          "const": "read_only",
           "description": "The delegated agent may only read; no edits, no command execution.",
-          "enum": [
-            "read_only"
-          ],
           "type": "string"
         },
         {
+          "const": "edit",
           "description": "The delegated agent may read and edit workspace files.",
-          "enum": [
-            "edit"
-          ],
           "type": "string"
         },
         {
+          "const": "full",
           "description": "The delegated agent may read, edit, and run commands.",
-          "enum": [
-            "full"
-          ],
           "type": "string"
         }
       ]
     },
     "DelegateRole": {
-      "description": "The *role* a delegated agent plays (DA-7): a curated behavior preset the host materializes on top of the raw agent CLI. Defaults to [`Self::Standard`] (no preset — the `task`/`autonomy` are used verbatim).\n\n[`Self::Scout`] is a read-only **repository-exploration** preset: the host wraps the task in an explore-and-cite instruction and forces read-only autonomy, so the agent returns compact `path:line-range` citations instead of editing — a cheap context sub-agent that keeps the caller's context window clean (the FastContext pattern, run on an existing CLI). The role is plain vocabulary here; the host (`delegate_roles`) owns the prompt + posture it maps to.",
+      "description": "The *role* a delegated agent plays (DA-7): a curated behavior preset the host\nmaterializes on top of the raw agent CLI. Defaults to [`Self::Standard`] (no\npreset — the `task`/`autonomy` are used verbatim).\n\n[`Self::Scout`] is a read-only **repository-exploration** preset: the host\nwraps the task in an explore-and-cite instruction and forces read-only\nautonomy, so the agent returns compact `path:line-range` citations instead of\nediting — a cheap context sub-agent that keeps the caller's context window\nclean (the FastContext pattern, run on an existing CLI). The role is plain\nvocabulary here; the host (`delegate_roles`) owns the prompt + posture it maps to.",
       "oneOf": [
         {
+          "const": "standard",
           "description": "No preset: the task and autonomy are passed through unchanged.",
-          "enum": [
-            "standard"
-          ],
           "type": "string"
         },
         {
-          "description": "Read-only repository-exploration preset — forces read-only autonomy and an explore-and-cite instruction (see the type docs).",
-          "enum": [
-            "scout"
-          ],
+          "const": "scout",
+          "description": "Read-only repository-exploration preset — forces read-only autonomy and an\nexplore-and-cite instruction (see the type docs).",
           "type": "string"
         }
       ]
@@ -359,9 +321,7 @@
           "description": "Stop the whole flow on this failure (the safe default).",
           "properties": {
             "kind": {
-              "enum": [
-                "abort"
-              ],
+              "const": "abort",
               "type": "string"
             }
           },
@@ -374,9 +334,7 @@
           "description": "Record the failure and continue (used by `Parallel` branches).",
           "properties": {
             "kind": {
-              "enum": [
-                "continue"
-              ],
+              "const": "continue",
               "type": "string"
             }
           },
@@ -389,14 +347,12 @@
           "description": "Retry the step up to `n` more times before applying `Abort`.",
           "properties": {
             "kind": {
-              "enum": [
-                "retry"
-              ],
+              "const": "retry",
               "type": "string"
             },
             "n": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -409,15 +365,13 @@
       ]
     },
     "FlowDecisionKind": {
-      "description": "The typed kinds a [`RuntimeEvent::FlowDecision`] can record (design §6/§8). A closed, additive-versioned enum so the audit trail is golden-diffable and replayable; later waves add vote/judge/debate kinds.",
+      "description": "The typed kinds a [`RuntimeEvent::FlowDecision`] can record (design §6/§8).\nA closed, additive-versioned enum so the audit trail is golden-diffable and\nreplayable; later waves add vote/judge/debate kinds.",
       "oneOf": [
         {
-          "description": "The fleet budget (USD or tokens) was exhausted; the engine cooperatively cancelled every branch (design §6, the budget brake / fork-bomb cure).",
+          "description": "The fleet budget (USD or tokens) was exhausted; the engine cooperatively\ncancelled every branch (design §6, the budget brake / fork-bomb cure).",
           "properties": {
             "kind": {
-              "enum": [
-                "budget_exhausted"
-              ],
+              "const": "budget_exhausted",
               "type": "string"
             }
           },
@@ -427,49 +381,45 @@
           "type": "object"
         },
         {
-          "description": "A spawn was refused at the depth ceiling — the engine did not start more workers because `depth >= max_depth` (design §8, absence-at-floor). A deterministic, recorded refusal, not a crash.",
+          "description": "A spawn was refused at the depth ceiling — the engine did not start more\nworkers because `depth >= max_depth` (design §8, absence-at-floor). A\ndeterministic, recorded refusal, not a crash.",
           "properties": {
             "depth": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "kind": {
-              "enum": [
-                "depth_ceiling"
-              ],
+              "const": "depth_ceiling",
               "type": "string"
             },
             "max_depth": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
           "required": [
-            "depth",
             "kind",
+            "depth",
             "max_depth"
           ],
           "type": "object"
         },
         {
-          "description": "A spawn was refused at the worker ceiling — `live_workers >= max_workers` across the whole tree (design §8, the process-global semaphore bound).",
+          "description": "A spawn was refused at the worker ceiling — `live_workers >= max_workers`\nacross the whole tree (design §8, the process-global semaphore bound).",
           "properties": {
             "kind": {
-              "enum": [
-                "worker_ceiling"
-              ],
+              "const": "worker_ceiling",
               "type": "string"
             },
             "live_workers": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "max_workers": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -481,22 +431,20 @@
           "type": "object"
         },
         {
-          "description": "A `VoteJudge` strategy tallied its candidates before adjudication (design §3): how many candidate workers succeeded out of how many ran, and whether the quorum `k` was reached. The audit trail of WHAT the judge was handed. Additive within v4.",
+          "description": "A `VoteJudge` strategy tallied its candidates before adjudication (design §3):\nhow many candidate workers succeeded out of how many ran, and whether the\nquorum `k` was reached. The audit trail of WHAT the judge was handed. Additive\nwithin v4.",
           "properties": {
             "k": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "kind": {
-              "enum": [
-                "vote_tally"
-              ],
+              "const": "vote_tally",
               "type": "string"
             },
             "ok": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "reached": {
@@ -504,26 +452,24 @@
             },
             "total": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
           "required": [
-            "k",
             "kind",
             "ok",
-            "reached",
-            "total"
+            "total",
+            "k",
+            "reached"
           ],
           "type": "object"
         },
         {
-          "description": "A judge (a `VoteJudge` or `Debate` strategy's adjudicator) picked an outcome (design §3): the judge node's id and whether it succeeded. The audit trail of the adjudication itself. Additive within v4.",
+          "description": "A judge (a `VoteJudge` or `Debate` strategy's adjudicator) picked an outcome\n(design §3): the judge node's id and whether it succeeded. The audit trail of\nthe adjudication itself. Additive within v4.",
           "properties": {
             "kind": {
-              "enum": [
-                "judge_pick"
-              ],
+              "const": "judge_pick",
               "type": "string"
             },
             "node_id": {
@@ -541,22 +487,20 @@
           "type": "object"
         },
         {
-          "description": "One round of a `Debate` strategy completed (design §3): the round index (0-based) and how many of the sides argued successfully that round. Emitted once per round so the debate's progression is a replayable audit trail. Additive within v4.",
+          "description": "One round of a `Debate` strategy completed (design §3): the round index\n(0-based) and how many of the sides argued successfully that round. Emitted\nonce per round so the debate's progression is a replayable audit trail.\nAdditive within v4.",
           "properties": {
             "kind": {
-              "enum": [
-                "debate_round"
-              ],
+              "const": "debate_round",
               "type": "string"
             },
             "round": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "sides_ok": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -570,11 +514,11 @@
       ]
     },
     "FlowNodeUsage": {
-      "description": "A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`]. Mirrors the token fields of [`AgentEventKind::Usage`]; cache counts are optional and omitted when the worker did not report caching.",
+      "description": "A flow node's token usage, carried on [`RuntimeEvent::FlowNodeFinished`].\nMirrors the token fields of [`AgentEventKind::Usage`]; cache counts are\noptional and omitted when the worker did not report caching.",
       "properties": {
         "cache_creation_tokens": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -582,7 +526,7 @@
         },
         "cache_read_tokens": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -590,12 +534,12 @@
         },
         "input_tokens": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "output_tokens": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
@@ -606,7 +550,7 @@
       "type": "object"
     },
     "FlowRunOutcome": {
-      "description": "The aggregated outcome of a finished flow, carried on [`RuntimeEvent::FlowCompleted`]: whether the flow succeeded under its join/fail policy, a one-line summary, and the flow's final text (the kept results concatenated, in declared order).",
+      "description": "The aggregated outcome of a finished flow, carried on\n[`RuntimeEvent::FlowCompleted`]: whether the flow succeeded under its\njoin/fail policy, a one-line summary, and the flow's final text (the kept\nresults concatenated, in declared order).",
       "properties": {
         "final_text": {
           "type": "string"
@@ -625,33 +569,27 @@
       "type": "object"
     },
     "FlowWorkerKind": {
-      "description": "Which worker family ran a flow node — the only place the CLI-vs-provider distinction is visible to a flow client (design §2/§7). Protocol data; the host maps its own worker kind onto these.",
+      "description": "Which worker family ran a flow node — the only place the CLI-vs-provider\ndistinction is visible to a flow client (design §2/§7). Protocol data; the\nhost maps its own worker kind onto these.",
       "oneOf": [
         {
+          "const": "cli",
           "description": "An external agentic CLI (codex / claude / gemini) subprocess.",
-          "enum": [
-            "cli"
-          ],
           "type": "string"
         },
         {
+          "const": "provider",
           "description": "An in-process provider loop over the Nerve tool surface.",
-          "enum": [
-            "provider"
-          ],
           "type": "string"
         },
         {
-          "description": "A worker resolved from a named `WorkerDef` data file (C6, worker-as-data): the concrete family is decided by the loaded def, so the declarative ref only knows it is `named` (the node-agent stream carries the resolved behavior).",
-          "enum": [
-            "named"
-          ],
+          "const": "named",
+          "description": "A worker resolved from a named `WorkerDef` data file (C6, worker-as-data):\nthe concrete family is decided by the loaded def, so the declarative ref only\nknows it is `named` (the node-agent stream carries the resolved behavior).",
           "type": "string"
         }
       ]
     },
     "HostCapabilities": {
-      "description": "Host-shell capabilities available to GUI/runtime clients through protocol commands. These are intentionally concrete native affordances, not product wishes: clients should only render native integration affordances when the host reports support here.",
+      "description": "Host-shell capabilities available to GUI/runtime clients through protocol\ncommands. These are intentionally concrete native affordances, not product\nwishes: clients should only render native integration affordances when the\nhost reports support here.",
       "properties": {
         "clipboardWriteText": {
           "type": "boolean"
@@ -713,31 +651,29 @@
         }
       },
       "required": [
-        "clipboardWriteText",
-        "globalHotkey",
         "host",
-        "nativeContextMenu",
-        "nativeDragDrop",
-        "nativeFileDialogs",
-        "nativeSettingsWindow",
-        "nativeWindowChrome",
-        "osNotifications",
         "platform",
+        "workspaceReveal",
+        "nativeWindowChrome",
+        "nativeSettingsWindow",
+        "nativeFileDialogs",
+        "globalHotkey",
+        "nativeDragDrop",
+        "osNotifications",
+        "clipboardWriteText",
         "richClipboard",
-        "workspaceReveal"
+        "nativeContextMenu"
       ],
       "type": "object"
     },
     "Join": {
-      "description": "How parallel/vote results are folded — always in **declared `Step` order**, never completion order (design §3, the determinism invariant).",
+      "description": "How parallel/vote results are folded — always in **declared `Step` order**,\nnever completion order (design §3, the determinism invariant).",
       "oneOf": [
         {
           "description": "Keep every branch result (in declared order).",
           "properties": {
             "kind": {
-              "enum": [
-                "all"
-              ],
+              "const": "all",
               "type": "string"
             }
           },
@@ -750,9 +686,7 @@
           "description": "Keep the first OK result in declared order (a branch with `ok == true`).",
           "properties": {
             "kind": {
-              "enum": [
-                "first_ok"
-              ],
+              "const": "first_ok",
               "type": "string"
             }
           },
@@ -762,17 +696,15 @@
           "type": "object"
         },
         {
-          "description": "Keep results once `n` branches succeed (the first `n` OKs in declared order); a short quorum yields whatever OKs there were.",
+          "description": "Keep results once `n` branches succeed (the first `n` OKs in declared\norder); a short quorum yields whatever OKs there were.",
           "properties": {
             "kind": {
-              "enum": [
-                "quorum"
-              ],
+              "const": "quorum",
               "type": "string"
             },
             "n": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             }
           },
@@ -785,27 +717,21 @@
       ]
     },
     "RiskTier": {
-      "description": "Coarse risk classification for a tool, ordered least-to-most privileged. Advisory protocol data consumed by a future permission engine (P4); it does not gate execution today.",
+      "description": "Coarse risk classification for a tool, ordered least-to-most privileged.\nAdvisory protocol data consumed by a future permission engine (P4); it does\nnot gate execution today.",
       "oneOf": [
         {
+          "const": "read_only",
           "description": "Pure reads: catalog/search/navigation that never mutate state.",
-          "enum": [
-            "read_only"
-          ],
           "type": "string"
         },
         {
+          "const": "edit",
           "description": "Mutates workspace files (writes, patches, moves, deletes).",
-          "enum": [
-            "edit"
-          ],
           "type": "string"
         },
         {
+          "const": "exec",
           "description": "Runs arbitrary commands or otherwise escapes the file sandbox.",
-          "enum": [
-            "exec"
-          ],
           "type": "string"
         }
       ]
@@ -813,19 +739,19 @@
     "RuntimeCapabilities": {
       "properties": {
         "events": {
-          "$ref": "#/definitions/RuntimeEventCapabilities"
+          "$ref": "#/$defs/RuntimeEventCapabilities"
         },
         "jobs": {
-          "$ref": "#/definitions/RuntimeJobCapabilities"
+          "$ref": "#/$defs/RuntimeJobCapabilities"
         },
         "transport": {
-          "$ref": "#/definitions/RuntimeTransportCapabilities"
+          "$ref": "#/$defs/RuntimeTransportCapabilities"
         }
       },
       "required": [
+        "transport",
         "events",
-        "jobs",
-        "transport"
+        "jobs"
       ],
       "type": "object"
     },
@@ -836,9 +762,7 @@
           "description": "Lightweight health check used by clients before opening a real session.",
           "properties": {
             "kind": {
-              "enum": [
-                "ping"
-              ],
+              "const": "ping",
               "type": "string"
             }
           },
@@ -851,9 +775,7 @@
           "description": "Return all runtime tool specifications.",
           "properties": {
             "kind": {
-              "enum": [
-                "tool.list"
-              ],
+              "const": "tool.list",
               "type": "string"
             }
           },
@@ -871,9 +793,7 @@
               "type": "object"
             },
             "kind": {
-              "enum": [
-                "tool.call"
-              ],
+              "const": "tool.call",
               "type": "string"
             },
             "name": {
@@ -887,17 +807,15 @@
           "type": "object"
         },
         {
-          "description": "Run the built-in agent loop as a job. This is protocol vocabulary only: the host job manager (the composition root) executes it; the core runtime dispatcher does not (it has no LLM/provider knowledge). Provider/model are plain data here and translated to domain types by the host.",
+          "description": "Run the built-in agent loop as a job. This is protocol vocabulary only:\nthe host job manager (the composition root) executes it; the core runtime\ndispatcher does not (it has no LLM/provider knowledge). Provider/model are\nplain data here and translated to domain types by the host.",
           "properties": {
             "kind": {
-              "enum": [
-                "agent.run"
-              ],
+              "const": "agent.run",
               "type": "string"
             },
             "max_turns": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -943,8 +861,8 @@
           },
           "required": [
             "kind",
-            "model",
             "provider",
+            "model",
             "task"
           ],
           "type": "object"
@@ -959,14 +877,12 @@
               ]
             },
             "kind": {
-              "enum": [
-                "session.start"
-              ],
+              "const": "session.start",
               "type": "string"
             },
             "max_turns": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -1021,8 +937,8 @@
           },
           "required": [
             "kind",
-            "model",
-            "provider"
+            "provider",
+            "model"
           ],
           "type": "object"
         },
@@ -1030,9 +946,7 @@
           "description": "Send a user message to an existing host-managed session.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.message"
-              ],
+              "const": "session.message",
               "type": "string"
             },
             "session_id": {
@@ -1053,9 +967,7 @@
           "description": "Interrupt the current turn of an existing host-managed session.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.interrupt"
-              ],
+              "const": "session.interrupt",
               "type": "string"
             },
             "session_id": {
@@ -1072,12 +984,10 @@
           "description": "Reply to a session approval request.",
           "properties": {
             "decision": {
-              "$ref": "#/definitions/SessionApprovalDecision"
+              "$ref": "#/$defs/SessionApprovalDecision"
             },
             "kind": {
-              "enum": [
-                "session.respond"
-              ],
+              "const": "session.respond",
               "type": "string"
             },
             "request_id": {
@@ -1088,10 +998,10 @@
             }
           },
           "required": [
-            "decision",
             "kind",
+            "session_id",
             "request_id",
-            "session_id"
+            "decision"
           ],
           "type": "object"
         },
@@ -1099,9 +1009,7 @@
           "description": "Fetch one host-managed session.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.get"
-              ],
+              "const": "session.get",
               "type": "string"
             },
             "session_id": {
@@ -1118,9 +1026,7 @@
           "description": "List host-managed sessions.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.list"
-              ],
+              "const": "session.list",
               "type": "string"
             }
           },
@@ -1133,9 +1039,7 @@
           "description": "Close a host-managed session.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.close"
-              ],
+              "const": "session.close",
               "type": "string"
             },
             "session_id": {
@@ -1149,12 +1053,10 @@
           "type": "object"
         },
         {
-          "description": "Switch the model (and optionally provider) of a live session in place, keeping its history and checkpoint. Takes effect from the next turn.",
+          "description": "Switch the model (and optionally provider) of a live session in place,\nkeeping its history and checkpoint. Takes effect from the next turn.",
           "properties": {
             "kind": {
-              "enum": [
-                "session.set_model"
-              ],
+              "const": "session.set_model",
               "type": "string"
             },
             "model": {
@@ -1172,22 +1074,20 @@
           },
           "required": [
             "kind",
-            "model",
-            "session_id"
+            "session_id",
+            "model"
           ],
           "type": "object"
         },
         {
-          "description": "Switch the approval mode of a live session in place. Takes effect from the next gate decision. Pure protocol vocabulary; the host session manager stores it (P2 consults it in the gate).",
+          "description": "Switch the approval mode of a live session in place. Takes effect from the\nnext gate decision. Pure protocol vocabulary; the host session manager\nstores it (P2 consults it in the gate).",
           "properties": {
             "kind": {
-              "enum": [
-                "session.set_mode"
-              ],
+              "const": "session.set_mode",
               "type": "string"
             },
             "mode": {
-              "$ref": "#/definitions/ApprovalMode"
+              "$ref": "#/$defs/ApprovalMode"
             },
             "session_id": {
               "type": "string"
@@ -1195,8 +1095,8 @@
           },
           "required": [
             "kind",
-            "mode",
-            "session_id"
+            "session_id",
+            "mode"
           ],
           "type": "object"
         },
@@ -1204,17 +1104,11 @@
           "description": "Start a host-managed OAuth login.",
           "properties": {
             "flow": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AuthStartFlow"
-                }
-              ],
+              "$ref": "#/$defs/AuthStartFlow",
               "description": "Requested login flow. Defaults to browser authorization-code flow."
             },
             "kind": {
-              "enum": [
-                "auth.start"
-              ],
+              "const": "auth.start",
               "type": "string"
             },
             "provider": {
@@ -1243,9 +1137,7 @@
               ]
             },
             "kind": {
-              "enum": [
-                "auth.complete"
-              ],
+              "const": "auth.complete",
               "type": "string"
             },
             "login_id": {
@@ -1262,9 +1154,7 @@
           "description": "Return stored OAuth/API-key credential status without secrets.",
           "properties": {
             "kind": {
-              "enum": [
-                "auth.status"
-              ],
+              "const": "auth.status",
               "type": "string"
             },
             "provider": {
@@ -1278,7 +1168,7 @@
           "type": "object"
         },
         {
-          "description": "Ask the trusted host to mint OAuth lease metadata and, for trusted native clients, optionally include a short-lived access token. The stored refresh token is never returned.",
+          "description": "Ask the trusted host to mint OAuth lease metadata and, for trusted native\nclients, optionally include a short-lived access token. The stored refresh\ntoken is never returned.",
           "properties": {
             "force_refresh": {
               "default": false,
@@ -1286,13 +1176,11 @@
               "type": "boolean"
             },
             "include_token": {
-              "description": "Include the short-lived access token in the response. Defaults to true for backwards-compatible native clients; browser clients should pass false.",
+              "description": "Include the short-lived access token in the response. Defaults to true\nfor backwards-compatible native clients; browser clients should pass false.",
               "type": "boolean"
             },
             "kind": {
-              "enum": [
-                "auth.lease"
-              ],
+              "const": "auth.lease",
               "type": "string"
             },
             "provider": {
@@ -1309,9 +1197,7 @@
           "description": "Remove stored credentials for a provider.",
           "properties": {
             "kind": {
-              "enum": [
-                "auth.logout"
-              ],
+              "const": "auth.logout",
               "type": "string"
             },
             "provider": {
@@ -1325,17 +1211,13 @@
           "type": "object"
         },
         {
-          "description": "Delegate a coding task to an external agent CLI (codex / claude / gemini) as a long-lived job. Pure protocol vocabulary: the host job manager drives the subprocess (DA-2); `nerve-core` has no subprocess knowledge. `agent` is the catalog name from `list_agents`; `cwd` defaults to the workspace root; `model` overrides the agent's default model. Progress streams back as [`crate::RuntimeEvent::DelegateProgress`].",
+          "description": "Delegate a coding task to an external agent CLI (codex / claude / gemini)\nas a long-lived job. Pure protocol vocabulary: the host job manager drives\nthe subprocess (DA-2); `nerve-core` has no subprocess knowledge. `agent` is\nthe catalog name from `list_agents`; `cwd` defaults to the workspace root;\n`model` overrides the agent's default model. Progress streams back as\n[`crate::RuntimeEvent::DelegateProgress`].",
           "properties": {
             "agent": {
               "type": "string"
             },
             "autonomy": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/DelegateAutonomy"
-                }
-              ],
+              "$ref": "#/$defs/DelegateAutonomy",
               "default": "read_only"
             },
             "cwd": {
@@ -1345,13 +1227,11 @@
               ]
             },
             "kind": {
-              "enum": [
-                "delegate.start"
-              ],
+              "const": "delegate.start",
               "type": "string"
             },
             "mcp_enable": {
-              "description": "DA-6 (codex only): the MCP allowlist for this delegated codex session — the `[mcp_servers.<name>]` entries to keep enabled; every other configured server is disabled for a fast start. `Some(list)` overrides the persisted `[delegate.codex] mcp_enable` config (an empty list disables ALL); `None` falls back to that config. Ignored for non-codex agents.",
+              "description": "DA-6 (codex only): the MCP allowlist for this delegated codex session —\nthe `[mcp_servers.<name>]` entries to keep enabled; every other\nconfigured server is disabled for a fast start. `Some(list)` overrides\nthe persisted `[delegate.codex] mcp_enable` config (an empty list\ndisables ALL); `None` falls back to that config. Ignored for non-codex\nagents.",
               "items": {
                 "type": "string"
               },
@@ -1367,31 +1247,25 @@
               ]
             },
             "role": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/DelegateRole"
-                }
-              ],
-              "description": "Behavior preset for the delegated agent (DA-7). Defaults to [`DelegateRole::Standard`] (passthrough); [`DelegateRole::Scout`] makes it a read-only repository explorer that returns compact citations and forces read-only autonomy regardless of the `autonomy` field."
+              "$ref": "#/$defs/DelegateRole",
+              "description": "Behavior preset for the delegated agent (DA-7). Defaults to\n[`DelegateRole::Standard`] (passthrough); [`DelegateRole::Scout`] makes\nit a read-only repository explorer that returns compact citations and\nforces read-only autonomy regardless of the `autonomy` field."
             },
             "task": {
               "type": "string"
             }
           },
           "required": [
-            "agent",
             "kind",
+            "agent",
             "task"
           ],
           "type": "object"
         },
         {
-          "description": "Steer a live delegated session with a follow-up user message, running one more turn against the same long-lived agent process. Pure protocol vocabulary: the host job manager looks up the live session (DA-5a) and continues it; progress streams back as [`crate::RuntimeEvent::DelegateProgress`]. `session_id` is the `job_id` of the originating [`Self::DelegateStart`] job (a started delegated session keeps that id for its whole lifetime).",
+          "description": "Steer a live delegated session with a follow-up user message, running one\nmore turn against the same long-lived agent process. Pure protocol\nvocabulary: the host job manager looks up the live session (DA-5a) and\ncontinues it; progress streams back as [`crate::RuntimeEvent::DelegateProgress`].\n`session_id` is the `job_id` of the originating [`Self::DelegateStart`] job\n(a started delegated session keeps that id for its whole lifetime).",
           "properties": {
             "kind": {
-              "enum": [
-                "delegate.steer"
-              ],
+              "const": "delegate.steer",
               "type": "string"
             },
             "message": {
@@ -1403,18 +1277,16 @@
           },
           "required": [
             "kind",
-            "message",
-            "session_id"
+            "session_id",
+            "message"
           ],
           "type": "object"
         },
         {
-          "description": "End a live delegated session: close the agent process's stdin (which it treats as EOF and exits on) and reap it. Pure protocol vocabulary; the host job manager deregisters the live session. `session_id` is the originating [`Self::DelegateStart`] job id (see [`Self::DelegateSteer`]).",
+          "description": "End a live delegated session: close the agent process's stdin (which it\ntreats as EOF and exits on) and reap it. Pure protocol vocabulary; the host\njob manager deregisters the live session. `session_id` is the originating\n[`Self::DelegateStart`] job id (see [`Self::DelegateSteer`]).",
           "properties": {
             "kind": {
-              "enum": [
-                "delegate.close"
-              ],
+              "const": "delegate.close",
               "type": "string"
             },
             "session_id": {
@@ -1430,10 +1302,10 @@
         {
           "anyOf": [
             {
-              "description": "An inline workflow definition (the whole strategy as data). Boxed so the large inline-def variant doesn't bloat every command value (the named-ref variant is tiny).",
+              "description": "An inline workflow definition (the whole strategy as data). Boxed so the\nlarge inline-def variant doesn't bloat every command value (the named-ref\nvariant is tiny).",
               "properties": {
                 "workflow": {
-                  "$ref": "#/definitions/WorkflowDef"
+                  "$ref": "#/$defs/WorkflowDef"
                 }
               },
               "required": [
@@ -1454,7 +1326,7 @@
               "type": "object"
             }
           ],
-          "description": "Start a declarative orchestration workflow (the Conductor, design §4) as one cancellable **job**: the host job manager runs the deterministic flow engine (C1) and the `job_id` IS the `flow_id`. The `workflow` is either an inline [`WorkflowDef`] or a named reference resolved from a loaded `WorkflowDef` data file ([`FlowSource`]). Progress streams back as the `flow_*` events ([`crate::RuntimeEvent::FlowStarted`] …); approvals reuse [`crate::RuntimeEvent::ApprovalRequested`] keyed by `flow_id`.",
+          "description": "Start a declarative orchestration workflow (the Conductor, design §4) as one\ncancellable **job**: the host job manager runs the deterministic flow engine\n(C1) and the `job_id` IS the `flow_id`. The `workflow` is either an inline\n[`WorkflowDef`] or a named reference resolved from a loaded `WorkflowDef`\ndata file ([`FlowSource`]). Progress streams back as the `flow_*` events\n([`crate::RuntimeEvent::FlowStarted`] …); approvals reuse\n[`crate::RuntimeEvent::ApprovalRequested`] keyed by `flow_id`.",
           "properties": {
             "inputs": {
               "additionalProperties": {
@@ -1467,9 +1339,7 @@
               ]
             },
             "kind": {
-              "enum": [
-                "flow.start"
-              ],
+              "const": "flow.start",
               "type": "string"
             },
             "workspace": {
@@ -1486,27 +1356,25 @@
           "type": "object"
         },
         {
-          "description": "Steer a live flow branch with a follow-up message, running one more turn against the same live worker session (design §4 / Wave C3a). Reuses the C0 `WorkerSession::steer` port per-worker, exactly as `delegate.steer` does for a single delegated session: the host job manager looks up the live worker for `target` in the live-flow worker registry and continues it; progress streams back as [`crate::RuntimeEvent::FlowNodeAgent`]. Only a live, steerable branch (a `Single`/`Pipeline` worker still in flight, on a steerable substrate) can be steered; a closed or one-shot worker (`gemini`) returns a clear error. `flow_id` is the originating [`Self::FlowStart`] job id; `target` selects which branch (by node id, or the only live worker when unset).",
+          "description": "Steer a live flow branch with a follow-up message, running one more turn\nagainst the same live worker session (design §4 / Wave C3a). Reuses the C0\n`WorkerSession::steer` port per-worker, exactly as `delegate.steer` does\nfor a single delegated session: the host job manager looks up the live\nworker for `target` in the live-flow worker registry and continues it;\nprogress streams back as [`crate::RuntimeEvent::FlowNodeAgent`]. Only a\nlive, steerable branch (a `Single`/`Pipeline` worker still in flight, on a\nsteerable substrate) can be steered; a closed or one-shot worker\n(`gemini`) returns a clear error. `flow_id` is the originating\n[`Self::FlowStart`] job id; `target` selects which branch (by node id, or\nthe only live worker when unset).",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "flow.steer"
-              ],
+              "const": "flow.steer",
               "type": "string"
             },
             "message": {
               "type": "string"
             },
             "target": {
-              "$ref": "#/definitions/WorkerSelector"
+              "$ref": "#/$defs/WorkerSelector"
             }
           },
           "required": [
-            "flow_id",
             "kind",
+            "flow_id",
             "message"
           ],
           "type": "object"
@@ -1538,12 +1406,10 @@
               "type": "object"
             }
           ],
-          "description": "Deterministically REPLAY a recorded flow offline (the audit verb, design §3/§4). The host loads the recorded `WorkerLedger` from the `FlowStore` by [`LedgerRef`], runs the SAME deterministic engine in REPLAY mode — a `ReplayWorker` re-emits the recorded `WorkerEvent`s/`TurnResult`s instead of calling any LLM/subprocess — and re-emits the `flow_*` event stream. Runs as one cancellable **job** (the `job_id` IS the replayed `flow_id`); the replay is byte-identical to the recorded run (the CI gate), at zero cost. `workspace` scopes which project's `.nerve/flows` the ledger is loaded from when more than one is registered.",
+          "description": "Deterministically REPLAY a recorded flow offline (the audit verb, design §3/§4).\nThe host loads the recorded `WorkerLedger` from the `FlowStore` by\n[`LedgerRef`], runs the SAME deterministic engine in REPLAY mode — a\n`ReplayWorker` re-emits the recorded `WorkerEvent`s/`TurnResult`s instead of\ncalling any LLM/subprocess — and re-emits the `flow_*` event stream. Runs as\none cancellable **job** (the `job_id` IS the replayed `flow_id`); the replay is\nbyte-identical to the recorded run (the CI gate), at zero cost. `workspace`\nscopes which project's `.nerve/flows` the ledger is loaded from when more than\none is registered.",
           "properties": {
             "kind": {
-              "enum": [
-                "flow.replay"
-              ],
+              "const": "flow.replay",
               "type": "string"
             },
             "workspace": {
@@ -1565,15 +1431,13 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "flow.get"
-              ],
+              "const": "flow.get",
               "type": "string"
             }
           },
           "required": [
-            "flow_id",
-            "kind"
+            "kind",
+            "flow_id"
           ],
           "type": "object"
         },
@@ -1581,9 +1445,7 @@
           "description": "List flows the host knows about. Mirrors `session.list`.",
           "properties": {
             "kind": {
-              "enum": [
-                "flow.list"
-              ],
+              "const": "flow.list",
               "type": "string"
             }
           },
@@ -1593,37 +1455,33 @@
           "type": "object"
         },
         {
-          "description": "Close (cancel) a live flow, tearing its workers down. Mirrors `session.close` / `delegate.close`. `flow_id` is the originating [`Self::FlowStart`] job id.",
+          "description": "Close (cancel) a live flow, tearing its workers down. Mirrors\n`session.close` / `delegate.close`. `flow_id` is the originating\n[`Self::FlowStart`] job id.",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "flow.close"
-              ],
+              "const": "flow.close",
               "type": "string"
             }
           },
           "required": [
-            "flow_id",
-            "kind"
+            "kind",
+            "flow_id"
           ],
           "type": "object"
         },
         {
-          "description": "Reply to a flow approval request. **Reuses** the existing [`SessionApprovalDecision`] + the host `ApprovalHub` round-trip, keyed by `flow_id` (a flow branch is just another approval id). No new approval type.",
+          "description": "Reply to a flow approval request. **Reuses** the existing\n[`SessionApprovalDecision`] + the host `ApprovalHub` round-trip, keyed by\n`flow_id` (a flow branch is just another approval id). No new approval type.",
           "properties": {
             "decision": {
-              "$ref": "#/definitions/SessionApprovalDecision"
+              "$ref": "#/$defs/SessionApprovalDecision"
             },
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "flow.respond"
-              ],
+              "const": "flow.respond",
               "type": "string"
             },
             "request_id": {
@@ -1631,10 +1489,10 @@
             }
           },
           "required": [
-            "decision",
-            "flow_id",
             "kind",
-            "request_id"
+            "flow_id",
+            "request_id",
+            "decision"
           ],
           "type": "object"
         },
@@ -1642,9 +1500,7 @@
           "description": "Return concrete host/native affordances reachable through the daemon.",
           "properties": {
             "kind": {
-              "enum": [
-                "host.capabilities"
-              ],
+              "const": "host.capabilities",
               "type": "string"
             }
           },
@@ -1657,9 +1513,7 @@
           "description": "Write plain text to the host OS clipboard through the daemon.",
           "properties": {
             "kind": {
-              "enum": [
-                "host.clipboard.write_text"
-              ],
+              "const": "host.clipboard.write_text",
               "type": "string"
             },
             "text": {
@@ -1682,9 +1536,7 @@
               ]
             },
             "kind": {
-              "enum": [
-                "host.notification.show"
-              ],
+              "const": "host.notification.show",
               "type": "string"
             },
             "title": {
@@ -1701,9 +1553,7 @@
           "description": "Open a native host folder picker and return the selected absolute path.",
           "properties": {
             "kind": {
-              "enum": [
-                "host.folder.pick"
-              ],
+              "const": "host.folder.pick",
               "type": "string"
             },
             "title": {
@@ -1728,9 +1578,7 @@
               ]
             },
             "kind": {
-              "enum": [
-                "host.file.save_text"
-              ],
+              "const": "host.file.save_text",
               "type": "string"
             },
             "text": {
@@ -1753,9 +1601,7 @@
           "description": "Open an external http(s) URL with the host OS default handler.",
           "properties": {
             "kind": {
-              "enum": [
-                "host.url.open"
-              ],
+              "const": "host.url.open",
               "type": "string"
             },
             "url": {
@@ -1772,9 +1618,7 @@
           "description": "Reveal a served workspace root in the OS file manager through the daemon.",
           "properties": {
             "kind": {
-              "enum": [
-                "workspace.reveal"
-              ],
+              "const": "workspace.reveal",
               "type": "string"
             },
             "workspace": {
@@ -1809,16 +1653,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "job_started"
-              ],
+              "const": "job_started",
               "type": "string"
             }
           },
           "required": [
-            "command",
+            "type",
             "job_id",
-            "type"
+            "command"
           ],
           "type": "object"
         },
@@ -1826,7 +1668,7 @@
           "properties": {
             "current": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -1843,24 +1685,22 @@
             },
             "total": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
               ]
             },
             "type": {
-              "enum": [
-                "job_progress"
-              ],
+              "const": "job_progress",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "job_id",
-            "message",
             "stage",
-            "type"
+            "message"
           ],
           "type": "object"
         },
@@ -1870,15 +1710,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_cancel_requested"
-              ],
+              "const": "job_cancel_requested",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
@@ -1888,37 +1726,33 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_completed"
-              ],
+              "const": "job_completed",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
         {
           "properties": {
             "error": {
-              "$ref": "#/definitions/RuntimeJobError"
+              "$ref": "#/$defs/RuntimeJobError"
             },
             "job_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_failed"
-              ],
+              "const": "job_failed",
               "type": "string"
             }
           },
           "required": [
-            "error",
+            "type",
             "job_id",
-            "type"
+            "error"
           ],
           "type": "object"
         },
@@ -1928,15 +1762,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_cancelled"
-              ],
+              "const": "job_cancelled",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
@@ -1944,22 +1776,20 @@
           "description": "A structured step from the built-in agent loop, scoped to its job.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "job_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "agent"
-              ],
+              "const": "agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "job_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
@@ -1970,15 +1800,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_started"
-              ],
+              "const": "session_started",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -1989,15 +1817,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "turn_started"
-              ],
+              "const": "turn_started",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2008,15 +1834,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_idle"
-              ],
+              "const": "session_idle",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2027,15 +1851,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_closed"
-              ],
+              "const": "session_closed",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2043,34 +1865,32 @@
           "description": "A structured agent-loop step scoped to an interactive session.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "session_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_agent"
-              ],
+              "const": "session_agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "session_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
         {
-          "description": "Advisory streaming fragment of an in-progress tool call, scoped to its job. Carries a raw provider delta string; UI-only and additive — clients that don't render streaming tool calls may ignore it. The producer is wired in a later wave; this variant only reserves the protocol shape.",
+          "description": "Advisory streaming fragment of an in-progress tool call, scoped to its\njob. Carries a raw provider delta string; UI-only and additive — clients\nthat don't render streaming tool calls may ignore it. The producer is\nwired in a later wave; this variant only reserves the protocol shape.",
           "properties": {
             "delta": {
               "type": "string"
             },
             "index": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -2080,16 +1900,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "tool_call_delta"
-              ],
+              "const": "tool_call_delta",
               "type": "string"
             }
           },
           "required": [
-            "delta",
+            "type",
             "job_id",
-            "type"
+            "delta"
           ],
           "type": "object"
         },
@@ -2099,7 +1917,7 @@
             "arguments": true,
             "preview": {
               "default": "",
-              "description": "Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.",
+              "description": "Human-readable preview of what the call would do (e.g. a diff or\ncommand line). Additive; defaults to empty when not computed.",
               "type": "string"
             },
             "request_id": {
@@ -2109,30 +1927,24 @@
               "type": "string"
             },
             "tier": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/RiskTier"
-                }
-              ],
+              "$ref": "#/$defs/RiskTier",
               "default": "exec",
-              "description": "Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`])."
+              "description": "Risk classification of the tool whose call is awaiting a decision.\nAdditive; older emitters/clients that omit it default to the\nmost-restricted tier ([`RiskTier::Exec`])."
             },
             "tool": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "approval_requested"
-              ],
+              "const": "approval_requested",
               "type": "string"
             }
           },
           "required": [
-            "arguments",
-            "request_id",
+            "type",
             "session_id",
+            "request_id",
             "tool",
-            "type"
+            "arguments"
           ],
           "type": "object"
         },
@@ -2140,27 +1952,25 @@
           "description": "A host-managed authentication lifecycle update.",
           "properties": {
             "kind": {
-              "$ref": "#/definitions/AuthEventKind"
+              "$ref": "#/$defs/AuthEventKind"
             },
             "provider": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "auth"
-              ],
+              "const": "auth",
               "type": "string"
             }
           },
           "required": [
-            "kind",
+            "type",
             "provider",
-            "type"
+            "kind"
           ],
           "type": "object"
         },
         {
-          "description": "Streaming output fragment from a delegated external agent CLI, scoped to its job. `agent` is the catalog name (codex / claude / gemini); `text` is a raw stdout/stderr chunk. Additive and job-scoped; the producer is wired in DA-2 (this variant only reserves the protocol shape).",
+          "description": "Streaming output fragment from a delegated external agent CLI, scoped to\nits job. `agent` is the catalog name (codex / claude / gemini); `text` is a\nraw stdout/stderr chunk. Additive and job-scoped; the producer is wired in\nDA-2 (this variant only reserves the protocol shape).",
           "properties": {
             "agent": {
               "type": "string"
@@ -2172,59 +1982,53 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "delegate_progress"
-              ],
+              "const": "delegate_progress",
               "type": "string"
             }
           },
           "required": [
-            "agent",
+            "type",
             "job_id",
-            "text",
-            "type"
+            "agent",
+            "text"
           ],
           "type": "object"
         },
         {
-          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative [`Strategy`] so a client can render the DAG shape before any node runs. All `flow_*` events carry the `flow_id` (which is the flow job's id).",
+          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative\n[`Strategy`] so a client can render the DAG shape before any node runs. All\n`flow_*` events carry the `flow_id` (which is the flow job's id).",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "strategy": {
-              "$ref": "#/definitions/Strategy"
+              "$ref": "#/$defs/Strategy"
             },
             "type": {
-              "enum": [
-                "flow_started"
-              ],
+              "const": "flow_started",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "strategy",
-            "type"
+            "strategy"
           ],
           "type": "object"
         },
         {
-          "description": "A flow node's worker has started. `worker` is a human-readable label (the CLI catalog name or `provider/model`); `kind` is the worker family (`cli` | `provider`) so a client can badge the node pane.",
+          "description": "A flow node's worker has started. `worker` is a human-readable label (the\nCLI catalog name or `provider/model`); `kind` is the worker family\n(`cli` | `provider`) so a client can badge the node pane.",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "$ref": "#/definitions/FlowWorkerKind"
+              "$ref": "#/$defs/FlowWorkerKind"
             },
             "node_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_node_started"
-              ],
+              "const": "flow_node_started",
               "type": "string"
             },
             "worker": {
@@ -2232,16 +2036,16 @@
             }
           },
           "required": [
-            "flow_id",
-            "kind",
-            "node_id",
             "type",
-            "worker"
+            "flow_id",
+            "node_id",
+            "worker",
+            "kind"
           ],
           "type": "object"
         },
         {
-          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is the node's token usage (zeroed when the worker reported none).",
+          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is\nthe node's token usage (zeroed when the worker reported none).",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2253,26 +2057,24 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "flow_node_finished"
-              ],
+              "const": "flow_node_finished",
               "type": "string"
             },
             "usage": {
-              "$ref": "#/definitions/FlowNodeUsage"
+              "$ref": "#/$defs/FlowNodeUsage"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "node_id",
             "ok",
-            "type",
             "usage"
           ],
           "type": "object"
         },
         {
-          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph. Emitted as the engine wires a downstream node to its upstream producer.",
+          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph.\nEmitted as the engine wires a downstream node to its upstream producer.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2284,25 +2086,23 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_edge"
-              ],
+              "const": "flow_edge",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "from",
-            "to",
-            "type"
+            "to"
           ],
           "type": "object"
         },
         {
-          "description": "A structured agent-loop step scoped to a flow node — **reuses [`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the TUI renders a node pane exactly as a session pane keyed by `node_id`.",
+          "description": "A structured agent-loop step scoped to a flow node — **reuses\n[`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the\nTUI renders a node pane exactly as a session pane keyed by `node_id`.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "flow_id": {
               "type": "string"
@@ -2311,45 +2111,41 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_node_agent"
-              ],
+              "const": "flow_node_agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "flow_id",
             "node_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
         {
-          "description": "A flow finished with an aggregated outcome (the fold of the recorded node results, in declared order — design §3).",
+          "description": "A flow finished with an aggregated outcome (the fold of the recorded node\nresults, in declared order — design §3).",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "outcome": {
-              "$ref": "#/definitions/FlowRunOutcome"
+              "$ref": "#/$defs/FlowRunOutcome"
             },
             "type": {
-              "enum": [
-                "flow_completed"
-              ],
+              "const": "flow_completed",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "outcome",
-            "type"
+            "outcome"
           ],
           "type": "object"
         },
         {
-          "description": "A flow failed. `node_id` names the offending node when the failure is node-local; `error` is a human-readable message.",
+          "description": "A flow failed. `node_id` names the offending node when the failure is\nnode-local; `error` is a human-readable message.",
           "properties": {
             "error": {
               "type": "string"
@@ -2364,21 +2160,19 @@
               ]
             },
             "type": {
-              "enum": [
-                "flow_failed"
-              ],
+              "const": "flow_failed",
               "type": "string"
             }
           },
           "required": [
-            "error",
+            "type",
             "flow_id",
-            "type"
+            "error"
           ],
           "type": "object"
         },
         {
-          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens spent across the whole flow tree, emitted after each node's `Usage` is debited from the deterministic `BudgetLedger`. Additive within v4.",
+          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens\nspent across the whole flow tree, emitted after each node's `Usage` is\ndebited from the deterministic `BudgetLedger`. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2389,26 +2183,24 @@
             },
             "tokens": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "budget_update"
-              ],
+              "const": "budget_update",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "spent_usd",
-            "tokens",
-            "type"
+            "tokens"
           ],
           "type": "object"
         },
         {
-          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%) of a configured limit but has not yet been exhausted. `limit_usd` is the USD ceiling the warning is relative to. Additive within v4.",
+          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%)\nof a configured limit but has not yet been exhausted. `limit_usd` is the\nUSD ceiling the warning is relative to. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2422,44 +2214,40 @@
               "type": "number"
             },
             "type": {
-              "enum": [
-                "budget_warning"
-              ],
+              "const": "budget_warning",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "limit_usd",
             "spent_usd",
-            "type"
+            "limit_usd"
           ],
           "type": "object"
         },
         {
-          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6): a budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and — in later waves — a vote tally / judge pick / debate round. `node_id` names the node the decision is about (the synthetic root `\"flow\"` for a flow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
+          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6):\na budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and\n— in later waves — a vote tally / judge pick / debate round. `node_id`\nnames the node the decision is about (the synthetic root `\"flow\"` for a\nflow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "$ref": "#/definitions/FlowDecisionKind"
+              "$ref": "#/$defs/FlowDecisionKind"
             },
             "node_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_decision"
-              ],
+              "const": "flow_decision",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "kind",
             "node_id",
-            "type"
+            "kind"
           ],
           "type": "object"
         }
@@ -2477,7 +2265,7 @@
       "type": "object"
     },
     "RuntimeEventNotification": {
-      "description": "Params payload of a `runtime/event` notification: the event itself plus a monotonic, per-stream sequence number so clients can detect dropped events and request replay. The event fields are flattened, so this is backward compatible with clients that read the bare event from `params`; `event_seq` is an additive sibling field (defaulting to 0 until a later wave assigns the real monotonic value at emit time).",
+      "description": "Params payload of a `runtime/event` notification: the event itself plus a\nmonotonic, per-stream sequence number so clients can detect dropped events\nand request replay. The event fields are flattened, so this is backward\ncompatible with clients that read the bare event from `params`; `event_seq`\nis an additive sibling field (defaulting to 0 until a later wave assigns the\nreal monotonic value at emit time).",
       "oneOf": [
         {
           "properties": {
@@ -2494,16 +2282,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "job_started"
-              ],
+              "const": "job_started",
               "type": "string"
             }
           },
           "required": [
-            "command",
+            "type",
             "job_id",
-            "type"
+            "command"
           ],
           "type": "object"
         },
@@ -2511,7 +2297,7 @@
           "properties": {
             "current": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -2528,24 +2314,22 @@
             },
             "total": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
               ]
             },
             "type": {
-              "enum": [
-                "job_progress"
-              ],
+              "const": "job_progress",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "job_id",
-            "message",
             "stage",
-            "type"
+            "message"
           ],
           "type": "object"
         },
@@ -2555,15 +2339,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_cancel_requested"
-              ],
+              "const": "job_cancel_requested",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
@@ -2573,37 +2355,33 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_completed"
-              ],
+              "const": "job_completed",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
         {
           "properties": {
             "error": {
-              "$ref": "#/definitions/RuntimeJobError"
+              "$ref": "#/$defs/RuntimeJobError"
             },
             "job_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_failed"
-              ],
+              "const": "job_failed",
               "type": "string"
             }
           },
           "required": [
-            "error",
+            "type",
             "job_id",
-            "type"
+            "error"
           ],
           "type": "object"
         },
@@ -2613,15 +2391,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "job_cancelled"
-              ],
+              "const": "job_cancelled",
               "type": "string"
             }
           },
           "required": [
-            "job_id",
-            "type"
+            "type",
+            "job_id"
           ],
           "type": "object"
         },
@@ -2629,22 +2405,20 @@
           "description": "A structured step from the built-in agent loop, scoped to its job.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "job_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "agent"
-              ],
+              "const": "agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "job_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
@@ -2655,15 +2429,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_started"
-              ],
+              "const": "session_started",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2674,15 +2446,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "turn_started"
-              ],
+              "const": "turn_started",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2693,15 +2463,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_idle"
-              ],
+              "const": "session_idle",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2712,15 +2480,13 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_closed"
-              ],
+              "const": "session_closed",
               "type": "string"
             }
           },
           "required": [
-            "session_id",
-            "type"
+            "type",
+            "session_id"
           ],
           "type": "object"
         },
@@ -2728,34 +2494,32 @@
           "description": "A structured agent-loop step scoped to an interactive session.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "session_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "session_agent"
-              ],
+              "const": "session_agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "session_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
         {
-          "description": "Advisory streaming fragment of an in-progress tool call, scoped to its job. Carries a raw provider delta string; UI-only and additive — clients that don't render streaming tool calls may ignore it. The producer is wired in a later wave; this variant only reserves the protocol shape.",
+          "description": "Advisory streaming fragment of an in-progress tool call, scoped to its\njob. Carries a raw provider delta string; UI-only and additive — clients\nthat don't render streaming tool calls may ignore it. The producer is\nwired in a later wave; this variant only reserves the protocol shape.",
           "properties": {
             "delta": {
               "type": "string"
             },
             "index": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
@@ -2765,16 +2529,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "tool_call_delta"
-              ],
+              "const": "tool_call_delta",
               "type": "string"
             }
           },
           "required": [
-            "delta",
+            "type",
             "job_id",
-            "type"
+            "delta"
           ],
           "type": "object"
         },
@@ -2784,7 +2546,7 @@
             "arguments": true,
             "preview": {
               "default": "",
-              "description": "Human-readable preview of what the call would do (e.g. a diff or command line). Additive; defaults to empty when not computed.",
+              "description": "Human-readable preview of what the call would do (e.g. a diff or\ncommand line). Additive; defaults to empty when not computed.",
               "type": "string"
             },
             "request_id": {
@@ -2794,30 +2556,24 @@
               "type": "string"
             },
             "tier": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/RiskTier"
-                }
-              ],
+              "$ref": "#/$defs/RiskTier",
               "default": "exec",
-              "description": "Risk classification of the tool whose call is awaiting a decision. Additive; older emitters/clients that omit it default to the most-restricted tier ([`RiskTier::Exec`])."
+              "description": "Risk classification of the tool whose call is awaiting a decision.\nAdditive; older emitters/clients that omit it default to the\nmost-restricted tier ([`RiskTier::Exec`])."
             },
             "tool": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "approval_requested"
-              ],
+              "const": "approval_requested",
               "type": "string"
             }
           },
           "required": [
-            "arguments",
-            "request_id",
+            "type",
             "session_id",
+            "request_id",
             "tool",
-            "type"
+            "arguments"
           ],
           "type": "object"
         },
@@ -2825,27 +2581,25 @@
           "description": "A host-managed authentication lifecycle update.",
           "properties": {
             "kind": {
-              "$ref": "#/definitions/AuthEventKind"
+              "$ref": "#/$defs/AuthEventKind"
             },
             "provider": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "auth"
-              ],
+              "const": "auth",
               "type": "string"
             }
           },
           "required": [
-            "kind",
+            "type",
             "provider",
-            "type"
+            "kind"
           ],
           "type": "object"
         },
         {
-          "description": "Streaming output fragment from a delegated external agent CLI, scoped to its job. `agent` is the catalog name (codex / claude / gemini); `text` is a raw stdout/stderr chunk. Additive and job-scoped; the producer is wired in DA-2 (this variant only reserves the protocol shape).",
+          "description": "Streaming output fragment from a delegated external agent CLI, scoped to\nits job. `agent` is the catalog name (codex / claude / gemini); `text` is a\nraw stdout/stderr chunk. Additive and job-scoped; the producer is wired in\nDA-2 (this variant only reserves the protocol shape).",
           "properties": {
             "agent": {
               "type": "string"
@@ -2857,59 +2611,53 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "delegate_progress"
-              ],
+              "const": "delegate_progress",
               "type": "string"
             }
           },
           "required": [
-            "agent",
+            "type",
             "job_id",
-            "text",
-            "type"
+            "agent",
+            "text"
           ],
           "type": "object"
         },
         {
-          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative [`Strategy`] so a client can render the DAG shape before any node runs. All `flow_*` events carry the `flow_id` (which is the flow job's id).",
+          "description": "A flow run (the Conductor, design §4) has started. Carries the declarative\n[`Strategy`] so a client can render the DAG shape before any node runs. All\n`flow_*` events carry the `flow_id` (which is the flow job's id).",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "strategy": {
-              "$ref": "#/definitions/Strategy"
+              "$ref": "#/$defs/Strategy"
             },
             "type": {
-              "enum": [
-                "flow_started"
-              ],
+              "const": "flow_started",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "strategy",
-            "type"
+            "strategy"
           ],
           "type": "object"
         },
         {
-          "description": "A flow node's worker has started. `worker` is a human-readable label (the CLI catalog name or `provider/model`); `kind` is the worker family (`cli` | `provider`) so a client can badge the node pane.",
+          "description": "A flow node's worker has started. `worker` is a human-readable label (the\nCLI catalog name or `provider/model`); `kind` is the worker family\n(`cli` | `provider`) so a client can badge the node pane.",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "$ref": "#/definitions/FlowWorkerKind"
+              "$ref": "#/$defs/FlowWorkerKind"
             },
             "node_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_node_started"
-              ],
+              "const": "flow_node_started",
               "type": "string"
             },
             "worker": {
@@ -2917,16 +2665,16 @@
             }
           },
           "required": [
-            "flow_id",
-            "kind",
-            "node_id",
             "type",
-            "worker"
+            "flow_id",
+            "node_id",
+            "worker",
+            "kind"
           ],
           "type": "object"
         },
         {
-          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is the node's token usage (zeroed when the worker reported none).",
+          "description": "A flow node's worker has finished. `ok` is the node's success; `usage` is\nthe node's token usage (zeroed when the worker reported none).",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2938,26 +2686,24 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "flow_node_finished"
-              ],
+              "const": "flow_node_finished",
               "type": "string"
             },
             "usage": {
-              "$ref": "#/definitions/FlowNodeUsage"
+              "$ref": "#/$defs/FlowNodeUsage"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "node_id",
             "ok",
-            "type",
             "usage"
           ],
           "type": "object"
         },
         {
-          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph. Emitted as the engine wires a downstream node to its upstream producer.",
+          "description": "A DAG edge `from → to` between two flow nodes, for rendering the graph.\nEmitted as the engine wires a downstream node to its upstream producer.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -2969,25 +2715,23 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_edge"
-              ],
+              "const": "flow_edge",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "from",
-            "to",
-            "type"
+            "to"
           ],
           "type": "object"
         },
         {
-          "description": "A structured agent-loop step scoped to a flow node — **reuses [`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the TUI renders a node pane exactly as a session pane keyed by `node_id`.",
+          "description": "A structured agent-loop step scoped to a flow node — **reuses\n[`AgentEventKind`] verbatim**, symmetric with [`Self::SessionAgent`], so the\nTUI renders a node pane exactly as a session pane keyed by `node_id`.",
           "properties": {
             "event": {
-              "$ref": "#/definitions/AgentEventKind"
+              "$ref": "#/$defs/AgentEventKind"
             },
             "flow_id": {
               "type": "string"
@@ -2996,45 +2740,41 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_node_agent"
-              ],
+              "const": "flow_node_agent",
               "type": "string"
             }
           },
           "required": [
-            "event",
+            "type",
             "flow_id",
             "node_id",
-            "type"
+            "event"
           ],
           "type": "object"
         },
         {
-          "description": "A flow finished with an aggregated outcome (the fold of the recorded node results, in declared order — design §3).",
+          "description": "A flow finished with an aggregated outcome (the fold of the recorded node\nresults, in declared order — design §3).",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "outcome": {
-              "$ref": "#/definitions/FlowRunOutcome"
+              "$ref": "#/$defs/FlowRunOutcome"
             },
             "type": {
-              "enum": [
-                "flow_completed"
-              ],
+              "const": "flow_completed",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "outcome",
-            "type"
+            "outcome"
           ],
           "type": "object"
         },
         {
-          "description": "A flow failed. `node_id` names the offending node when the failure is node-local; `error` is a human-readable message.",
+          "description": "A flow failed. `node_id` names the offending node when the failure is\nnode-local; `error` is a human-readable message.",
           "properties": {
             "error": {
               "type": "string"
@@ -3049,21 +2789,19 @@
               ]
             },
             "type": {
-              "enum": [
-                "flow_failed"
-              ],
+              "const": "flow_failed",
               "type": "string"
             }
           },
           "required": [
-            "error",
+            "type",
             "flow_id",
-            "type"
+            "error"
           ],
           "type": "object"
         },
         {
-          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens spent across the whole flow tree, emitted after each node's `Usage` is debited from the deterministic `BudgetLedger`. Additive within v4.",
+          "description": "Running fleet-budget telemetry (design §6): the cumulative cost + tokens\nspent across the whole flow tree, emitted after each node's `Usage` is\ndebited from the deterministic `BudgetLedger`. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -3074,26 +2812,24 @@
             },
             "tokens": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "budget_update"
-              ],
+              "const": "budget_update",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
             "spent_usd",
-            "tokens",
-            "type"
+            "tokens"
           ],
           "type": "object"
         },
         {
-          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%) of a configured limit but has not yet been exhausted. `limit_usd` is the USD ceiling the warning is relative to. Additive within v4.",
+          "description": "A fleet-budget warning (design §6): spend crossed a threshold (e.g. 80%)\nof a configured limit but has not yet been exhausted. `limit_usd` is the\nUSD ceiling the warning is relative to. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
@@ -3107,44 +2843,40 @@
               "type": "number"
             },
             "type": {
-              "enum": [
-                "budget_warning"
-              ],
+              "const": "budget_warning",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "limit_usd",
             "spent_usd",
-            "type"
+            "limit_usd"
           ],
           "type": "object"
         },
         {
-          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6): a budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and — in later waves — a vote tally / judge pick / debate round. `node_id` names the node the decision is about (the synthetic root `\"flow\"` for a flow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
+          "description": "A typed, replayable audit-trail decision the engine made (design §4/§6):\na budget exhaustion, a depth/worker spawn refusal (absence-at-floor), and\n— in later waves — a vote tally / judge pick / debate round. `node_id`\nnames the node the decision is about (the synthetic root `\"flow\"` for a\nflow-wide decision); `kind` is the [`FlowDecisionKind`]. Additive within v4.",
           "properties": {
             "flow_id": {
               "type": "string"
             },
             "kind": {
-              "$ref": "#/definitions/FlowDecisionKind"
+              "$ref": "#/$defs/FlowDecisionKind"
             },
             "node_id": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "flow_decision"
-              ],
+              "const": "flow_decision",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "flow_id",
-            "kind",
             "node_id",
-            "type"
+            "kind"
           ],
           "type": "object"
         }
@@ -3154,7 +2886,7 @@
           "default": 0,
           "description": "Monotonically increasing, gap-detectable sequence number for this stream.",
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
@@ -3163,7 +2895,7 @@
     "RuntimeInfo": {
       "properties": {
         "capabilities": {
-          "$ref": "#/definitions/RuntimeCapabilities"
+          "$ref": "#/$defs/RuntimeCapabilities"
         },
         "protocol": {
           "type": "string"
@@ -3172,14 +2904,14 @@
           "type": "string"
         },
         "serverInfo": {
-          "$ref": "#/definitions/RuntimeServerInfo"
+          "$ref": "#/$defs/RuntimeServerInfo"
         }
       },
       "required": [
-        "capabilities",
         "protocol",
         "protocolVersion",
-        "serverInfo"
+        "serverInfo",
+        "capabilities"
       ],
       "type": "object"
     },
@@ -3201,7 +2933,7 @@
           "type": "boolean"
         },
         "job": {
-          "$ref": "#/definitions/RuntimeJobSnapshot"
+          "$ref": "#/$defs/RuntimeJobSnapshot"
         }
       },
       "required": [
@@ -3226,8 +2958,8 @@
         }
       },
       "required": [
-        "commandKinds",
-        "methods"
+        "methods",
+        "commandKinds"
       ],
       "type": "object"
     },
@@ -3277,7 +3009,7 @@
         "limit": {
           "default": 100,
           "format": "uint",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
@@ -3287,7 +3019,7 @@
       "properties": {
         "jobs": {
           "items": {
-            "$ref": "#/definitions/RuntimeJobSnapshot"
+            "$ref": "#/$defs/RuntimeJobSnapshot"
           },
           "type": "array"
         }
@@ -3300,7 +3032,7 @@
     "RuntimeJobResponse": {
       "properties": {
         "job": {
-          "$ref": "#/definitions/RuntimeJobSnapshot"
+          "$ref": "#/$defs/RuntimeJobSnapshot"
         }
       },
       "required": [
@@ -3319,13 +3051,13 @@
         },
         "created_at_ms": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "error": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RuntimeJobError"
+              "$ref": "#/$defs/RuntimeJobError"
             },
             {
               "type": "null"
@@ -3334,7 +3066,7 @@
         },
         "finished_at_ms": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -3346,14 +3078,14 @@
         "result": true,
         "started_at_ms": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
           ]
         },
         "status": {
-          "$ref": "#/definitions/RuntimeJobStatus"
+          "$ref": "#/$defs/RuntimeJobStatus"
         },
         "tool_name": {
           "type": [
@@ -3363,17 +3095,17 @@
         },
         "updated_at_ms": {
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "cancel_requested",
-        "command",
-        "created_at_ms",
         "job_id",
         "status",
-        "updated_at_ms"
+        "command",
+        "created_at_ms",
+        "updated_at_ms",
+        "cancel_requested"
       ],
       "type": "object"
     },
@@ -3381,7 +3113,7 @@
       "description": "Request payload for `runtime/jobs/start`.",
       "properties": {
         "command": {
-          "$ref": "#/definitions/RuntimeCommand"
+          "$ref": "#/$defs/RuntimeCommand"
         },
         "job_id": {
           "type": [
@@ -3445,7 +3177,7 @@
       "properties": {
         "tools": {
           "items": {
-            "$ref": "#/definitions/RuntimeToolSpec"
+            "$ref": "#/$defs/RuntimeToolSpec"
           },
           "type": "array"
         }
@@ -3465,157 +3197,127 @@
         }
       },
       "required": [
-        "framing",
-        "jsonrpc"
+        "jsonrpc",
+        "framing"
       ],
       "type": "object"
     },
     "SessionApprovalDecision": {
-      "description": "Decision supplied by a human/client for a session approval request.\n\n`Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally signal the host to remember the decision for future calls (P2 wires the remembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).",
+      "description": "Decision supplied by a human/client for a session approval request.\n\n`Allow`/`Deny` apply to this call only; `AllowAlways`/`DenyAlways` additionally\nsignal the host to remember the decision for future calls (P2 wires the\nremembering; P1 only distinguishes allow-vs-deny via [`Self::allows`]).",
       "oneOf": [
         {
+          "const": "allow",
           "description": "Allow this call only.",
-          "enum": [
-            "allow"
-          ],
           "type": "string"
         },
         {
+          "const": "deny",
           "description": "Deny this call only.",
-          "enum": [
-            "deny"
-          ],
           "type": "string"
         },
         {
+          "const": "allow_always",
           "description": "Allow this call and remember the allow for future matching calls.",
-          "enum": [
-            "allow_always"
-          ],
           "type": "string"
         },
         {
+          "const": "deny_always",
           "description": "Deny this call and remember the deny for future matching calls.",
-          "enum": [
-            "deny_always"
-          ],
           "type": "string"
         }
       ]
     },
     "Step": {
-      "description": "One unit of orchestrated work: which worker, what task, how autonomous, and what to do if it fails.",
+      "description": "One unit of orchestrated work: which worker, what task, how autonomous, and\nwhat to do if it fails.",
       "properties": {
         "autonomy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/DelegateAutonomy"
-            }
-          ],
+          "$ref": "#/$defs/DelegateAutonomy",
           "default": "read_only",
           "description": "Autonomy posture (maps to the CLI sandbox flag / provider exec capability)."
         },
         "on_fail": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/FailPolicy"
-            }
-          ],
+          "$ref": "#/$defs/FailPolicy",
           "default": {
             "kind": "abort"
           },
           "description": "What the engine does when this step's worker fails."
         },
         "task": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TaskTemplate"
-            }
-          ],
+          "$ref": "#/$defs/TaskTemplate",
           "description": "The task handed to the worker (with minimal named-output interpolation)."
         },
         "worker": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/WorkerRef"
-            }
-          ],
+          "$ref": "#/$defs/WorkerRef",
           "description": "Which worker runs this step."
         }
       },
       "required": [
-        "task",
-        "worker"
+        "worker",
+        "task"
       ],
       "type": "object"
     },
     "Strategy": {
-      "description": "The closed, additive-versioned set of orchestration combinators (design §3).\n\nC1 implements `Single` + `Parallel`; the rest are defined-ahead for C5 so the data is stable. `#[non_exhaustive]` keeps adding variants additive for downstream matchers, and the engine's interpreter matches every variant explicitly (returning `Terminate` with an \"unimplemented strategy\" outcome for the not-yet-wired ones), so the totality is compile-checked.",
+      "description": "The closed, additive-versioned set of orchestration combinators (design §3).\n\nC1 implements `Single` + `Parallel`; the rest are defined-ahead for C5 so the\ndata is stable. `#[non_exhaustive]` keeps adding variants additive for\ndownstream matchers, and the engine's interpreter matches every variant\nexplicitly (returning `Terminate` with an \"unimplemented strategy\" outcome\nfor the not-yet-wired ones), so the totality is compile-checked.",
       "oneOf": [
         {
           "description": "Run one worker and return its result (design §3). **Implemented in C1.**",
           "properties": {
             "step": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "type": {
-              "enum": [
-                "single"
-              ],
+              "const": "single",
               "type": "string"
             }
           },
           "required": [
-            "step",
-            "type"
+            "type",
+            "step"
           ],
           "type": "object"
         },
         {
-          "description": "Fan out to N branches in parallel, then fold by `join` in **declared order** (design §3, the load-bearing invariant). **Implemented in C1.**",
+          "description": "Fan out to N branches in parallel, then fold by `join` in **declared\norder** (design §3, the load-bearing invariant). **Implemented in C1.**",
           "properties": {
             "branches": {
               "items": {
-                "$ref": "#/definitions/Step"
+                "$ref": "#/$defs/Step"
               },
               "type": "array"
             },
             "join": {
-              "$ref": "#/definitions/Join"
+              "$ref": "#/$defs/Join"
             },
             "type": {
-              "enum": [
-                "parallel"
-              ],
+              "const": "parallel",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "branches",
-            "join",
-            "type"
+            "join"
           ],
           "type": "object"
         },
         {
-          "description": "Run stages in sequence; stage N reads the ledger outputs of stages `< N`. Defined-ahead for C3/C5.",
+          "description": "Run stages in sequence; stage N reads the ledger outputs of stages `< N`.\nDefined-ahead for C3/C5.",
           "properties": {
             "stages": {
               "items": {
-                "$ref": "#/definitions/Step"
+                "$ref": "#/$defs/Step"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "pipeline"
-              ],
+              "const": "pipeline",
               "type": "string"
             }
           },
           "required": [
-            "stages",
-            "type"
+            "type",
+            "stages"
           ],
           "type": "object"
         },
@@ -3623,141 +3325,137 @@
           "description": "Map a step over a context split, then reduce. Defined-ahead for C5.",
           "properties": {
             "map": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "over": {
-              "$ref": "#/definitions/ContextSplit"
+              "$ref": "#/$defs/ContextSplit"
             },
             "reduce": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "type": {
-              "enum": [
-                "map_reduce"
-              ],
+              "const": "map_reduce",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "map",
             "over",
-            "reduce",
-            "type"
+            "reduce"
           ],
           "type": "object"
         },
         {
-          "description": "Generate `candidates`, keep the top `k`, and let a `judge` pick. Defined-ahead for C5.",
+          "description": "Generate `candidates`, keep the top `k`, and let a `judge` pick.\nDefined-ahead for C5.",
           "properties": {
             "candidates": {
               "items": {
-                "$ref": "#/definitions/Step"
+                "$ref": "#/$defs/Step"
               },
               "type": "array"
             },
             "judge": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "k": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "vote_judge"
-              ],
+              "const": "vote_judge",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "candidates",
             "judge",
-            "k",
-            "type"
+            "k"
           ],
           "type": "object"
         },
         {
-          "description": "Multi-round debate between `sides`, adjudicated by `judge`. Defined-ahead for C5.",
+          "description": "Multi-round debate between `sides`, adjudicated by `judge`. Defined-ahead\nfor C5.",
           "properties": {
             "judge": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "rounds": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "sides": {
               "items": {
-                "$ref": "#/definitions/Step"
+                "$ref": "#/$defs/Step"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "debate"
-              ],
+              "const": "debate",
               "type": "string"
             }
           },
           "required": [
-            "judge",
-            "rounds",
+            "type",
             "sides",
-            "type"
+            "rounds",
+            "judge"
           ],
           "type": "object"
         },
         {
-          "description": "A planner emits a child strategy the engine runs bounded by `max_depth` (design §8). Defined-ahead for C5.",
+          "description": "A planner emits a child strategy the engine runs bounded by `max_depth`\n(design §8). Defined-ahead for C5.",
           "properties": {
             "child": {
-              "$ref": "#/definitions/Strategy"
+              "$ref": "#/$defs/Strategy"
             },
             "planner": {
-              "$ref": "#/definitions/Step"
+              "$ref": "#/$defs/Step"
             },
             "type": {
-              "enum": [
-                "hierarchical"
-              ],
+              "const": "hierarchical",
               "type": "string"
             }
           },
           "required": [
-            "child",
+            "type",
             "planner",
-            "type"
+            "child"
           ],
           "type": "object"
         }
       ]
     },
     "TaskTemplate": {
-      "description": "A minimal task template (design §3, open question 3): a plain prompt plus optional `{{name}}` placeholders substituted from named ledger outputs. **No expression language** — named-output substitution only, deliberately.",
-      "properties": {
-        "prompt": {
-          "description": "The raw prompt with optional `{{name}}` placeholders.",
+      "anyOf": [
+        {
           "type": "string"
+        },
+        {
+          "properties": {
+            "prompt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "type": "object"
         }
-      },
-      "required": [
-        "prompt"
       ],
-      "type": "object"
+      "description": "A minimal task template (design §3, open question 3): a plain prompt plus\noptional `{{name}}` placeholders substituted from named ledger outputs. **No\nexpression language** — named-output substitution only, deliberately."
     },
     "WorkerRef": {
-      "description": "Which worker runs a [`Step`]. The only place the CLI-vs-provider distinction is encoded in the data (design §7); the engine resolves it through the `WorkerFactory` to a kind-agnostic `AgentWorker`.",
+      "description": "Which worker runs a [`Step`]. The only place the CLI-vs-provider distinction\nis encoded in the data (design §7); the engine resolves it through the\n`WorkerFactory` to a kind-agnostic `AgentWorker`.",
       "oneOf": [
         {
           "description": "An external agentic CLI by catalog name (`codex` | `claude` | `gemini`).",
           "properties": {
             "kind": {
-              "enum": [
-                "cli"
-              ],
+              "const": "cli",
               "type": "string"
             },
             "name": {
@@ -3774,9 +3472,7 @@
           "description": "An in-process provider loop by provider + model.",
           "properties": {
             "kind": {
-              "enum": [
-                "provider"
-              ],
+              "const": "provider",
               "type": "string"
             },
             "model": {
@@ -3788,18 +3484,16 @@
           },
           "required": [
             "kind",
-            "model",
-            "provider"
+            "provider",
+            "model"
           ],
           "type": "object"
         },
         {
-          "description": "A worker resolved from a named `WorkerDef` data file (design §6, C6). Defined ahead; the C1 engine does not resolve `Named` yet.",
+          "description": "A worker resolved from a named `WorkerDef` data file (design §6, C6).\nDefined ahead; the C1 engine does not resolve `Named` yet.",
           "properties": {
             "kind": {
-              "enum": [
-                "named"
-              ],
+              "const": "named",
               "type": "string"
             },
             "name": {
@@ -3815,10 +3509,10 @@
       ]
     },
     "WorkerSelector": {
-      "description": "Which live branch a [`RuntimeCommand::FlowSteer`] targets (design §4, the `WorkerSelector` row). Deliberately MINIMAL: a flow branch is identified by its deterministic node id, or — when `node_id` is unset — \"the single live worker\" (the common case for a `Single`/`Pipeline` flow, which has exactly one live branch at a time). An ambiguous unset selector against a multi-branch live flow is refused by the host with a clear message; the closed enum keeps the steer surface from drifting into a query language.",
+      "description": "Which live branch a [`RuntimeCommand::FlowSteer`] targets (design §4, the\n`WorkerSelector` row). Deliberately MINIMAL: a flow branch is identified by its\ndeterministic node id, or — when `node_id` is unset — \"the single live worker\"\n(the common case for a `Single`/`Pipeline` flow, which has exactly one live\nbranch at a time). An ambiguous unset selector against a multi-branch live flow\nis refused by the host with a clear message; the closed enum keeps the steer\nsurface from drifting into a query language.",
       "properties": {
         "node_id": {
-          "description": "The deterministic node id of the branch to steer (e.g. `\"node-0\"` for a `Single` flow, `\"stage-1\"` for a pipeline's second stage). `None` targets the only live worker, erroring if more than one is live.",
+          "description": "The deterministic node id of the branch to steer (e.g. `\"node-0\"` for a\n`Single` flow, `\"stage-1\"` for a pipeline's second stage). `None` targets\nthe only live worker, erroring if more than one is live.",
           "type": [
             "string",
             "null"
@@ -3828,22 +3522,18 @@
       "type": "object"
     },
     "WorkflowDef": {
-      "description": "A complete, declarative workflow: a named [`Strategy`] plus the fleet-wide governance envelope (design §3). `schema_version` is bumped only on a breaking change to the data shape (additive fields don't bump it).",
+      "description": "A complete, declarative workflow: a named [`Strategy`] plus the fleet-wide\ngovernance envelope (design §3). `schema_version` is bumped only on a\nbreaking change to the data shape (additive fields don't bump it).",
       "properties": {
         "budget": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/BudgetSpec"
-            }
-          ],
+          "$ref": "#/$defs/BudgetSpec",
           "default": {},
-          "description": "Fleet budget envelope (design §6). Threaded as a placeholder in C1 — the debit/cancel loop lands in C3."
+          "description": "Fleet budget envelope (design §6). Threaded as a placeholder in C1 — the\ndebit/cancel loop lands in C3."
         },
         "max_depth": {
           "default": 2,
-          "description": "Hierarchy depth ceiling (design §8). Default 2, matching today's `DEFAULT_MAX_DEPTH`. Threaded as a placeholder in C1.",
+          "description": "Hierarchy depth ceiling (design §8). Default 2, matching today's\n`DEFAULT_MAX_DEPTH`. Threaded as a placeholder in C1.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "name": {
@@ -3853,21 +3543,17 @@
         "schema_version": {
           "description": "The on-disk schema version of this workflow document (current: `1`).",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "strategy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/Strategy"
-            }
-          ],
+          "$ref": "#/$defs/Strategy",
           "description": "The orchestration strategy the engine interprets."
         }
       },
       "required": [
-        "name",
         "schema_version",
+        "name",
         "strategy"
       ],
       "type": "object"
@@ -3875,77 +3561,77 @@
   },
   "properties": {
     "approvalMode": {
-      "$ref": "#/definitions/ApprovalMode"
+      "$ref": "#/$defs/ApprovalMode"
     },
     "hostCapabilities": {
-      "$ref": "#/definitions/HostCapabilities"
+      "$ref": "#/$defs/HostCapabilities"
     },
     "jsonValue": true,
     "runtimeCommand": {
-      "$ref": "#/definitions/RuntimeCommand"
+      "$ref": "#/$defs/RuntimeCommand"
     },
     "runtimeEvent": {
-      "$ref": "#/definitions/RuntimeEvent"
+      "$ref": "#/$defs/RuntimeEvent"
     },
     "runtimeEventNotification": {
-      "$ref": "#/definitions/RuntimeEventNotification"
+      "$ref": "#/$defs/RuntimeEventNotification"
     },
     "runtimeInfo": {
-      "$ref": "#/definitions/RuntimeInfo"
+      "$ref": "#/$defs/RuntimeInfo"
     },
     "runtimeJob": {
-      "$ref": "#/definitions/RuntimeJobSnapshot"
+      "$ref": "#/$defs/RuntimeJobSnapshot"
     },
     "runtimeJobCancelRequest": {
-      "$ref": "#/definitions/RuntimeJobCancelRequest"
+      "$ref": "#/$defs/RuntimeJobCancelRequest"
     },
     "runtimeJobCancelResponse": {
-      "$ref": "#/definitions/RuntimeJobCancelResponse"
+      "$ref": "#/$defs/RuntimeJobCancelResponse"
     },
     "runtimeJobError": {
-      "$ref": "#/definitions/RuntimeJobError"
+      "$ref": "#/$defs/RuntimeJobError"
     },
     "runtimeJobGetRequest": {
-      "$ref": "#/definitions/RuntimeJobGetRequest"
+      "$ref": "#/$defs/RuntimeJobGetRequest"
     },
     "runtimeJobListRequest": {
-      "$ref": "#/definitions/RuntimeJobListRequest"
+      "$ref": "#/$defs/RuntimeJobListRequest"
     },
     "runtimeJobListResponse": {
-      "$ref": "#/definitions/RuntimeJobListResponse"
+      "$ref": "#/$defs/RuntimeJobListResponse"
     },
     "runtimeJobResponse": {
-      "$ref": "#/definitions/RuntimeJobResponse"
+      "$ref": "#/$defs/RuntimeJobResponse"
     },
     "runtimeJobStartRequest": {
-      "$ref": "#/definitions/RuntimeJobStartRequest"
+      "$ref": "#/$defs/RuntimeJobStartRequest"
     },
     "runtimeToolSpec": {
-      "$ref": "#/definitions/RuntimeToolSpec"
+      "$ref": "#/$defs/RuntimeToolSpec"
     },
     "runtimeToolsListResponse": {
-      "$ref": "#/definitions/RuntimeToolsListResponse"
+      "$ref": "#/$defs/RuntimeToolsListResponse"
     }
   },
   "required": [
-    "approvalMode",
-    "hostCapabilities",
     "jsonValue",
     "runtimeCommand",
+    "approvalMode",
     "runtimeEvent",
     "runtimeEventNotification",
     "runtimeInfo",
-    "runtimeJob",
-    "runtimeJobCancelRequest",
-    "runtimeJobCancelResponse",
+    "hostCapabilities",
+    "runtimeToolSpec",
     "runtimeJobError",
+    "runtimeJob",
+    "runtimeJobStartRequest",
     "runtimeJobGetRequest",
     "runtimeJobListRequest",
-    "runtimeJobListResponse",
+    "runtimeJobCancelRequest",
+    "runtimeToolsListResponse",
     "runtimeJobResponse",
-    "runtimeJobStartRequest",
-    "runtimeToolSpec",
-    "runtimeToolsListResponse"
+    "runtimeJobListResponse",
+    "runtimeJobCancelResponse"
   ],
   "title": "RuntimeProtocolSchema",
   "type": "object"
