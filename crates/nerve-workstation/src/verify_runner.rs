@@ -231,6 +231,10 @@ pub(crate) fn seal_and_attest(
     issued_at_ms: u64,
 ) -> SealOutcome {
     let mut appended = Vec::new();
+    // The verdict→run lineage edge: bind the run's content address into the record so
+    // the cross-run DAG is tamper-evident by content, not by the mutable `run_id`
+    // string (§3 L1). An empty root (legacy/unsealed run) is recorded honestly as None.
+    let run_root_edge = (!run.root_hash.is_empty()).then(|| run.root_hash.clone());
     if let Some(record) = append_evidence(
         stores.ledger,
         LedgerKind::Verdict {
@@ -239,6 +243,7 @@ pub(crate) fn seal_and_attest(
             verdict: verdict.status,
             checks: verdict.checks.clone(),
             advisory_llm_judge: None,
+            run_root_hash: run_root_edge.clone(),
         },
     ) {
         appended.push(record);
@@ -282,6 +287,11 @@ pub(crate) fn seal_and_attest(
                     .clone()
                     .unwrap_or_default(),
                 verdict: receipt.statement.verdict,
+                // receipt→run + receipt→verdict lineage edges (§3 L1): the run's content
+                // address and the borrowed verdict's content id (`verdict_id` *is* its
+                // content address — see `verdict_content_id`).
+                run_root_hash: run_root_edge.clone(),
+                verdict_id: Some(verdict.verdict_id.clone()),
             },
         )
     {
@@ -777,6 +787,69 @@ mod tests {
             serde_json::to_value(verdict.status).unwrap()
         );
         // The freshly-built chain re-derives intact.
+        assert_eq!(
+            crate::ledger_store::run_ledger_verify(Some(&ledger))["ok"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn seal_binds_content_addressed_lineage_edges_and_chain_stays_intact() {
+        use crate::ledger_store::LedgerStore;
+        use crate::receipt_store::ReceiptStore;
+        use crate::signer::LocalEd25519Signer;
+
+        let (dir, runs, verdicts, run_id) = fixtures();
+        write_checks(
+            dir.path(),
+            serde_json::json!({"checks":[{"name":"test","command":"t","required":true}]}),
+        );
+        let launcher: Arc<dyn SandboxLauncher> = Arc::new(ScriptedLauncher::new());
+        let verdict = handle_verify_start(
+            Some(&runs),
+            Some(&verdicts),
+            &launcher,
+            dir.path(),
+            &run_id,
+            Some(1),
+            None,
+            &CancelToken::never(),
+            1,
+        )
+        .unwrap();
+
+        let run = runs.load_record(&run_id).unwrap();
+        let ledger = LedgerStore::new(dir.path().join("ledger"));
+        let receipts = ReceiptStore::new(dir.path().join("receipts"));
+        let signer = LocalEd25519Signer::deterministic_test_key();
+        let stores = AttestStores {
+            ledger: Some(&ledger),
+            receipt: Some(&receipts),
+        };
+
+        let outcome = seal_and_attest(&run, &verdict, &stores, &signer, 1);
+        assert_eq!(outcome.appended.len(), 2);
+
+        // The appended Verdict carries the verdict→run lineage edge = the run's root.
+        let LedgerKind::Verdict { run_root_hash, .. } = &outcome.appended[0].kind else {
+            panic!("first appended record is the Verdict");
+        };
+        assert_eq!(run_root_hash.as_deref(), Some(run.root_hash.as_str()));
+        assert!(!run.root_hash.is_empty(), "captured run has a sealed root");
+
+        // The appended ReceiptIssued carries both lineage edges (→run, →verdict).
+        let LedgerKind::ReceiptIssued {
+            run_root_hash,
+            verdict_id,
+            ..
+        } = &outcome.appended[1].kind
+        else {
+            panic!("second appended record is the ReceiptIssued");
+        };
+        assert_eq!(run_root_hash.as_deref(), Some(run.root_hash.as_str()));
+        assert_eq!(verdict_id.as_deref(), Some(verdict.verdict_id.as_str()));
+
+        // ledger.verify still reports the chain intact after these lineage-bound appends.
         assert_eq!(
             crate::ledger_store::run_ledger_verify(Some(&ledger))["ok"],
             serde_json::json!(true)

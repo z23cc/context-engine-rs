@@ -8,6 +8,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
+// v12 (trust-substrate L1 content-addressed lineage DAG): additive `Option` lineage
+// edge fields on two existing `LedgerKind` arms — `Verdict.run_root_hash` (verdict→run)
+// and `ReceiptIssued.{run_root_hash, verdict_id}` (receipt→run, receipt→verdict). Bound
+// at the canonical seal, they tie verdict/receipt records to their run by the run's
+// content address (and to the borrowed verdict by its content id) instead of by the
+// mutable `run_id` string, so the §3 DAG (task→agent→diff→test-result→receipt) is
+// tamper-evident. Each field is `#[serde(default, skip_serializing_if = "Option::is_none")]`,
+// so an existing serialized record (without them) deserializes to None and re-serializes
+// byte-identically — its `record_hash` and the whole L1 chain are UNPERTURBED, and a
+// v11 client keeps working byte-for-byte.
 // v11 (trust-substrate L6 calibration + L6→L1 linkage): two additive shapes. (1) The
 // `CheckFlakyRate` schema root — the deterministic per-check flaky-rate signal
 // (`permille(flaky_runs, runs)`, integer, no ML) — surfaced advisory on the
@@ -58,7 +68,7 @@ pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
 // RunInputs + Attestation on Run (RUN_SCHEMA_VERSION 1→2); and the verdict / ledger /
 // policy / receipt / outcome schema roots. Additive serde-tagged variants and new
 // schema-roots only — a v6 client keeps working.
-pub const RUNTIME_PROTOCOL_VERSION: &str = "11";
+pub const RUNTIME_PROTOCOL_VERSION: &str = "12";
 pub const RUNTIME_DAEMON_NAME: &str = "nerve";
 pub const RUNTIME_EVENT_METHOD: &str = "runtime/event";
 pub const RUNTIME_INFO_METHOD: &str = "runtime/info";

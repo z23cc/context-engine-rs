@@ -442,6 +442,7 @@ mod tests {
                 verdict: VerdictStatus::Passed,
                 checks: vec![],
                 advisory_llm_judge: None,
+                run_root_hash: None,
             })
             .unwrap();
 
@@ -531,6 +532,47 @@ mod tests {
         assert_eq!(verified["ok"], json!(true));
         assert_eq!(verified["count"], json!(2));
         assert_eq!(verified["head_hash"], json!(appended.record_hash));
+    }
+
+    /// ADDITIVE-INVARIANCE LOCK (`trust-substrate.md` §3 L1, INV-R5): a `Verdict` and a
+    /// `ReceiptIssued` record built with the new v12 lineage edge fields = `None` must
+    /// hash, via the real `nerve_core::ledger` record-identity path, to the exact
+    /// pre-change literals below (computed from pre-change code). Because the new fields
+    /// are `skip_serializing_if = "Option::is_none"`, a pre-v12 serialized record
+    /// deserializes to `None` and produces this identical identity — so its
+    /// `record_hash` and the whole L1 chain are UNPERTURBED. A future regression that
+    /// makes a field non-skippable (or reorders the canonical JSON) flips these hashes
+    /// and fails loudly.
+    #[test]
+    fn none_lineage_edges_preserve_pre_v12_record_identity() {
+        use nerve_core::ledger::hash_record_identity;
+
+        let verdict = LedgerKind::Verdict {
+            run_id: "r".into(),
+            diff_hash: None,
+            verdict: VerdictStatus::Passed,
+            checks: vec![],
+            advisory_llm_judge: None,
+            run_root_hash: None,
+        };
+        assert_eq!(
+            hash_record_identity(0, &verdict),
+            "22d3170fa5ca54333577bc25bdb4bf1f88b7eadccdda7d74ddaccad28632d918"
+        );
+
+        let receipt = LedgerKind::ReceiptIssued {
+            run_id: "r".into(),
+            receipt_id: "rc".into(),
+            inputs_hash: "ih".into(),
+            policy_version: "v1".into(),
+            verdict: VerdictStatus::Passed,
+            run_root_hash: None,
+            verdict_id: None,
+        };
+        assert_eq!(
+            hash_record_identity(0, &receipt),
+            "57f0812f6bac0995d29f9d538636c1b9d22bda4da2e7aed41528c09056c8a8df"
+        );
     }
 
     #[test]

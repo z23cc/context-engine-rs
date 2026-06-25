@@ -1462,7 +1462,7 @@
           "type": "object"
         },
         {
-          "description": "An execution-grounded verdict was reached for a run's diff. The load-bearing\n`verdict` and `checks` reuse the canonical [`crate::verdict`] types;\n`advisory_llm_judge`, when present, is non-load-bearing (INV-R1).",
+          "description": "An execution-grounded verdict was reached for a run's diff. The load-bearing\n`verdict` and `checks` reuse the canonical [`crate::verdict`] types;\n`advisory_llm_judge`, when present, is non-load-bearing (INV-R1). `run_root_hash`,\nwhen present, is the content address of the captured run this verdict\nre-verified — the **verdict→run lineage edge** that binds the record to the run\nby content (not by the mutable `run_id` string), so the cross-run DAG is\ntamper-evident (`trust-substrate.md` §3 L1).",
           "properties": {
             "advisory_llm_judge": {
               "anyOf": [
@@ -1493,6 +1493,12 @@
             "run_id": {
               "type": "string"
             },
+            "run_root_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "verdict": {
               "$ref": "#/$defs/VerdictStatus"
             }
@@ -1506,7 +1512,7 @@
           "type": "object"
         },
         {
-          "description": "A signed verification receipt was issued for a run. Binds the receipt id, the\nhash of the pinned inputs, the policy version in force, and the verdict it\nborrowed from the org's own checks.",
+          "description": "A signed verification receipt was issued for a run. Binds the receipt id, the\nhash of the pinned inputs, the policy version in force, and the verdict it\nborrowed from the org's own checks. `run_root_hash` and `verdict_id`, when\npresent, are the **receipt→run** and **receipt→verdict** lineage edges: the\ncontent address of the captured run and the content id of the [`Self::Verdict`]\nthe receipt borrowed, so the DAG links task→agent→diff→test-result→receipt by\ncontent rather than by the mutable `run_id` string (`trust-substrate.md` §3 L1).",
           "properties": {
             "inputs_hash": {
               "type": "string"
@@ -1524,8 +1530,20 @@
             "run_id": {
               "type": "string"
             },
+            "run_root_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "verdict": {
               "$ref": "#/$defs/VerdictStatus"
+            },
+            "verdict_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

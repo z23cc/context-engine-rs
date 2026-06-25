@@ -106,7 +106,11 @@ pub enum LedgerKind {
     },
     /// An execution-grounded verdict was reached for a run's diff. The load-bearing
     /// `verdict` and `checks` reuse the canonical [`crate::verdict`] types;
-    /// `advisory_llm_judge`, when present, is non-load-bearing (INV-R1).
+    /// `advisory_llm_judge`, when present, is non-load-bearing (INV-R1). `run_root_hash`,
+    /// when present, is the content address of the captured run this verdict
+    /// re-verified — the **verdict→run lineage edge** that binds the record to the run
+    /// by content (not by the mutable `run_id` string), so the cross-run DAG is
+    /// tamper-evident (`trust-substrate.md` §3 L1).
     Verdict {
         run_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,16 +119,26 @@ pub enum LedgerKind {
         checks: Vec<CheckResult>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advisory_llm_judge: Option<AdvisoryJudge>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_root_hash: Option<String>,
     },
     /// A signed verification receipt was issued for a run. Binds the receipt id, the
     /// hash of the pinned inputs, the policy version in force, and the verdict it
-    /// borrowed from the org's own checks.
+    /// borrowed from the org's own checks. `run_root_hash` and `verdict_id`, when
+    /// present, are the **receipt→run** and **receipt→verdict** lineage edges: the
+    /// content address of the captured run and the content id of the [`Self::Verdict`]
+    /// the receipt borrowed, so the DAG links task→agent→diff→test-result→receipt by
+    /// content rather than by the mutable `run_id` string (`trust-substrate.md` §3 L1).
     ReceiptIssued {
         run_id: String,
         receipt_id: String,
         inputs_hash: String,
         policy_version: String,
         verdict: VerdictStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_root_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verdict_id: Option<String>,
     },
     /// A human/CI/observation outcome label for a run was recorded (L6). Binds the
     /// run, the observed outcome + its source, and the content hash of the label.
@@ -243,6 +257,7 @@ mod tests {
                     verdict: VerdictStatus::Passed,
                     checks: vec![],
                     advisory_llm_judge: None,
+                    run_root_hash: None,
                 },
                 "verdict",
             ),
@@ -253,6 +268,8 @@ mod tests {
                     inputs_hash: "ih".into(),
                     policy_version: "v1".into(),
                     verdict: VerdictStatus::Passed,
+                    run_root_hash: None,
+                    verdict_id: None,
                 },
                 "receipt_issued",
             ),
@@ -301,14 +318,74 @@ mod tests {
                 label: "looks-risky".into(),
                 confidence_bp: 7500,
             }),
+            run_root_hash: Some("run-root-abc".into()),
         };
         let value = serde_json::to_value(&kind).expect("verdict kind json");
         assert_eq!(value["kind"], "verdict");
         assert_eq!(value["verdict"], "failed");
         assert_eq!(value["checks"][0]["kind"], "test");
         assert_eq!(value["advisory_llm_judge"]["confidence_bp"], 7500);
+        // The lineage edge (verdict→run) is carried verbatim.
+        assert_eq!(value["run_root_hash"], "run-root-abc");
         let back: LedgerKind = serde_json::from_value(value).expect("round-trip");
         assert_eq!(back, kind);
+    }
+
+    #[test]
+    fn receipt_issued_carries_lineage_edges_and_round_trips() {
+        let kind = LedgerKind::ReceiptIssued {
+            run_id: "r1".into(),
+            receipt_id: "rc1".into(),
+            inputs_hash: "ih".into(),
+            policy_version: "v1".into(),
+            verdict: VerdictStatus::Passed,
+            run_root_hash: Some("run-root-xyz".into()),
+            verdict_id: Some("verdict-content-id".into()),
+        };
+        let value = serde_json::to_value(&kind).expect("receipt_issued json");
+        assert_eq!(value["kind"], "receipt_issued");
+        // Both lineage edges (receipt→run, receipt→verdict) are carried verbatim.
+        assert_eq!(value["run_root_hash"], "run-root-xyz");
+        assert_eq!(value["verdict_id"], "verdict-content-id");
+        let back: LedgerKind = serde_json::from_value(value).expect("round-trip");
+        assert_eq!(back, kind);
+    }
+
+    /// ADDITIVE-INVARIANCE (serialization half — `trust-substrate.md` §3 L1, INV-R5):
+    /// the new lineage edge fields are `Option` + `skip_serializing_if`, so a record
+    /// built with them `None` serializes WITHOUT the new keys at all — byte-identical to
+    /// a pre-change record. The companion hash-identity lock lives in the host's
+    /// `ledger_store` tests, where the real `nerve_core::ledger` record-hash path is in
+    /// scope (proto must not pull in the kernel).
+    #[test]
+    fn none_lineage_edges_omit_their_keys() {
+        let verdict = LedgerKind::Verdict {
+            run_id: "r".into(),
+            diff_hash: None,
+            verdict: VerdictStatus::Passed,
+            checks: vec![],
+            advisory_llm_judge: None,
+            run_root_hash: None,
+        };
+        let v_value = serde_json::to_value(&verdict).expect("verdict json");
+        assert!(v_value.get("run_root_hash").is_none());
+        let v_back: LedgerKind = serde_json::from_value(v_value).expect("round-trip");
+        assert_eq!(v_back, verdict);
+
+        let receipt = LedgerKind::ReceiptIssued {
+            run_id: "r".into(),
+            receipt_id: "rc".into(),
+            inputs_hash: "ih".into(),
+            policy_version: "v1".into(),
+            verdict: VerdictStatus::Passed,
+            run_root_hash: None,
+            verdict_id: None,
+        };
+        let r_value = serde_json::to_value(&receipt).expect("receipt json");
+        assert!(r_value.get("run_root_hash").is_none());
+        assert!(r_value.get("verdict_id").is_none());
+        let r_back: LedgerKind = serde_json::from_value(r_value).expect("round-trip");
+        assert_eq!(r_back, receipt);
     }
 
     #[test]
