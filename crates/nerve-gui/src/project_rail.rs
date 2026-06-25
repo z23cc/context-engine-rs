@@ -387,7 +387,7 @@ fn project_row(
                 <span class="project-dot" class:on=selected></span>
                 <span class="rail-copy">
                     <span class="rail-title">{name}</span>
-                    {selected.then(|| project_meta(root.clone(), signals))}
+                    {selected.then(|| project_meta(signals))}
                 </span>
             </button>
             {selected.then(|| view! {
@@ -404,9 +404,11 @@ fn project_row(
     .into_any()
 }
 
-/// The active row's secondary line: a git-branch chip (skeleton while the branch
-/// Effect resolves) plus the truncated workspace root path.
-fn project_meta(root: String, signals: RailSignals) -> impl IntoView {
+/// The active row's secondary line: just the git-branch chip (a skeleton while the
+/// branch Effect resolves). The row shows folder **name** (the title) + **branch** —
+/// not the workspace path, which stays available on hover via the row tooltip
+/// (`title=root` on the rail-pick button).
+fn project_meta(signals: RailSignals) -> impl IntoView {
     view! {
         <span class="proj-meta">
             {move || if signals.branch_loading.get() {
@@ -423,21 +425,8 @@ fn project_meta(root: String, signals: RailSignals) -> impl IntoView {
                     </span>
                 }.into_any()
             }}
-            <span class="proj-sub" aria-hidden="true">{truncate_root(&root)}</span>
         </span>
     }
-}
-
-/// Show the tail of a long root path with a leading ellipsis (the tail is the
-/// most distinctive part). The full path is always available via the row tooltip.
-fn truncate_root(root: &str) -> String {
-    const MAX: usize = 34;
-    let count = root.chars().count();
-    if count <= MAX {
-        return root.to_string();
-    }
-    let tail: String = root.chars().skip(count - (MAX - 1)).collect();
-    format!("…{tail}")
 }
 
 fn reveal_icon() -> impl IntoView {
