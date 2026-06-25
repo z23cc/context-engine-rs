@@ -59,6 +59,13 @@ jobs:
       - name: File-size gate (<= 600 non-test lines)
         run: bash Scripts/check-file-size.sh --strict
 
+      # The nerve-tui smoke test (crates/nerve-tui/tests/smoke.rs) spawns a real
+      # `nerve daemon` from target/<profile>/nerve. `cargo test` builds the bin's
+      # test harness into deps/ but does NOT emit the runnable named binary, so
+      # build it explicitly first (incremental — shares the test compile's cache).
+      - name: Build the nerve binary (the nerve-tui smoke test spawns it)
+        run: cargo build -p nerve-workstation --bin nerve
+
       - name: Test (whole workspace)
         run: cargo test --workspace
         # Runtime-protocol drift is already asserted by the

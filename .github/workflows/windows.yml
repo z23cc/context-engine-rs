@@ -38,6 +38,12 @@ jobs:
         shell: bash
         run: bash Scripts/check-file-size.sh --strict
 
+      # The nerve-tui smoke test spawns the debug `nerve` binary; build it before
+      # the suite runs (the later release build is a different profile + target).
+      - name: Build the nerve binary (the nerve-tui smoke test spawns it)
+        shell: bash
+        run: cargo build -p nerve-workstation --bin nerve
+
       - name: Test
         shell: bash
         run: cargo test --workspace
