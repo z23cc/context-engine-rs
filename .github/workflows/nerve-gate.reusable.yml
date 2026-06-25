@@ -1,0 +1,79 @@
+# Reusable Nerve verification-receipt merge gate.
+#
+# Another repository gates a PR on a Nerve Verification Receipt with one job:
+#
+#   jobs:
+#     nerve-gate:
+#       uses: z23cc/nerve-workstation/.github/workflows/nerve-gate.reusable.yml@main
+#       with:
+#         run-id: ${{ needs.delegate.outputs.run-id }}
+#       secrets: inherit
+#
+# This wraps the composite action at .github/actions/nerve-gate. See
+# docs/integrations/ci-merge-gate.md for the adopter walkthrough and
+# docs/designs/trust-substrate.md §L4/§L5/§8 for what a Receipt is.
+name: Nerve gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        description: Captured Run id (content address) to verify and gate on.
+        required: true
+        type: string
+      root:
+        description: Repo root whose `.nerve/` store holds the Run, checks.json and receipts.
+        required: false
+        type: string
+        default: "."
+      emit:
+        description: "Check-run emitter: `gh` (post a GitHub check-run) or `none`."
+        required: false
+        type: string
+        default: "gh"
+      nerve-version:
+        description: Release tag of the `nerve` binary to install, or `latest`.
+        required: false
+        type: string
+        default: "latest"
+      reruns:
+        description: Optional `--reruns N` for flaky-test detection (empty = default).
+        required: false
+        type: string
+        default: ""
+      install-command:
+        description: Escape hatch — exact shell command to install `nerve` instead of the default.
+        required: false
+        type: string
+        default: ""
+      runs-on:
+        description: Runner label for the gate job.
+        required: false
+        type: string
+        default: ubuntu-latest
+
+# Least privilege: read the tree, write the check-run + PR status.
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  nerve-gate:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Nerve verification-receipt gate
+        uses: z23cc/nerve-workstation/.github/actions/nerve-gate@main
+        env:
+          # Surfaced to the composite action's gh-emit/auth steps.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          run-id: ${{ inputs.run-id }}
+          root: ${{ inputs.root }}
+          emit: ${{ inputs.emit }}
+          nerve-version: ${{ inputs.nerve-version }}
+          reruns: ${{ inputs.reruns }}
+          install-command: ${{ inputs.install-command }}

@@ -24,6 +24,20 @@ use std::path::Path;
 /// `sigstore-keyless` bundle so a verifier picks the right predicate.
 pub(crate) const LOCAL_ED25519_BACKEND: &str = "local-ed25519";
 
+/// Resolve the host's local ed25519 receipt signer, keyed under `config_home()/keys`
+/// (stable across projects) and falling back to the served root's `.nerve/keys`, then
+/// to a relative `.nerve/keys`. This is the single key-dir resolution shared by the
+/// daemon's receipt issuance and the `nerve verify` CLI re-verify path, so both sign
+/// with the *same* per-host key.
+pub(crate) fn local_signer(root: Option<&Path>) -> LocalEd25519Signer {
+    let dir = nerve_agent::auth::config_home()
+        .map(|home| home.join("keys"))
+        .ok()
+        .or_else(|| root.map(|root| root.join(".nerve").join("keys")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".nerve/keys"));
+    LocalEd25519Signer::load_or_create(&dir)
+}
+
 /// The impure receipt-signing seam (INV-R1): given the DSSE PAE bytes the pure
 /// `nerve-core` machinery produced, yield a detached signature plus the public key
 /// needed to verify it. Implementors carry their own key material; the kernel never

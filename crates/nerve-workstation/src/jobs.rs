@@ -620,17 +620,7 @@ impl JobManager {
                     status: verdict.status,
                     check_count: verdict.checks.len() as u64,
                 });
-                crate::ledger_store::append_evidence(
-                    self.ledger_store().as_ref(),
-                    nerve_core::ledger::LedgerKind::Verdict {
-                        run_id: verdict.run_id.clone(),
-                        diff_hash: verdict.diff_hash.clone(),
-                        verdict: verdict.status,
-                        checks: verdict.checks.clone(),
-                        advisory_llm_judge: None,
-                    },
-                );
-                self.issue_receipt_for_verdict(&run_id, &verdict);
+                self.attest_verdict(&run_id, &verdict);
                 serde_json::to_value(&verdict)
                     .map(|verdict| json!({ "verdict": verdict }))
                     .map_err(|err| nerve_runtime::RuntimeError::adapter(err.to_string()))
@@ -795,66 +785,43 @@ impl JobManager {
         }
     }
 
-    /// L4 — issue a signed Verification Receipt binding a sealed verdict (best-effort),
-    /// so `receipt.get` returns a portable, offline-re-verifiable attestation. Reloads
-    /// the run, maps the verdict's per-check results, signs via the local ed25519
-    /// signer, persists, and announces `ReceiptIssued`. A missing run/store is a silent
-    /// no-op — issuing a receipt never fails the verify turn.
-    fn issue_receipt_for_verdict(&self, run_id: &str, verdict: &nerve_core::verdict::Verdict) {
+    /// L1+L4 — attest a sealed verdict: append it to the evidence ledger and issue a
+    /// signed Verification Receipt (best-effort), then announce `ReceiptIssued`. The
+    /// append+issue+sign+persist tail is the SINGLE canonical
+    /// [`crate::verify_runner::seal_and_attest`] (shared verbatim with the `nerve verify`
+    /// CLI, INV-R1); this method adds only the daemon's run reload + event emission. A
+    /// missing run/store is a silent no-op — attesting never fails the verify turn.
+    fn attest_verdict(&self, run_id: &str, verdict: &nerve_core::verdict::Verdict) {
         let Some(run) = self
             .run_store()
             .and_then(|store| store.load_record(run_id).ok())
         else {
             return;
         };
-        let checks: Vec<nerve_core::receipt::ReceiptCheck> = verdict
-            .checks
-            .iter()
-            .map(|check| nerve_core::receipt::ReceiptCheck {
-                name: check.name.clone(),
-                kind: check.kind,
-                verdict: check_status_to_verdict(check.status),
-                reproducible: check.reproducible,
-                evidence_hash: None,
-            })
-            .collect();
-        let toolchain_digest =
-            (!run.inputs.toolchain_digest.is_empty()).then(|| run.inputs.toolchain_digest.clone());
-        if let Some(issued) = crate::receipt_store::issue_receipt_for_run(
-            &run,
-            checks,
-            // Borrow the sealed L2 verdict (honours the `required` mask) — never
-            // re-derive a stricter/looser one from the evidence checks (INV-R1).
-            verdict.status,
-            toolchain_digest,
-            None,
-            None,
-            now_ms(),
-            &self.signer(),
-            self.receipt_store().as_ref(),
-        ) {
+        let ledger = self.ledger_store();
+        let receipt = self.receipt_store();
+        let stores = crate::verify_runner::AttestStores {
+            ledger: ledger.as_ref(),
+            receipt: receipt.as_ref(),
+        };
+        if let Some(sealed) =
+            crate::verify_runner::seal_and_attest(&run, verdict, &stores, &self.signer(), now_ms())
+        {
             self.emit(RuntimeEvent::ReceiptIssued {
                 session_id: run.session_id.clone(),
-                run_id: issued.run_id,
-                receipt_id: issued.receipt_id,
-                verdict: issued.verdict,
+                run_id: sealed.statement.provenance.run_id.clone(),
+                receipt_id: sealed.receipt_id.clone(),
+                verdict: sealed.statement.verdict,
             });
         }
     }
 
     /// The local ed25519 receipt signer, keyed under `config_home()/keys` (stable
-    /// across projects), falling back to the served root's `.nerve/keys`.
+    /// across projects), falling back to the served root's `.nerve/keys`. Delegates to
+    /// the shared [`crate::signer::local_signer`] so the CLI re-verify path signs with
+    /// the same per-host key.
     fn signer(&self) -> crate::signer::LocalEd25519Signer {
-        let dir = nerve_agent::auth::config_home()
-            .map(|home| home.join("keys"))
-            .ok()
-            .or_else(|| {
-                self.delegate_root()
-                    .ok()
-                    .map(|root| root.join(".nerve").join("keys"))
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from(".nerve/keys"));
-        crate::signer::LocalEd25519Signer::load_or_create(&dir)
+        crate::signer::local_signer(self.delegate_root().ok().as_deref())
     }
 
     /// Execute a host-side command. These commands are the declared runtime seam
@@ -1679,19 +1646,6 @@ impl JobManager {
 /// for one turn from a parsed [`DelegateUsage`](delegate_runtime::DelegateUsage) +
 /// reported USD cost. Shared by the one-shot and live capture paths; cost is stored
 /// as integer micro-USD (no floats in the hashed bytes — INV-R2).
-/// Map a per-check status to the verdict vocabulary a receipt check carries.
-fn check_status_to_verdict(
-    status: nerve_core::verdict::CheckStatus,
-) -> nerve_core::verdict::VerdictStatus {
-    use nerve_core::verdict::{CheckStatus, VerdictStatus};
-    match status {
-        CheckStatus::Pass => VerdictStatus::Passed,
-        CheckStatus::Fail => VerdictStatus::Failed,
-        CheckStatus::Flaky => VerdictStatus::Inconclusive,
-        CheckStatus::Error => VerdictStatus::Error,
-    }
-}
-
 fn delegate_usage_event(
     turn: u64,
     usage: &delegate_runtime::DelegateUsage,

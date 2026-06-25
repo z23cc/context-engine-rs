@@ -115,12 +115,22 @@ mod tests {
 
     #[test]
     fn cli_parses_verify_and_gate() {
-        let verify = Cli::try_parse_from(["nerve", "verify", "run-abc", "--root", "."])
-            .expect("verify parse");
+        let verify =
+            Cli::try_parse_from(["nerve", "verify", "run-abc", "--root", ".", "--reruns", "3"])
+                .expect("verify parse");
         assert!(matches!(verify.command, CommandKind::Verify(_)));
         let gate = Cli::try_parse_from(["nerve", "gate", "--receipt", "r.json", "--emit", "gh"])
             .expect("gate parse");
         assert!(matches!(gate.command, CommandKind::Gate(_)));
+        // The CI template's `nerve gate --run <id>` convenience parses too.
+        let gate_run = Cli::try_parse_from(["nerve", "gate", "--run", "run-abc", "--root", "."])
+            .expect("gate --run parse");
+        assert!(matches!(gate_run.command, CommandKind::Gate(_)));
+        // --receipt and --run are mutually exclusive.
+        assert!(
+            Cli::try_parse_from(["nerve", "gate", "--receipt", "r.json", "--run", "x"]).is_err(),
+            "--receipt conflicts with --run"
+        );
     }
 
     #[test]

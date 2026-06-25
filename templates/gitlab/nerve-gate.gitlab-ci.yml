@@ -1,0 +1,60 @@
+# Drop-in GitLab CI merge gate on a Nerve Verification Receipt.
+#
+# A court reporter, not a judge (INV-R1): `nerve verify` re-runs the org's OWN
+# checks (<root>/.nerve/checks.json) against a captured Run and seals a signed
+# Receipt; `nerve gate` maps that Receipt to the authoritative pipeline exit code
+# (0 pass / 1 fail / 2 inconclusive). If checks.json is absent the verdict is
+# Inconclusive (exit 2) — a pass is NEVER fabricated.
+#
+# Usage — in a consumer .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'your-group/nerve-workstation'
+#       file: '/templates/gitlab/nerve-gate.gitlab-ci.yml'
+#
+#   nerve-gate:
+#     extends: .nerve-gate
+#     variables:
+#       NERVE_RUN_ID: "$NERVE_RUN_ID"   # the captured Run id from a delegated nerve run
+#
+# NOTE: this gates on the EXIT CODE today, which is a complete merge gate on its
+# own. Posting a GitLab *commit status* / MR badge via the Commit Status API is a
+# follow-up (the equivalent of the GitHub `--emit gh` check-run); until then run
+# this as a `pipeline` job whose success/failure IS the gate.
+
+.nerve-gate:
+  stage: test
+  # Pick an image that has either a prebuilt `nerve` on PATH or a Rust toolchain
+  # for the `cargo install` fallback. Override `NERVE_INSTALL` to fully customise.
+  image: "rust:latest"
+  variables:
+    NERVE_RUN_ID: ""          # REQUIRED — captured Run id (content address).
+    NERVE_ROOT: "."           # repo root whose `.nerve/` store holds the Run.
+    NERVE_RERUNS: ""          # optional `--reruns N` for flaky detection.
+    NERVE_REPO: "z23cc/nerve-workstation"
+    # Override to swap the install step (e.g. download a pinned release binary).
+    NERVE_INSTALL: >-
+      if command -v nerve >/dev/null 2>&1; then :;
+      elif [ -f Cargo.toml ] && grep -q nerve-workstation Cargo.toml; then
+        cargo install --path crates/nerve-workstation --bin nerve --locked --force;
+      else
+        cargo install nerve-workstation --bin nerve --locked --force;
+      fi
+  script:
+    - set -euo pipefail
+    - test -n "$NERVE_RUN_ID" || { echo "NERVE_RUN_ID is required"; exit 1; }
+    - eval "$NERVE_INSTALL"
+    - command -v nerve >/dev/null 2>&1 || { echo "nerve not installed"; exit 1; }
+    - nerve --version || true
+    # (b) Re-run the org's own checks and seal the Receipt. Do not abort here; the
+    #     gate step below is the single authoritative exit.
+    - |
+      VERIFY_ARGS="verify $NERVE_RUN_ID --root $NERVE_ROOT"
+      if [ -n "$NERVE_RERUNS" ]; then VERIFY_ARGS="$VERIFY_ARGS --reruns $NERVE_RERUNS"; fi
+      echo "+ nerve $VERIFY_ARGS"
+      nerve $VERIFY_ARGS || echo "nerve verify exited non-zero (gate step decides)."
+    # (c) Gate on the sealed Receipt. `--emit none` because the GitLab commit-status
+    #     emitter is a follow-up; the exit code is authoritative and gates the job.
+    - |
+      echo "+ nerve gate --run $NERVE_RUN_ID --root $NERVE_ROOT --emit none"
+      nerve gate --run "$NERVE_RUN_ID" --root "$NERVE_ROOT" --emit none

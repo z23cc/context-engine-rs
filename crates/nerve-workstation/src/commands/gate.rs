@@ -1,7 +1,8 @@
 //! L5 merge-gate CLI (`docs/designs/trust-substrate.md` §8 L5, INV-R1) — the
-//! distribution body's CI face. `nerve verify` re-runs the org's checks (deferred to
-//! the L2 handle; for now it fetches an already-sealed Receipt), and `nerve gate`
-//! borrows a sealed [`Receipt`]'s verdict and translates it — via the pure
+//! distribution body's CI face. `nerve verify` **re-runs the org's own checks** for a
+//! captured run in-process (via [`crate::commands::verify::run_verify_flow`], the same
+//! L2 engine the daemon uses), seals + signs a fresh Receipt, then reports it; `nerve
+//! gate` borrows a sealed [`Receipt`]'s verdict and translates it — via the pure
 //! [`gate_outcome`](nerve_core::receipt_gate::gate_outcome) — into the tri-state a
 //! CI/merge surface consumes: a process **exit code** (authoritative), a stable
 //! **conclusion** label, and a one-line **summary**.
@@ -28,10 +29,11 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// `nerve verify <run_id>` — re-verify a captured run by re-running the org's checks
-/// in the closure and sealing a Receipt. Until the L2 verify handle is wired into the
-/// CLI, this fetches an already-sealed Receipt for the run (never fabricates one — it
-/// reports `verify_not_available` and exits neutral if none exists).
+/// `nerve verify <run_id>` — re-verify a captured run by re-running the org's own
+/// checks (`<root>/.nerve/checks.json`) in the recorded closure, sealing a borrowed
+/// Verdict, and signing + persisting a fresh Verification Receipt. The exit code is the
+/// gate (0=Passed, 1=Failed, 2=Inconclusive/Error); a missing `checks.json` is honestly
+/// Inconclusive — never a fabricated pass (INV-R1).
 #[derive(Debug, Args)]
 pub(crate) struct VerifyArgs {
     /// The captured run id (its content address) to verify.
@@ -39,18 +41,31 @@ pub(crate) struct VerifyArgs {
     /// Workspace root holding `.nerve/` (defaults to the current directory).
     #[arg(long = "root")]
     root: Option<PathBuf>,
+    /// How many times to re-run each check to surface flakiness (default: the L2
+    /// runner's own default of one extra run).
+    #[arg(long = "reruns")]
+    reruns: Option<u32>,
     /// Print the resolved Receipt / outcome as JSON instead of a one-line summary.
     #[arg(long)]
     json: bool,
 }
 
-/// `nerve gate --receipt <path>` — translate a sealed Receipt into a merge-gate
-/// decision (exit code + conclusion), optionally posting a check run.
+/// `nerve gate (--run <id> | --receipt <path>)` — translate a sealed Receipt into a
+/// merge-gate decision (exit code + conclusion), optionally posting a check run. The
+/// receipt is located either by path (`--receipt`) or by captured run id (`--run`,
+/// scanning `<root>/.nerve/receipts/`).
 #[derive(Debug, Args)]
 pub(crate) struct GateArgs {
     /// Path to a sealed Receipt JSON (as produced by the receipt store / `nerve verify`).
-    #[arg(long = "receipt")]
-    receipt: PathBuf,
+    #[arg(long = "receipt", conflicts_with = "run")]
+    receipt: Option<PathBuf>,
+    /// A captured run id whose sealed Receipt to load from `<root>/.nerve/receipts/`.
+    #[arg(long = "run", conflicts_with = "receipt")]
+    run: Option<String>,
+    /// Workspace root holding `.nerve/` (defaults to the current directory); used to
+    /// resolve `--run`.
+    #[arg(long = "root")]
+    root: Option<PathBuf>,
     /// Where to post the resulting check run: `none` (default — exit code only),
     /// `gh` (shell `gh api` to the GitHub Checks API), or `gitlab` (reserved).
     #[arg(long = "emit", default_value = "none")]
@@ -144,39 +159,21 @@ impl CheckRunEmitter for GhCheckRunEmitter {
     }
 }
 
-/// `nerve verify`: fetch the sealed Receipt for a run and report its gate decision.
-/// Returns the gate's exit code so the calling CLI arm can propagate it to CI. A
-/// missing receipt is the honest `verify_not_available` (neutral exit 2) — never a
-/// fabricated pass (INV-R1).
+/// `nerve verify`: re-run the org's own checks for a captured run in-process, seal +
+/// sign a fresh Verification Receipt, and report its gate decision. Returns the gate's
+/// exit code (0=Passed, 1=Failed, 2=Inconclusive/Error) so the calling CLI arm can
+/// propagate it to CI. A missing `<root>/.nerve/checks.json` yields an honest
+/// Inconclusive receipt (exit 2) — never a fabricated pass (INV-R1).
 pub(crate) fn verify(args: VerifyArgs) -> Result<i32> {
     let root = resolve_root(args.root)?;
-    match load_receipt_for_run(&root, &args.run_id)? {
-        Some(receipt) => report_receipt(&receipt, args.json),
-        None => {
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "run_id": args.run_id,
-                        "status": "verify_not_available",
-                        "exit_code": 2,
-                    })
-                );
-            } else {
-                eprintln!(
-                    "verify_not_available: no sealed receipt for run `{}` (re-run not yet wired)",
-                    args.run_id
-                );
-            }
-            Ok(2)
-        }
-    }
+    let receipt = crate::commands::verify::run_verify_flow(&root, &args.run_id, args.reruns)?;
+    report_receipt(&receipt, args.json)
 }
 
 /// `nerve gate`: load a sealed Receipt, decide the merge outcome, optionally post a
 /// check run, and exit with the authoritative code.
 pub(crate) fn gate(args: GateArgs) -> Result<i32> {
-    let receipt = read_receipt(&args.receipt)?;
+    let receipt = load_gate_receipt(&args)?;
     let outcome = gate_outcome(&receipt);
     let emitter = select_emitter(&args.emit)?;
     if let (Some(repo), Some(sha)) = (args.repo.as_deref(), args.sha.as_deref()) {
@@ -192,6 +189,25 @@ pub(crate) fn gate(args: GateArgs) -> Result<i32> {
     }
     print_outcome(&outcome, args.json);
     Ok(outcome.exit_code)
+}
+
+/// Resolve the sealed Receipt a `gate` invocation acts on: by explicit `--receipt`
+/// path, or by `--run <id>` (scanning `<root>/.nerve/receipts/` via the shared
+/// [`load_receipt_for_run`]). Exactly one is required; `--run` with no sealed receipt is
+/// an error (run `nerve verify <id>` first to seal one).
+fn load_gate_receipt(args: &GateArgs) -> Result<Receipt> {
+    match (&args.receipt, &args.run) {
+        (Some(path), _) => read_receipt(path),
+        (None, Some(run_id)) => {
+            let root = resolve_root(args.root.clone())?;
+            load_receipt_for_run(&root, run_id)?.ok_or_else(|| {
+                anyhow!("no sealed receipt for run `{run_id}` (run `nerve verify {run_id}` first)")
+            })
+        }
+        (None, None) => Err(anyhow!(
+            "provide exactly one of --receipt <path> or --run <id>"
+        )),
+    }
 }
 
 /// Pick the [`CheckRunEmitter`] for `--emit`. `gitlab` is reserved (the seam exists;
@@ -336,7 +352,9 @@ mod tests {
         fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
 
         let code = gate(GateArgs {
-            receipt: path,
+            receipt: Some(path),
+            run: None,
+            root: None,
             emit: "none".to_string(),
             sha: None,
             repo: None,
@@ -361,30 +379,83 @@ mod tests {
     }
 
     #[test]
-    fn verify_returns_persisted_receipt_outcome() {
+    fn gate_by_run_loads_sealed_receipt_and_gates() {
         let dir = tempdir().unwrap();
+        // A sealed receipt for `run-x` is found by id under <root>/.nerve/receipts.
         write_receipt(dir.path(), &receipt_for("run-x", VerdictStatus::Passed));
-        let found = load_receipt_for_run(dir.path(), "run-x").unwrap();
-        assert!(found.is_some());
-        assert_eq!(gate_outcome(&found.unwrap()).exit_code, 0);
-    }
-
-    #[test]
-    fn verify_not_available_is_neutral_exit_two_never_fabricates() {
-        let dir = tempdir().unwrap();
-        // No receipts dir at all -> tolerant None, not an error.
-        assert!(
-            load_receipt_for_run(dir.path(), "absent")
-                .unwrap()
-                .is_none()
-        );
-        let code = verify(VerifyArgs {
-            run_id: "absent".to_string(),
+        let code = gate(GateArgs {
+            receipt: None,
+            run: Some("run-x".to_string()),
             root: Some(dir.path().to_path_buf()),
+            emit: "none".to_string(),
+            sha: None,
+            repo: None,
             json: false,
         })
         .unwrap();
-        assert_eq!(code, 2);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn gate_by_run_errors_when_no_receipt_sealed() {
+        let dir = tempdir().unwrap();
+        // No receipt for the run -> a hard error (never a fabricated pass — INV-R1).
+        let err = gate(GateArgs {
+            receipt: None,
+            run: Some("absent".to_string()),
+            root: Some(dir.path().to_path_buf()),
+            emit: "none".to_string(),
+            sha: None,
+            repo: None,
+            json: false,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("absent"), "{err}");
+    }
+
+    #[test]
+    fn verify_re_runs_checks_and_gates_on_a_fresh_receipt() {
+        // End-to-end: a seeded run + a passing `true` check seals a Passed receipt and
+        // `nerve verify` exits 0; the deep re-verify coverage lives in commands::verify.
+        use nerve_core::provenance::{Event, EventKind, RunInputs};
+        let dir = tempdir().unwrap();
+        let store = crate::run_store::RunStore::for_scope(Some(dir.path())).unwrap();
+        let run = nerve_core::build_run(
+            "job",
+            "codex",
+            None,
+            1,
+            Some(2),
+            true,
+            vec![Event {
+                seq: 0,
+                kind: EventKind::RunStarted {
+                    agent: "codex".into(),
+                    task: "t".into(),
+                    cwd: None,
+                    inputs: None,
+                },
+            }],
+            RunInputs::default(),
+        );
+        store.write_record(&run).unwrap();
+        let checks = dir.path().join(".nerve");
+        fs::create_dir_all(&checks).unwrap();
+        fs::write(
+            checks.join("checks.json"),
+            serde_json::json!({"checks":[{"name":"smoke","command":"true","required":true}]})
+                .to_string(),
+        )
+        .unwrap();
+
+        let code = verify(VerifyArgs {
+            run_id: run.run_id.clone(),
+            root: Some(dir.path().to_path_buf()),
+            reruns: Some(1),
+            json: false,
+        })
+        .unwrap();
+        assert_eq!(code, 0, "passing check gates 0");
     }
 
     #[test]

@@ -1,0 +1,197 @@
+# Nerve Verification-Receipt merge gate (composite action).
+#
+# Drop this in front of ANY coding agent's output (Claude Code / Codex / Cursor /
+# Devin) to gate a pull request on a Nerve Verification Receipt. It:
+#   1. installs the `nerve` binary,
+#   2. runs `nerve verify` to re-run the org's OWN checks against the captured Run
+#      and seal a signed Receipt,
+#   3. runs `nerve gate` to post a GitHub check-run and propagate the authoritative
+#      tri-state exit code (0 pass / 1 fail / 2 inconclusive).
+#
+# Nerve is a court reporter, not a judge (INV-R1): the verdict is BORROWED from the
+# org's own tests (`<root>/.nerve/checks.json`). If that file is absent the verdict
+# is Inconclusive (exit 2) — a pass is NEVER fabricated. See
+# docs/integrations/ci-merge-gate.md and docs/designs/trust-substrate.md §L4/§L5/§8.
+name: Nerve verification-receipt gate
+description: >-
+  Re-run the org's own checks against a captured Nerve Run, seal a signed
+  Verification Receipt, and gate a PR on it (court reporter, not judge).
+
+inputs:
+  run-id:
+    description: >-
+      The captured Run id (content address) to verify, produced by a delegated
+      nerve run. Required.
+    required: true
+  root:
+    description: >-
+      Repository root whose `.nerve/` store holds the Run, checks.json, ledger and
+      receipts. Defaults to the checked-out workspace.
+    required: false
+    default: "."
+  emit:
+    description: >-
+      Where `nerve gate` posts the decision: `gh` (GitHub check-run via the gh CLI)
+      or `none` (exit code only). The exit code is authoritative regardless.
+    required: false
+    default: "gh"
+  nerve-version:
+    description: >-
+      Release tag of the `nerve` binary to install (e.g. `v0.4.2`), or `latest`.
+      Ignored when `install-command` is overridden.
+    required: false
+    default: "latest"
+  reruns:
+    description: >-
+      Optional re-run count passed to `nerve verify --reruns N` for flaky-test
+      detection. Empty = the binary's default.
+    required: false
+    default: ""
+  install-command:
+    description: >-
+      Override the install step entirely (escape hatch). When non-empty this exact
+      shell command runs INSTEAD of the default release-download + cargo fallback,
+      and must leave a `nerve` binary on PATH.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # ----------------------------------------------------------------------------
+    # (a) Install nerve. Prefer a pinned release binary; fall back to `cargo
+    #     install`. Fully overridable via the `install-command` input.
+    # ----------------------------------------------------------------------------
+    - name: Install nerve
+      shell: bash
+      env:
+        NERVE_VERSION: ${{ inputs.nerve-version }}
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+        GH_TOKEN: ${{ env.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        if command -v nerve >/dev/null 2>&1; then
+          echo "nerve already on PATH: $(command -v nerve)"
+          exit 0
+        fi
+
+        # Escape hatch: run the caller's exact install command and stop.
+        if [ -n "${INSTALL_COMMAND}" ]; then
+          echo "Using caller-supplied install-command override."
+          bash -lc "${INSTALL_COMMAND}"
+          command -v nerve >/dev/null 2>&1 || {
+            echo "::error::install-command did not put 'nerve' on PATH" >&2
+            exit 1
+          }
+          exit 0
+        fi
+
+        # --- Default install path: download a pinned release binary. -------------
+        # Resolve the OS/arch to a release asset name. Adjust ASSET to match the
+        # naming your release publishes (see .github/workflows/release.yml).
+        os="$(uname -s)"; arch="$(uname -m)"
+        case "${os}-${arch}" in
+          Linux-x86_64)  ASSET="nerve-x86_64-unknown-linux-gnu.tar.gz" ;;
+          Linux-aarch64) ASSET="nerve-aarch64-unknown-linux-gnu.tar.gz" ;;
+          Darwin-arm64)  ASSET="nerve-aarch64-apple-darwin.tar.gz" ;;
+          Darwin-x86_64) ASSET="nerve-x86_64-apple-darwin.tar.gz" ;;
+          *) ASSET="" ;;
+        esac
+
+        REPO="z23cc/nerve-workstation"
+        install_dir="${RUNNER_TEMP:-/tmp}/nerve-bin"
+        mkdir -p "${install_dir}"
+
+        downloaded=0
+        if [ -n "${ASSET}" ] && command -v gh >/dev/null 2>&1; then
+          tag="${NERVE_VERSION}"
+          if [ "${tag}" = "latest" ] || [ -z "${tag}" ]; then
+            tag="$(gh release view --repo "${REPO}" --json tagName -q .tagName 2>/dev/null || true)"
+          fi
+          if [ -n "${tag}" ]; then
+            echo "Attempting release download: ${REPO}@${tag} asset ${ASSET}"
+            if gh release download "${tag}" --repo "${REPO}" \
+                 --pattern "${ASSET}" --dir "${install_dir}" 2>/dev/null; then
+              tar -xzf "${install_dir}/${ASSET}" -C "${install_dir}"
+              chmod +x "${install_dir}/nerve" 2>/dev/null || true
+              if [ -x "${install_dir}/nerve" ]; then
+                echo "${install_dir}" >> "${GITHUB_PATH}"
+                downloaded=1
+              fi
+            fi
+          fi
+        fi
+
+        # --- Documented fallback: build from source via cargo. ------------------
+        if [ "${downloaded}" -ne 1 ]; then
+          echo "Release binary unavailable; falling back to 'cargo install'."
+          if ! command -v cargo >/dev/null 2>&1; then
+            echo "::error::no release binary and cargo is not installed; either install Rust (e.g. dtolnay/rust-toolchain) before this action or set 'install-command'." >&2
+            exit 1
+          fi
+          # Prefer building this very checkout if present; else the published crate.
+          if [ -f "Cargo.toml" ] && grep -q "nerve-workstation" Cargo.toml 2>/dev/null; then
+            cargo install --path crates/nerve-workstation --bin nerve --locked --force
+          else
+            cargo install nerve-workstation --bin nerve --locked --force
+          fi
+        fi
+
+        command -v nerve >/dev/null 2>&1 || {
+          echo "::error::failed to install 'nerve'" >&2
+          exit 1
+        }
+        echo "Installed nerve: $(command -v nerve)"
+        nerve --version || true
+
+    # ----------------------------------------------------------------------------
+    # (b) Verify: re-run the org's OWN checks against the captured Run and seal a
+    #     signed Receipt. Exit 2 (Inconclusive) when checks.json is absent — never
+    #     a fabricated pass (INV-R1). The gate step below is the authoritative exit.
+    # ----------------------------------------------------------------------------
+    - name: Verify run (seal receipt)
+      shell: bash
+      env:
+        RUN_ID: ${{ inputs.run-id }}
+        ROOT: ${{ inputs.root }}
+        RERUNS: ${{ inputs.reruns }}
+      run: |
+        set -uo pipefail
+        args=(verify "${RUN_ID}" --root "${ROOT}")
+        if [ -n "${RERUNS}" ]; then
+          args+=(--reruns "${RERUNS}")
+        fi
+        echo "+ nerve ${args[*]}"
+        # Do not abort the job on a non-zero verify here; the gate step is the
+        # single authoritative exit so the check-run is still posted.
+        nerve "${args[@]}" || echo "nerve verify exited non-zero (see gate step for the authoritative decision)."
+
+    # ----------------------------------------------------------------------------
+    # (c) Gate: load the sealed Receipt, post a GitHub check-run, and propagate the
+    #     authoritative tri-state exit code (0 pass / 1 fail / 2 inconclusive). A
+    #     non-zero exit here fails the job.
+    # ----------------------------------------------------------------------------
+    - name: Gate on receipt
+      shell: bash
+      env:
+        RUN_ID: ${{ inputs.run-id }}
+        ROOT: ${{ inputs.root }}
+        EMIT: ${{ inputs.emit }}
+        # gh check-run auth: GhCheckRunEmitter shells `gh api`, which reads GH_TOKEN.
+        GH_TOKEN: ${{ env.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+        # On a pull_request event the head SHA is the PR head, not the merge commit.
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        REPO_SLUG: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+        args=(gate --run "${RUN_ID}" --root "${ROOT}" --emit "${EMIT}")
+        if [ "${EMIT}" = "gh" ]; then
+          args+=(--sha "${HEAD_SHA}" --repo "${REPO_SLUG}")
+        fi
+        echo "+ nerve ${args[*]}"
+        nerve "${args[@]}"
+        code=$?
+        echo "nerve gate exit code: ${code} (0=pass 1=fail 2=inconclusive)"
+        exit "${code}"

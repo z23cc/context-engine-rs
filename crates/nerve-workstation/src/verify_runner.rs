@@ -18,13 +18,18 @@
 //! `ProcessLauncher` (cwd-forced, env-scrubbed) is wired. The checkspec source is the
 //! seam: `CheckSpec::load` reads JSON now; a richer/TOML source can slot in behind it.
 
+use crate::ledger_store::{LedgerStore, append_evidence};
+use crate::receipt_store::{ReceiptStore, issue_receipt_for_run};
 use crate::sandbox::{CommandSpec, SandboxLauncher, SandboxPolicy};
+use crate::signer::Signer;
 use crate::verify_store::VerifyStore;
 use anyhow::{Context, Result};
 use nerve_core::CancelToken;
+use nerve_core::ledger::LedgerKind;
 use nerve_core::provenance::Run;
+use nerve_core::receipt::{Receipt, ReceiptCheck};
 use nerve_core::verdict::{
-    CheckKind, CheckResult, CheckStatus, Verdict, build_verdict, hash_checkspec,
+    CheckKind, CheckResult, CheckStatus, Verdict, VerdictStatus, build_verdict, hash_checkspec,
 };
 use nerve_runtime::RuntimeError;
 use serde::Deserialize;
@@ -186,6 +191,85 @@ pub(crate) fn handle_verify_list(
     run_id: Option<&str>,
 ) -> serde_json::Value {
     crate::verify_store::run_verify_list(store, run_id)
+}
+
+/// The L1 ledger + L4 receipt stores a sealed verdict is attested into. Both are
+/// optional: a `None` store makes the corresponding step a best-effort no-op (no served
+/// scope), so the seal tail never fails the verify turn (INV-R2).
+pub(crate) struct AttestStores<'a> {
+    /// The append-only L1 evidence ledger (the Verdict lands here).
+    pub(crate) ledger: Option<&'a LedgerStore>,
+    /// The L4 receipt store (the signed Receipt is persisted + reloaded here).
+    pub(crate) receipt: Option<&'a ReceiptStore>,
+}
+
+/// **The single canonical seal tail** shared by the daemon (`verify.start`) and the CLI
+/// (`nerve verify`): append the sealed [`Verdict`] to the L1 ledger, then issue, sign,
+/// and persist the L4 Verification [`Receipt`] that **borrows** the verdict verbatim
+/// (INV-R1 — never re-derived from the evidence checks). Returns the full persisted
+/// receipt (reloaded from `stores.receipt`) so a caller can report it; `None` when there
+/// is no receipt store (nothing to persist/return) or persistence failed.
+pub(crate) fn seal_and_attest(
+    run: &Run,
+    verdict: &Verdict,
+    stores: &AttestStores,
+    signer: &dyn Signer,
+    issued_at_ms: u64,
+) -> Option<Receipt> {
+    append_evidence(
+        stores.ledger,
+        LedgerKind::Verdict {
+            run_id: verdict.run_id.clone(),
+            diff_hash: verdict.diff_hash.clone(),
+            verdict: verdict.status,
+            checks: verdict.checks.clone(),
+            advisory_llm_judge: None,
+        },
+    );
+    let toolchain_digest =
+        (!run.inputs.toolchain_digest.is_empty()).then(|| run.inputs.toolchain_digest.clone());
+    let issued = issue_receipt_for_run(
+        run,
+        receipt_checks_for(verdict),
+        verdict.status,
+        toolchain_digest,
+        None,
+        None,
+        issued_at_ms,
+        signer,
+        stores.receipt,
+    )?;
+    // Reload the freshly persisted receipt so the caller (CLI gate) gets the full,
+    // signed artifact — not just its id — without forking the issue path.
+    stores.receipt?.load_record(&issued.receipt_id).ok()
+}
+
+/// Map a sealed [`Verdict`]'s per-check results into the receipt's evidence
+/// [`ReceiptCheck`]s. The per-check `verdict` is the pure status mapping (a flaky check
+/// is `Inconclusive`); the aggregate verdict is borrowed separately (INV-R1).
+fn receipt_checks_for(verdict: &Verdict) -> Vec<ReceiptCheck> {
+    verdict
+        .checks
+        .iter()
+        .map(|check| ReceiptCheck {
+            name: check.name.clone(),
+            kind: check.kind,
+            verdict: check_status_to_verdict(check.status),
+            reproducible: check.reproducible,
+            evidence_hash: None,
+        })
+        .collect()
+}
+
+/// Map a per-check [`CheckStatus`] to the [`VerdictStatus`] stamped on its
+/// [`ReceiptCheck`]: pass→Passed, fail→Failed, flaky→Inconclusive, error→Error.
+pub(crate) fn check_status_to_verdict(status: CheckStatus) -> VerdictStatus {
+    match status {
+        CheckStatus::Pass => VerdictStatus::Passed,
+        CheckStatus::Fail => VerdictStatus::Failed,
+        CheckStatus::Flaky => VerdictStatus::Inconclusive,
+        CheckStatus::Error => VerdictStatus::Error,
+    }
 }
 
 /// Load the captured run for `run_id`, mapping an absent store / unknown id to a

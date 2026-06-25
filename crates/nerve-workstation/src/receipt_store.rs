@@ -38,9 +38,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) struct IssuedReceipt {
     /// The receipt's content address (== `statement_id` over the canonical statement).
     pub(crate) receipt_id: String,
-    /// The run the receipt attests to (echoed for the announcing event).
+    /// The run the receipt attests to (echoed for the announcing event). Carried for
+    /// callers that announce a receipt without reloading it; the seal tail reloads the
+    /// full receipt and reads these from there instead.
+    #[allow(dead_code, reason = "receipt identity echoed for announcing callers")]
     pub(crate) run_id: String,
     /// The aggregated org's-own-test verdict carried by the receipt.
+    #[allow(dead_code, reason = "receipt identity echoed for announcing callers")]
     pub(crate) verdict: VerdictStatus,
 }
 
