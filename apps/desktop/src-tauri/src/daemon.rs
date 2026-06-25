@@ -152,28 +152,56 @@ fn wait_ready(port: u16) -> Result<(), String> {
     }
 }
 
-/// Locate the `nerve` binary: an explicit override, a sidecar shipped next to
-/// the app, or — in development — the engine workspace's build output.
+/// Locate the `nerve` binary. Order, by build kind:
+/// - `NERVE_BIN` always wins (explicit override).
+/// - **Dev build** (`tauri dev`): the engine workspace's fresh `target/` build, so a
+///   developer's local `cargo build` is what runs.
+/// - **Packaged build** (`tauri build`): the **brew/PATH-installed** `nerve`, so
+///   `brew upgrade z23cc/tap/nerve-workstation` propagates to the app — without it the
+///   app would keep running the binary bundled at package time, which goes stale.
+/// - The bundled sidecar is only the offline fallback (no brew, not a dev tree).
 fn resolve_binary() -> Result<PathBuf, String> {
     let name = if cfg!(windows) { "nerve.exe" } else { "nerve" };
     if let Some(path) = env_override() {
         return Ok(path);
     }
+    if cfg!(debug_assertions) {
+        if let Some(path) = dev_binary(name) {
+            return Ok(path);
+        }
+    }
+    if let Some(path) = brew_binary(name) {
+        return Ok(path);
+    }
     if let Some(path) = sidecar_binary(name) {
         return Ok(path);
     }
-    if let Some(path) = dev_binary(name) {
-        return Ok(path);
-    }
     Err(format!(
-        "could not locate the `{name}` binary. Set NERVE_BIN to its path, or build it with \
-         `cargo build -p nerve-workstation --bin nerve` in the engine workspace."
+        "could not locate the `{name}` binary. Install it \
+         (`brew install z23cc/tap/nerve-workstation`), set NERVE_BIN to its path, or build it \
+         with `cargo build -p nerve-workstation --bin nerve` in the engine workspace."
     ))
 }
 
 fn env_override() -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var("NERVE_BIN").ok()?.trim());
     path.is_file().then_some(path)
+}
+
+/// The brew/PATH-installed `nerve`, so `brew upgrade` reaches the packaged app. A
+/// Finder-launched GUI inherits a minimal `PATH` (no Homebrew prefix), so probe the
+/// known Homebrew prefixes explicitly first, then fall back to scanning `PATH`.
+fn brew_binary(name: &str) -> Option<PathBuf> {
+    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let candidate = PathBuf::from(prefix).join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// A `nerve` binary shipped alongside the app executable (Tauri sidecar layout),
