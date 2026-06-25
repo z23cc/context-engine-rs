@@ -1,7 +1,8 @@
 //! `runtime/info` handshake validation — the Rust mirror of the TS client's
 //! `validateRuntimeInfo`. Asserts the daemon speaks the exact protocol this
-//! client was compiled against (name `nerve-runtime`, version `3`, the event
-//! method, and all four job methods).
+//! client was compiled against (name `RUNTIME_PROTOCOL_NAME` = `nerve-runtime`,
+//! version `RUNTIME_PROTOCOL_VERSION` = `7`, the event method, and all four job
+//! methods).
 
 use nerve_runtime::protocol::{
     RUNTIME_EVENT_METHOD, RUNTIME_JOB_METHODS, RUNTIME_PROTOCOL_NAME, RUNTIME_PROTOCOL_VERSION,
