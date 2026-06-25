@@ -4,8 +4,9 @@
 //! job to completion and returns the tool's `structuredContent`. Kept out of
 //! `app.rs` to stay under the file-size gate.
 
-use crate::rpc::start_job_await;
+use crate::rpc::{rpc_call, start_job_await};
 use nerve_proto::HostCapabilities;
+use nerve_proto::protocol::RuntimeInfo;
 use serde_json::{Value, json};
 
 /// The local agent CLIs the GUI drives over the delegate path: `(id, label)`.
@@ -91,6 +92,16 @@ pub async fn fetch_host_capabilities(token: &str) -> Result<HostCapabilities, St
     let result = start_job_await(token, json!({ "kind": "host.capabilities" })).await?;
     serde_json::from_value::<HostCapabilities>(result)
         .map_err(|err| format!("Invalid capability response: {err}"))
+}
+
+/// The daemon's live runtime protocol version (`runtime/info` → `protocolVersion`,
+/// e.g. `"7"`). `None` if the call fails, so the sidebar can show a neutral
+/// "runtime" label rather than a stale hardcoded number.
+pub async fn fetch_protocol_version(token: &str) -> Option<String> {
+    rpc_call::<RuntimeInfo>(token, "runtime/info", json!({}))
+        .await
+        .ok()
+        .map(|info| info.protocol_version)
 }
 
 pub async fn pick_host_folder(token: &str, title: &str) -> Result<String, String> {

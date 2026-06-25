@@ -85,6 +85,9 @@ pub fn App() -> impl IntoView {
     let workspaces = RwSignal::new(Vec::<(String, String)>::new());
     let workspace = RwSignal::new(String::new());
     let host_caps = RwSignal::new(None::<nerve_proto::HostCapabilities>);
+    // The daemon's live runtime protocol version (`runtime/info`), shown in the
+    // sidebar status row; `None` until fetched (sidebar shows a neutral label).
+    let protocol_version = RwSignal::new(None::<String>);
     let branch = RwSignal::new("—".to_string());
     // True while the active workspace's branch is being (re)fetched — drives the
     // project rail's loading skeleton instead of flashing the previous repo's branch.
@@ -143,8 +146,12 @@ pub fn App() -> impl IntoView {
             }
             workspaces.set(list);
         });
+        let caps_tok = tok.clone();
         leptos::task::spawn_local(async move {
-            host_caps.set(crate::data::fetch_host_capabilities(&tok).await.ok());
+            host_caps.set(crate::data::fetch_host_capabilities(&caps_tok).await.ok());
+        });
+        leptos::task::spawn_local(async move {
+            protocol_version.set(crate::data::fetch_protocol_version(&tok).await);
         });
     });
 
@@ -482,6 +489,7 @@ pub fn App() -> impl IntoView {
                 branch=branch
                 branch_loading=branch_loading
                 reveal_workspace=reveal_workspace
+                protocol_version=protocol_version
                 busy=Signal::derive(active_busy) />
             <main class="main chat">
                 <Topbar agent=agent model=model mode=mode display=workspace_label branch=branch

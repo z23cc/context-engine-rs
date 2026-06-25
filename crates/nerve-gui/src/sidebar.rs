@@ -253,6 +253,7 @@ pub(crate) fn Sidebar(
     branch: RwSignal<String>,
     branch_loading: RwSignal<bool>,
     reveal_workspace: Callback<()>,
+    protocol_version: RwSignal<Option<String>>,
     busy: Signal<bool>,
 ) -> impl IntoView {
     let thread_typeahead = RwSignal::new(ThreadTypeaheadState::default());
@@ -537,7 +538,12 @@ pub(crate) fn Sidebar(
                 {move || if busy.get() {
                     view! { <span class="dot busy" aria-hidden="true"></span>"running" }.into_any()
                 } else {
-                    view! { <span class="dot idle" aria-hidden="true"></span>"runtime v4" }.into_any()
+                    // Read the live protocol version from `runtime/info` instead of a
+                    // hardcoded number; fall back to a neutral label until it loads.
+                    let label = protocol_version
+                        .get()
+                        .map_or_else(|| "runtime".to_string(), |v| format!("runtime v{v}"));
+                    view! { <span class="dot idle" aria-hidden="true"></span>{label} }.into_any()
                 }}
             </div>
         </aside>
