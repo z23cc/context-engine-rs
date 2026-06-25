@@ -167,14 +167,18 @@ nerve-core       deterministic kernel — CatalogProvider port → immutable Cat
   │   └── nerve-agent   LLM layer — LlmProvider trait + Anthropic/OpenAI-Responses/xAI adapters,
   │                     multi-provider OAuth + credential store, Orchestrator loop, ToolBox port.
   │                     Depends only on nerve-core (for CancelToken). Runtime/protocol-agnostic.
-  └────── nerve-runtime  protocol authority + dispatch hub wrapper + RuntimeToolAdapter registry +
-                         job/event protocol (v3). Depends only on nerve-core.
+  └────── nerve-runtime  dispatch hub wrapper + RuntimeToolAdapter registry + job/event protocol.
+                         Re-exports `nerve-proto` (the protocol authority) unchanged; the contract
+                         version constant `RUNTIME_PROTOCOL_VERSION` is now "7" (additive, drift-
+                         checked). Depends on nerve-core + nerve-proto.
                               ▲
 nerve-workstation   composition root (the `nerve` binary): MCP face (server.rs), daemon face
   ▲                 (daemon/, jobs.rs), CLI (cli.rs), agent wiring (agent.rs = RuntimeToolBox),
-  │                 xAI tools (xai/), thin `nerve auth` alias (auth/ → nerve-agent::auth).
+  │                 trust-substrate stores (run/ledger/verify/receipt/outcome), xAI tools (xai/),
+  │                 thin `nerve auth` alias (auth/ → nerve-agent::auth).
   │
-nerve-tui (+ future GUI/mobile)   clients of the versioned runtime protocol — never the engine.
+nerve-tui · nerve-gui (Leptos wasm CSR) · nerve-wechat (iLink bot bridge)
+                                  clients of the versioned runtime protocol — never the engine.
 ```
 
 `nerve-agent` and `nerve-runtime` are **siblings** (both depend only on `nerve-core`); the binary

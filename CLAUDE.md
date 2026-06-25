@@ -97,7 +97,21 @@ Usage notes that bite if you don't know them:
 
 ## Architecture
 
-Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-agent`} → `nerve-workstation`, with `nerve-tui` a runtime-protocol client of the daemon); the TUI is a client of the protocol, not the engine. The long-term seam/plugin model and the binding invariants live in `docs/designs/architecture-north-star.md` — read it before any structural change.
+Eight Rust crates form a layered seam. The determinism kernel `nerve-core` depends only on the
+wasm-safe protocol-vocabulary crate `nerve-proto`; above the kernel sit the siblings `nerve-runtime`
+and `nerve-agent`, then the `nerve-workstation` binary; `nerve-tui`, `nerve-gui`, and `nerve-wechat`
+are runtime-protocol clients of the daemon, not the engine. The long-term seam/plugin model and the
+binding invariants live in `docs/designs/architecture-north-star.md` — read it before any structural
+change.
+
+- **`crates/nerve-proto`** — the **single protocol authority** and the one internal crate the kernel
+  may depend on: transport-neutral, wasm-safe `serde` vocabulary (the `RuntimeCommand` / `RuntimeEvent`
+  families, the declarative `flow.*` types, the advisory `RiskTier` / `ToolCapability` descriptors, the
+  trust-substrate L0 shapes — `provenance` / `ledger` / `verdict` / `receipt` / `outcome` / `policy` —
+  and the protocol version + method constants). Pure data with **no `nerve-core` dependency** (no
+  tree-sitter / C grammars), so it compiles to `wasm32-unknown-unknown` and the WASM frontend shares
+  the *exact* engine types with no codegen/TS drift. The `#[derive(JsonSchema)]`s are gated behind the
+  `schema` feature (off by default; the export bin and `nerve-runtime` turn it on).
 
 - **`crates/nerve-core`** — the engine, intentionally host-agnostic. All filesystem access goes
   through the `CatalogProvider` port (`port.rs`); operations run against immutable
@@ -106,15 +120,21 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
   (search, read, tree, `codemap`, `repomap`, `navigate`, `edit`, `build_context`, `scout`).
   The transport-neutral MCP dispatch entry point is `dispatch/` (`handle_tool_call*` in
   `dispatch/mod.rs`): it takes a JSON `tools/call` params object and returns a JSON result.
-  Core errors are `NerveError`; dispatch surfaces `DispatchError`.
+  Core errors are `NerveError`; dispatch surfaces `DispatchError`. Its only internal dependency is
+  `nerve-proto`, whose L0 provenance shapes it content-addresses (`provenance.rs`) — pure, so the
+  kernel stays deterministic.
 
 - **`crates/nerve-runtime`** — the runtime seam above the engine: a `WorkspaceResolver` plus
-  optional capability adapters (`RuntimeToolAdapter`) plus the job/event protocol.
-  **This crate's Rust types are the source of truth for the runtime protocol** (Protocol v3 —
-  a JSON-RPC 2.0 subset over newline-delimited JSON). The `export-runtime-protocol` bin emits the
-  schema/constants into `docs/protocol/runtime-v3.*.json`; a Rust drift test (`cargo test
-  -p nerve-runtime`) fails if the committed JSON is stale. Regenerate with
-  `cargo run -p nerve-runtime --bin export-runtime-protocol` after changing protocol types.
+  optional capability adapters (`RuntimeToolAdapter`) plus the job/event protocol. It **re-exports
+  `nerve-proto` unchanged** (so `nerve_runtime::RuntimeCommand` etc. keep resolving) and owns the
+  dispatch-hub wrapper and the job/event machinery — the protocol *vocabulary* lives in `nerve-proto`,
+  the *dispatch* lives here. The wire format is a JSON-RPC 2.0 subset over newline-delimited JSON; the
+  schema file family is `docs/protocol/runtime-v3.*.json` (stable name) while the contract version
+  constant `RUNTIME_PROTOCOL_VERSION` is now `"7"`, bumped **additively** as commands are added
+  (the trust-substrate L-series went v6 → v7). The `export-runtime-protocol` bin emits the
+  schema/constants; a Rust drift test (`cargo test -p nerve-runtime`) fails if the committed JSON is
+  stale. Regenerate with `cargo run -p nerve-runtime --bin export-runtime-protocol` after changing
+  protocol types.
 
 - **`crates/nerve-agent`** — the LLM agent layer (sibling of `nerve-runtime`; depends only on
   `nerve-core`): the `LlmProvider` trait + Anthropic/OpenAI-Responses/xAI adapters, multi-provider
@@ -134,7 +154,20 @@ Five Rust crates form a layered seam (`nerve-core` → {`nerve-runtime`, `nerve-
 - **`crates/nerve-tui`** — the Rust terminal UI: a runtime-protocol client of `nerve daemon`
   (no engine deps). Ships as the `nerve-tui` binary that `nerve chat` launches; `nerve-tui smoke`
   is a no-LLM round-trip (`cargo test -p nerve-tui`).
-- **`crates/nerve-wasm/pkg/`** — gitignored wasm-pack output, not a source crate.
+
+- **`crates/nerve-gui`** — the Leptos **CSR** (client-side-rendered, not SSR) web frontend; a
+  `wasm32-only` client of the daemon over HTTP `/rpc` (JSON-RPC) + `/events` (SSE), never Tauri IPC.
+  It depends on `nerve-proto` (without the `schema` feature) so it deserializes the *exact* engine
+  protocol types. Kept out of `default-members`, so the engine's host `cargo build/test --workspace`
+  never tries to compile it; build it explicitly with `trunk build` (cwd `crates/nerve-gui`). The
+  committed `dist/` is the shipped bundle the daemon serves at `/app`.
+
+- **`crates/nerve-wechat`** — a personal-WeChat (个人微信) **client surface** (sibling of `nerve-tui`,
+  outside the determinism boundary). It bridges Tencent's official iLink Bot gateway (QR login →
+  bearer token, HTTP long-poll) to the daemon: an inbound message maps to a `delegate.start` /
+  `delegate.steer` (read-only by default) via the `NerveControl` seam, with a fail-closed
+  `SenderAllowlist` so only listed WeChat ids can drive an agent. Hosted in the daemon and surfaced in
+  GUI/TUI over the `wechat.*` protocol.
 
 ### Things that aren't obvious from a single file
 
@@ -169,10 +202,11 @@ The long-term architecture and its invariants live in `docs/designs/architecture
 - **Single dispatch hub.** All tool execution goes through `Runtime` (`handle_tool_call*` /
   `handle_command*`); never call `nerve-core` dispatch directly from a host.
 - **Single protocol authority.** The runtime protocol vocabulary is defined **only** in
-  `nerve-runtime`, as transport-neutral data, codegen'd to TS and drift-checked; changes are additive
-  and versioned. `nerve-runtime` never depends on `nerve-agent`; the binary translates protocol data
-  ⇄ domain types. MCP (`server.rs`) is a *separate* external protocol — keep session/agent vocabulary
-  out of it.
+  `nerve-proto` (wasm-safe, zero internal deps), re-exported unchanged by `nerve-runtime`, as
+  transport-neutral data, drift-checked against `docs/protocol/runtime-v3.*.json`; changes are additive
+  and versioned (`RUNTIME_PROTOCOL_VERSION`). `nerve-runtime` never depends on `nerve-agent`; the binary
+  translates protocol data ⇄ domain types. MCP (`server.rs`) is a *separate* external protocol — keep
+  session/agent vocabulary out of it.
 - **Extending the system — use the seam, don't fork an entry point:**
 
   | Adding… | Seam to use |
