@@ -232,7 +232,43 @@ if [[ "$mode" == "bump" ]]; then
     { print }
   ' Cargo.toml >Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
   cargo update --workspace >/dev/null
-  git add Cargo.toml Cargo.lock
+
+  # Keep the Tauri desktop shell pinned to the same engine version so the two
+  # never drift (see Scripts/check-versions.sh). These files live in their OWN
+  # cargo workspace under apps/desktop, so the workspace awk above never touches
+  # them; rewrite their version strings explicitly and stage them in this commit.
+  DESKTOP_FILES=(
+    apps/desktop/src-tauri/tauri.conf.json
+    apps/desktop/package.json
+    apps/desktop/src-tauri/Cargo.toml
+  )
+  # tauri.conf.json + package.json: rewrite the first top-level "version": "...".
+  # The 1,/re/ range bounds the s/// to the FIRST match (portable across BSD and
+  # GNU sed; the 0,/re/s//repl/ empty-regex idiom is GNU-only and silently no-ops
+  # on macOS BSD sed).
+  jver='"version": "[0-9]+\.[0-9]+\.[0-9]+"'
+  sed -i.bak -E "1,/$jver/ s/$jver/\"version\": \"$NEW\"/" \
+    apps/desktop/src-tauri/tauri.conf.json
+  sed -i.bak -E "1,/$jver/ s/$jver/\"version\": \"$NEW\"/" \
+    apps/desktop/package.json
+  # Cargo.toml: rewrite the [package] version line only (first version = "..." line).
+  cver='^version = "[0-9]+\.[0-9]+\.[0-9]+"'
+  sed -i.bak -E "1,/$cver/ s/$cver/version = \"$NEW\"/" \
+    apps/desktop/src-tauri/Cargo.toml
+  rm -f apps/desktop/src-tauri/tauri.conf.json.bak \
+        apps/desktop/package.json.bak \
+        apps/desktop/src-tauri/Cargo.toml.bak
+  # Refresh the desktop Cargo.lock's nerve-desktop pin if it tracks the version.
+  if [[ -f apps/desktop/src-tauri/Cargo.lock ]]; then
+    awk -v new="$NEW" '
+      /^name = "nerve-desktop"$/ { print; getline; print "version = \"" new "\""; next }
+      { print }
+    ' apps/desktop/src-tauri/Cargo.lock >apps/desktop/src-tauri/Cargo.lock.tmp \
+      && mv apps/desktop/src-tauri/Cargo.lock.tmp apps/desktop/src-tauri/Cargo.lock
+    DESKTOP_FILES+=(apps/desktop/src-tauri/Cargo.lock)
+  fi
+
+  git add Cargo.toml Cargo.lock "${DESKTOP_FILES[@]}"
   git commit -m "release: $TAG"
 fi
 

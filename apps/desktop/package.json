@@ -1,7 +1,7 @@
 {
   "name": "nerve-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.74",
   "type": "module",
   "description": "Tauri desktop shell for the Nerve Workstation daemon GUI.",
   "scripts": {
