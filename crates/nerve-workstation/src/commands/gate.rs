@@ -16,11 +16,9 @@
 //! that runs `nerve gate` and honours its exit code is a complete merge gate. The
 //! [`CheckRunEmitter`] seam is the deferred-infra hook for auto-posting a check run.
 //!
-//! WAVE-B CHECKPOINT: this module is complete + unit-tested, but its CLI entry points
-//! (`nerve verify` / `nerve gate`) are not yet wired into `cli.rs` — that needs a small
-//! `run() -> Result<()>`-vs-`ExitCode` convention change, landed in the finalization
-//! increment. The whole-module `dead_code` allow holds until then.
-#![allow(dead_code)]
+//! Wired into `cli.rs` as `nerve verify` / `nerve gate`; each returns its raw exit
+//! code (`i32`) so the CLI arm can `std::process::exit` with it — the exit code is the
+//! authoritative gate output.
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
@@ -28,7 +26,7 @@ use nerve_core::receipt::Receipt;
 use nerve_core::receipt_gate::{GateOutcome, gate_outcome};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::Command;
 
 /// `nerve verify <run_id>` — re-verify a captured run by re-running the org's checks
 /// in the closure and sealing a Receipt. Until the L2 verify handle is wired into the
@@ -147,10 +145,10 @@ impl CheckRunEmitter for GhCheckRunEmitter {
 }
 
 /// `nerve verify`: fetch the sealed Receipt for a run and report its gate decision.
-/// Returns the gate's [`ExitCode`] so the calling CLI arm can propagate it to CI. A
+/// Returns the gate's exit code so the calling CLI arm can propagate it to CI. A
 /// missing receipt is the honest `verify_not_available` (neutral exit 2) — never a
 /// fabricated pass (INV-R1).
-pub(crate) fn verify(args: VerifyArgs) -> Result<ExitCode> {
+pub(crate) fn verify(args: VerifyArgs) -> Result<i32> {
     let root = resolve_root(args.root)?;
     match load_receipt_for_run(&root, &args.run_id)? {
         Some(receipt) => report_receipt(&receipt, args.json),
@@ -170,14 +168,14 @@ pub(crate) fn verify(args: VerifyArgs) -> Result<ExitCode> {
                     args.run_id
                 );
             }
-            Ok(ExitCode::from(2))
+            Ok(2)
         }
     }
 }
 
 /// `nerve gate`: load a sealed Receipt, decide the merge outcome, optionally post a
 /// check run, and exit with the authoritative code.
-pub(crate) fn gate(args: GateArgs) -> Result<ExitCode> {
+pub(crate) fn gate(args: GateArgs) -> Result<i32> {
     let receipt = read_receipt(&args.receipt)?;
     let outcome = gate_outcome(&receipt);
     let emitter = select_emitter(&args.emit)?;
@@ -193,7 +191,7 @@ pub(crate) fn gate(args: GateArgs) -> Result<ExitCode> {
         );
     }
     print_outcome(&outcome, args.json);
-    Ok(ExitCode::from(outcome.exit_code as u8))
+    Ok(outcome.exit_code)
 }
 
 /// Pick the [`CheckRunEmitter`] for `--emit`. `gitlab` is reserved (the seam exists;
@@ -209,10 +207,10 @@ fn select_emitter(emit: &str) -> Result<Box<dyn CheckRunEmitter>> {
 }
 
 /// Render a receipt's gate decision and return its exit code (shared by `verify`).
-fn report_receipt(receipt: &Receipt, as_json: bool) -> Result<ExitCode> {
+fn report_receipt(receipt: &Receipt, as_json: bool) -> Result<i32> {
     let outcome = gate_outcome(receipt);
     print_outcome(&outcome, as_json);
-    Ok(ExitCode::from(outcome.exit_code as u8))
+    Ok(outcome.exit_code)
 }
 
 /// Emit the outcome (JSON or one human line) to stdout.
@@ -345,7 +343,7 @@ mod tests {
             json: false,
         })
         .unwrap();
-        assert_eq!(code, ExitCode::from(0));
+        assert_eq!(code, 0);
     }
 
     #[test]
@@ -386,7 +384,7 @@ mod tests {
             json: false,
         })
         .unwrap();
-        assert_eq!(code, ExitCode::from(2));
+        assert_eq!(code, 2);
     }
 
     #[test]

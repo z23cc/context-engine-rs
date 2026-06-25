@@ -134,12 +134,14 @@ impl ReceiptStore {
 /// so the statement's content address stays reproducible for a fixed clock + key.
 ///
 /// **Best-effort:** a missing store or a write failure yields `None` and never
-/// propagates into the delegated turn. Empty `checks` honestly aggregates to
-/// [`VerdictStatus::Inconclusive`] (no bar exercised — INV-R1), not a fabricated pass.
+/// propagates into the delegated turn. `verdict` is the **borrowed** org verdict (the
+/// sealed L2 [`Verdict::status`](nerve_core::verdict::Verdict)); it is carried verbatim
+/// into the statement, never re-derived from `checks` (INV-R1).
 #[allow(clippy::too_many_arguments)] // reason: 1:1 binding of the receipt's provenance fields
 pub(crate) fn issue_receipt_for_run(
     run: &Run,
     checks: Vec<ReceiptCheck>,
+    verdict: nerve_core::verdict::VerdictStatus,
     toolchain_digest: Option<String>,
     policy_version: Option<String>,
     ledger_ref: Option<LedgerRef>,
@@ -150,6 +152,7 @@ pub(crate) fn issue_receipt_for_run(
     let statement = nerve_core::receipt::build_statement(
         run,
         checks,
+        verdict,
         toolchain_digest,
         policy_version,
         ledger_ref,
@@ -340,6 +343,7 @@ mod tests {
         let issued = issue_receipt_for_run(
             &run,
             vec![passing_check()],
+            VerdictStatus::Passed,
             Some("toolchain-x".into()),
             Some("policy-1".into()),
             None,
@@ -372,6 +376,9 @@ mod tests {
         let issued = issue_receipt_for_run(
             &sample_run("no checks"),
             vec![],
+            // The org's L2 verdict for a no-required-bar run is Inconclusive; the
+            // receipt borrows it verbatim (never a fabricated pass — INV-R1).
+            VerdictStatus::Inconclusive,
             None,
             None,
             None,
@@ -390,6 +397,7 @@ mod tests {
         let issued = issue_receipt_for_run(
             &sample_run("ephemeral"),
             vec![passing_check()],
+            VerdictStatus::Passed,
             None,
             None,
             None,
@@ -409,6 +417,7 @@ mod tests {
         let issued = issue_receipt_for_run(
             &sample_run("fetch me"),
             vec![passing_check()],
+            VerdictStatus::Passed,
             None,
             None,
             None,
@@ -439,6 +448,7 @@ mod tests {
             issue_receipt_for_run(
                 &sample_run(task),
                 vec![passing_check()],
+                VerdictStatus::Passed,
                 None,
                 None,
                 None,
@@ -473,8 +483,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = ReceiptStore::new(dir.path().to_path_buf());
         let signer = LocalEd25519Signer::deterministic_test_key();
-        let stmt =
-            nerve_core::receipt::build_statement(&sample_run("x"), vec![], None, None, None, 1);
+        let stmt = nerve_core::receipt::build_statement(
+            &sample_run("x"),
+            vec![],
+            VerdictStatus::Inconclusive,
+            None,
+            None,
+            None,
+            1,
+        );
         let (sig, pk) = signer.sign(&nerve_core::receipt::dsse_pae(
             RECEIPT_PREDICATE_TYPE,
             &nerve_core::receipt::canonical_statement_bytes(&stmt),

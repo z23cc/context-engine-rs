@@ -32,6 +32,10 @@ enum CommandKind {
     Install(commands::install::InstallArgs),
     /// Interactive terminal chat client (forwards to the bundled `nerve-tui`).
     Chat(commands::chat::ChatArgs),
+    /// Re-verify a captured run against its sealed Verification Receipt (L2/L4).
+    Verify(commands::gate::VerifyArgs),
+    /// Translate a sealed Receipt into a merge-gate decision + exit code (L5).
+    Gate(commands::gate::GateArgs),
     /// EXPERIMENTAL: run a declarative agent-orchestration workflow (C1). Hidden
     /// from help; off-protocol, the WorkflowDef shape is not yet a stable contract.
     #[command(hide = true)]
@@ -89,6 +93,16 @@ pub(crate) fn run() -> Result<()> {
         CommandKind::Agent(args) => agent::run(args),
         CommandKind::Install(args) => commands::install::install(args),
         CommandKind::Chat(args) => commands::chat::chat(args),
+        // verify/gate are CI surfaces whose exit code IS the gate output, so propagate
+        // it to the process (never returns on the Ok path; `?` surfaces a real error).
+        CommandKind::Verify(args) => {
+            let code = commands::gate::verify(args)?;
+            std::process::exit(code)
+        }
+        CommandKind::Gate(args) => {
+            let code = commands::gate::gate(args)?;
+            std::process::exit(code)
+        }
         CommandKind::Flow(args) => match args.command {
             FlowCommand::Run(flow_args) => commands::flow::run(flow_args),
         },
@@ -98,6 +112,16 @@ pub(crate) fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_parses_verify_and_gate() {
+        let verify = Cli::try_parse_from(["nerve", "verify", "run-abc", "--root", "."])
+            .expect("verify parse");
+        assert!(matches!(verify.command, CommandKind::Verify(_)));
+        let gate = Cli::try_parse_from(["nerve", "gate", "--receipt", "r.json", "--emit", "gh"])
+            .expect("gate parse");
+        assert!(matches!(gate.command, CommandKind::Gate(_)));
+    }
 
     #[test]
     fn cli_parses_daemon_mcp_and_auth() {

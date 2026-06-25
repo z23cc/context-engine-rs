@@ -91,19 +91,27 @@ pub fn replay_manifest_for(run: &Run) -> ReplayManifest {
 
 /// Assemble the unsigned [`ReceiptStatement`] for a run: the in-toto-style predicate
 /// type, the run's provenance (inputs hash + optional toolchain/policy/ledger refs),
-/// the per-check results, the aggregated verdict, the replay manifest, and the
+/// the per-check results, the **borrowed** verdict, the replay manifest, and the
 /// host-supplied issue time. Pure — `issued_at_ms` is a param, never `now()`.
+///
+/// **INV-R1 (court reporter):** `verdict` is the org's own sealed verdict (the L2
+/// [`Verdict::status`](crate::verdict::Verdict), which honours the per-check `required`
+/// mask), passed in and echoed verbatim — it is NOT re-derived from `checks`. The
+/// `checks` are carried as *evidence* only. Re-aggregating here would let the receipt
+/// assert a stricter-or-looser verdict than the org granted (e.g. an all-advisory
+/// checkspec minting a PASS); borrowing forbids that. Callers that have no sealed
+/// verdict can compute one with [`aggregate_verdict`] and pass it explicitly.
 #[allow(clippy::too_many_arguments)] // reason: faithful 1:1 binding of the statement's fields
 #[must_use]
 pub fn build_statement(
     run: &Run,
     checks: Vec<ReceiptCheck>,
+    verdict: VerdictStatus,
     toolchain_digest: Option<String>,
     policy_version: Option<String>,
     ledger_ref: Option<LedgerRef>,
     issued_at_ms: u64,
 ) -> ReceiptStatement {
-    let verdict = aggregate_verdict(&checks);
     ReceiptStatement {
         predicate_type: RECEIPT_PREDICATE_TYPE.to_string(),
         provenance: ReceiptProvenance {
@@ -316,24 +324,44 @@ mod tests {
     }
 
     #[test]
-    fn build_statement_aggregates_verdict_and_binds_provenance() {
+    fn build_statement_borrows_the_verdict_and_binds_provenance() {
         let run = sample_run();
+        // The verdict is BORROWED, not re-derived from `checks`: pass Passed even though
+        // a carried check Failed (it was advisory at L2) — the receipt echoes Passed.
+        // Re-aggregating would have fabricated a Failed the org never granted (INV-R1).
         let stmt = build_statement(
             &run,
-            vec![check("test", VerdictStatus::Passed)],
+            vec![
+                check("required", VerdictStatus::Passed),
+                check("advisory", VerdictStatus::Failed),
+            ],
+            VerdictStatus::Passed,
             Some("toolchain-x".into()),
             Some("policy-1".into()),
             None,
             5000,
         );
         assert_eq!(stmt.predicate_type, RECEIPT_PREDICATE_TYPE);
-        assert_eq!(stmt.verdict, VerdictStatus::Passed);
+        assert_eq!(
+            stmt.verdict,
+            VerdictStatus::Passed,
+            "verdict is borrowed verbatim, not re-aggregated from the evidence checks"
+        );
         assert_eq!(stmt.provenance.run_id, run.run_id);
         assert_eq!(stmt.provenance.inputs_hash, hash_inputs(&run));
         assert_eq!(stmt.issued_at_ms, 5000);
-        // Empty checks honestly yields Inconclusive.
-        let empty = build_statement(&run, vec![], None, None, None, 5000);
-        assert_eq!(empty.verdict, VerdictStatus::Inconclusive);
+        // An Inconclusive org verdict (e.g. all-advisory checkspec) is carried through
+        // verbatim — never silently upgraded to a fabricated pass.
+        let inconclusive = build_statement(
+            &run,
+            vec![check("advisory", VerdictStatus::Passed)],
+            VerdictStatus::Inconclusive,
+            None,
+            None,
+            None,
+            5000,
+        );
+        assert_eq!(inconclusive.verdict, VerdictStatus::Inconclusive);
     }
 
     #[test]
@@ -351,6 +379,7 @@ mod tests {
         let stmt = build_statement(
             &run,
             vec![check("t", VerdictStatus::Passed)],
+            VerdictStatus::Passed,
             None,
             None,
             None,
@@ -372,6 +401,7 @@ mod tests {
         let stmt = build_statement(
             &run,
             vec![check("t", VerdictStatus::Passed)],
+            VerdictStatus::Passed,
             None,
             None,
             None,
@@ -389,6 +419,7 @@ mod tests {
         let stmt = build_statement(
             &run,
             vec![check("t", VerdictStatus::Passed)],
+            VerdictStatus::Passed,
             None,
             None,
             None,

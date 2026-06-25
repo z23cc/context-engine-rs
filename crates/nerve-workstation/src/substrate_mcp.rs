@@ -6,9 +6,13 @@
 //! (`nerve_verify`).
 //!
 //! **Court reporter, not judge (INV-R1).** `nerve_verify` NEVER fabricates a verdict:
-//! until the synchronous L2 verify handle is wired in, it returns an already-sealed
-//! Receipt for the run, or — when none exists — `{"status":"verify_not_available"}`.
-//! It can report what cleared the org's bar; it cannot invent that it did.
+//! it re-verifies an already-sealed Receipt offline (the statement re-hashes to the
+//! receipt id, and the detached ed25519 signature checks out over the PAE), reports the
+//! receipt's OWN borrowed verdict, or — when none exists — `verify_not_available`. It
+//! reports what cleared the org's bar; it cannot invent that it did. It also surfaces
+//! `signed_by` + a `trust_note`: `signature_valid` proves consistency with the receipt's
+//! embedded key, NOT issuer trust — pinning `keyid` against a known org key (or the
+//! deferred sigstore-keyless backend) is what defends against a forged receipt.
 //!
 //! This adapter is read-only over the served `<root>/.nerve/` flat-file stores. It is
 //! deliberately decoupled from the sibling `RunStore`/`ReceiptStore` types (it reads
@@ -57,9 +61,11 @@ impl SubstrateToolAdapter {
             ),
             tool_spec::<VerifyArgs>(
                 "nerve_verify",
-                "Report the verification verdict for a captured run. Returns the run's sealed \
-                 Receipt if one exists, else {\"status\":\"verify_not_available\"} — it never \
-                 fabricates a verdict (court reporter, not judge).",
+                "Re-verify a captured run's sealed Receipt offline: confirms the statement \
+                 re-hashes to the receipt id (untampered) and the detached ed25519 signature \
+                 checks out, then reports statement_intact + signature_valid + the receipt's \
+                 own verdict. Returns {\"status\":\"verify_not_available\"} when no receipt \
+                 exists — it never fabricates a verdict (court reporter, not judge).",
             ),
         ]
     }
@@ -138,13 +144,50 @@ fn handle_receipt(args: ReceiptArgs, root: Option<&Path>) -> Result<Value, Runti
     Ok(json!({ "receipts": receipts }))
 }
 
-/// `nerve_verify`: the run's sealed Receipt, or `verify_not_available` — NEVER a
-/// fabricated verdict (INV-R1). The synchronous re-run is the L2 handle (deferred).
+/// `nerve_verify`: the run's sealed Receipt re-verified — its statement re-hashes to
+/// the receipt id (no tampering) and its ed25519 signature checks out over the PAE —
+/// or `verify_not_available`. NEVER a fabricated verdict (INV-R1); the reported verdict
+/// is the receipt's own, borrowed from the org's tests. The synchronous re-run is the
+/// L2 handle (deferred).
 fn handle_verify(run_id: String, root: Option<&Path>) -> Result<Value, RuntimeError> {
-    match find_receipt_for_run(&receipts_dir(root), &run_id) {
-        Some(receipt) => Ok(json!({ "run_id": run_id, "status": "verified", "receipt": receipt })),
-        None => Ok(json!({ "run_id": run_id, "status": "verify_not_available" })),
-    }
+    let Some(receipt_value) = find_receipt_for_run(&receipts_dir(root), &run_id) else {
+        return Ok(json!({ "run_id": run_id, "status": "verify_not_available" }));
+    };
+    // Re-verify the receipt offline: content address + detached ed25519 signature.
+    let verification =
+        serde_json::from_value::<nerve_core::receipt::Receipt>(receipt_value.clone())
+            .ok()
+            .map(|receipt| {
+                nerve_core::receipt::verify_receipt(&receipt, crate::signer::ed25519_verify)
+            });
+    let (statement_intact, signature_valid) = verification
+        .as_ref()
+        .map_or((false, false), |v| (v.statement_intact, v.signature_valid));
+    // Surface the signing identity so a consumer can decide trust. CRUCIAL HONESTY
+    // (INV-R1): `signature_valid` only proves the signature is consistent with the key
+    // the receipt CARRIES — a receipt forged under an attacker's own key still validates.
+    // Establishing issuer trust requires pinning `keyid` against a known org key (or the
+    // deferred sigstore-keyless backend); without that pin, treat a receipt found in an
+    // untrusted location as unproven provenance.
+    let keyid = receipt_value
+        .pointer("/signature/keyid")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let backend = receipt_value
+        .pointer("/signature/backend")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Ok(json!({
+        "run_id": run_id,
+        "status": "verified",
+        "statement_intact": statement_intact,
+        "signature_valid": signature_valid,
+        "signed_by": { "keyid": keyid, "backend": backend },
+        "trust_note": "signature_valid proves consistency with the receipt's OWN embedded \
+            key, not issuer trust — pin keyid against a known org key (or use sigstore) to \
+            defend against a forged receipt.",
+        "receipt": receipt_value,
+    }))
 }
 
 /// Project a full captured-run value into the `nerve_runs` summary shape.

@@ -790,6 +790,9 @@ impl JobManager {
         if let Some(issued) = crate::receipt_store::issue_receipt_for_run(
             &run,
             checks,
+            // Borrow the sealed L2 verdict (honours the `required` mask) — never
+            // re-derive a stricter/looser one from the evidence checks (INV-R1).
+            verdict.status,
             toolchain_digest,
             None,
             None,

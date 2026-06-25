@@ -14,12 +14,6 @@
 //! `config_home/keys/`. Sigstore keyless signing (Fulcio/Rekor) is the deferred
 //! upgrade behind the same trait — see [`SigstoreKeylessSigner`].
 
-// WAVE-B CHECKPOINT: the signing half (sign / load_or_create) is wired into the
-// verify→receipt flow; the verification half (ed25519_verify / decode_*) + the
-// deterministic test key serve the receipt-verification path (the deferred `nerve
-// verify`/MCP `nerve_verify` finalization), so they are dead until that lands.
-#![allow(dead_code)]
-
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use std::fs;
@@ -62,6 +56,10 @@ impl LocalEd25519Signer {
     /// A fixed, well-known signing key derived from a constant 32-byte seed — the
     /// MANDATORY key for golden receipt tests (RISK §6). With this key and a fixed
     /// `issued_at_ms`, a receipt's signature is byte-stable across machines.
+    #[allow(
+        dead_code,
+        reason = "fixed golden-receipt test key (RISK §6); test-only"
+    )]
     pub(crate) fn deterministic_test_key() -> Self {
         // A fixed, non-secret seed: byte i = i. Never used for a real receipt.
         let seed: [u8; 32] = std::array::from_fn(|i| i as u8);
