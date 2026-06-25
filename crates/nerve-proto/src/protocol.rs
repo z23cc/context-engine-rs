@@ -8,6 +8,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
+// v8 (trust-substrate L0 granularity): additive `tool_started` / `tool_finished`
+// `EventKind`s on the run-capture tape — they index *which* tools an agent ran,
+// files it edited, and commands it executed (lifted from claude `tool_use` /
+// `tool_result` + codex `command_execution` / `file_change`). New serde-tagged enum
+// variants appended after the pre-existing kinds only: a run using none of them
+// serializes and content-addresses byte-for-byte as before, so a v7 client (and
+// every existing run_id) keeps working.
 // v6 (trust-substrate, L0 flight-recorder): additive read-only `run.list` /
 // `run.get` commands + the `run_recorded` event + the `provenance` shapes
 // (`Run` / `Event` / `EventKind` / `LedgerEntry`) reachable from the exported
@@ -29,7 +36,7 @@ pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
 // RunInputs + Attestation on Run (RUN_SCHEMA_VERSION 1→2); and the verdict / ledger /
 // policy / receipt / outcome schema roots. Additive serde-tagged variants and new
 // schema-roots only — a v6 client keeps working.
-pub const RUNTIME_PROTOCOL_VERSION: &str = "7";
+pub const RUNTIME_PROTOCOL_VERSION: &str = "8";
 pub const RUNTIME_DAEMON_NAME: &str = "nerve";
 pub const RUNTIME_EVENT_METHOD: &str = "runtime/event";
 pub const RUNTIME_INFO_METHOD: &str = "runtime/info";

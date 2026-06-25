@@ -543,7 +543,7 @@
       "type": "object"
     },
     "EventKind": {
-      "description": "One typed, replayable step in a captured run's tape (`trust-substrate.md`\n§5 `Event.kind`). Internally tagged (`{\"kind\": \"...\", ...}`), mirroring\n[`crate::FlowDecisionKind`] / [`crate::AgentEventKind`] so the audit trail is\ngolden-diffable. The set is intentionally small and **execution-grounded** —\nonly events a real delegated CLI run actually produces today. Tool-lifecycle\nkinds (`tool_started` / `tool_finished`) are deliberately absent: the external\nCLIs emit raw text, not parsed tool structure, so a reserved-but-unfilled kind\nwould be dead protocol. Additive: new kinds may be appended.",
+      "description": "One typed, replayable step in a captured run's tape (`trust-substrate.md`\n§5 `Event.kind`). Internally tagged (`{\"kind\": \"...\", ...}`), mirroring\n[`crate::FlowDecisionKind`] / [`crate::AgentEventKind`] so the audit trail is\ngolden-diffable. The set is intentionally small and **execution-grounded** —\nonly events a real delegated CLI run actually produces today. The tool-lifecycle\nkinds (`tool_started` / `tool_finished`) lift the structured tool calls the agent\nstreams DO carry — claude `tool_use` / `tool_result` content blocks, codex\n`command_execution` / `file_change` items — into a queryable index of *which*\ntools ran, files were edited, and commands executed (the full inputs/outputs also\nremain verbatim in the raw `Output` lines). They are appended AFTER the\npre-existing variants, so a run that uses none of them serializes — and\ncontent-addresses — byte-for-byte as before. Additive: new kinds may be appended.",
       "oneOf": [
         {
           "description": "The run began: which agent, the delegated task text, and the working dir.\n`inputs` is the L0c pinned closure (repo snapshot + toolchain digest) hashed\nin-band; absent on a legacy/unpinned run, so an omitted `inputs` reproduces\nthe pre-L0c content address byte-for-byte.",
@@ -723,6 +723,76 @@
           "required": [
             "kind",
             "ok"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool / command the delegated agent invoked, lifted from the agent's own\nstructured stream (claude `tool_use` content blocks; codex\n`command_execution` / `file_change` items). `tool` is the vendor tool name\n(e.g. \"Bash\", \"Edit\", \"Read\"); `title` is a bounded human-identifying summary\n— the file path for file tools, the command for a shell tool — truncated to\n<= 200 chars (never a float); `args_hash` is the SHA-256 of the canonical args\nJSON (the full inputs also remain verbatim in the raw `Output` lines, so this\nis a queryable index, not the only copy). Appended AFTER the pre-existing\nvariants so a run using none of them serializes — and content-addresses —\nbyte-for-byte as before (L0 granularity, additive; INV-R2/INV-R5).",
+          "properties": {
+            "args_hash": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "tool_started",
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "tool",
+            "args_hash"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The result of a tool the agent invoked. `ok` is the tool's success as the\nagent stream reported it; `output_hash` is the SHA-256 of the tool output.",
+          "properties": {
+            "kind": {
+              "const": "tool_finished",
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "output_hash": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "tool",
+            "ok",
+            "output_hash"
           ],
           "type": "object"
         }

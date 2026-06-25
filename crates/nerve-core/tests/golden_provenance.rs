@@ -86,3 +86,69 @@ fn golden_run_hash() {
         "events": run.events,
     }));
 }
+
+/// THE additive-invariance lock (Wave 2): a tape of ONLY the pre-existing variants
+/// (RunStarted/TurnStarted/Output/UsageUpdated/TurnFinished/RunFinished) must
+/// content-address to the EXACT same hex it produced before the `tool_started` /
+/// `tool_finished` `EventKind`s were appended. The literal below was computed from
+/// the code at this commit and pasted verbatim — so a future change that perturbs
+/// the canonical bytes of any old variant (a field reorder, a serde-tag change, a
+/// new field that isn't `skip`ped) flips this and fails CI loudly, proving every
+/// already-recorded `run_id` is unperturbed (INV-R2: the content address can't drift).
+#[test]
+fn additive_invariance_pre_existing_tape_root_hash_is_locked() {
+    let events = vec![
+        ev(
+            0,
+            EventKind::RunStarted {
+                agent: "claude".into(),
+                task: "fix the flaky test".into(),
+                cwd: Some("/repo".into()),
+                inputs: None,
+            },
+        ),
+        ev(1, EventKind::TurnStarted { turn: 0 }),
+        ev(
+            2,
+            EventKind::Output {
+                turn: 0,
+                text: "editing src/lib.rs".into(),
+            },
+        ),
+        ev(
+            3,
+            EventKind::UsageUpdated {
+                turn: 0,
+                input_tokens: 500,
+                output_tokens: 120,
+                cache_read_tokens: 64,
+                cache_creation_tokens: 0,
+                cost_micro_usd: Some(1500),
+            },
+        ),
+        ev(4, EventKind::TurnFinished { turn: 0, ok: true }),
+        ev(
+            5,
+            EventKind::RunFinished {
+                ok: true,
+                exit_code: Some(0),
+                timed_out: false,
+            },
+        ),
+    ];
+    let run = build_run(
+        "fixed-session",
+        "claude",
+        Some("/repo".into()),
+        1_000,
+        Some(2_000),
+        true,
+        events,
+        nerve_core::provenance::RunInputs::default(),
+    );
+    assert_eq!(
+        run.root_hash, "5d1bffb6c386eea10b5b65bdc5bb794e56325db018e59ceb099b6ccb1904a4af",
+        "appending tool-lifecycle EventKinds must NOT perturb a tape that uses none \
+         of them — every existing run_id stays byte-stable"
+    );
+}

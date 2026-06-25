@@ -1506,6 +1506,13 @@ impl JobManager {
                     turn: 0,
                     text: line.to_string(),
                 });
+                // L0 granularity: index the tools/commands/edits this line carries,
+                // in tape order right after its raw Output (gemini -> empty).
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                    for kind in delegate_runtime::parse_tool_events(resolved, &value, 0) {
+                        writer.push(kind);
+                    }
+                }
                 if let Some(text) = parser.ingest(line) {
                     emit(RuntimeEvent::delegate_progress(
                         job.clone(),
@@ -1583,6 +1590,7 @@ impl JobManager {
         finished: bool,
     ) {
         use nerve_core::provenance::EventKind;
+        let resolved = DelegateAgent::from_name(agent).ok();
         let root = self.delegate_root().ok().map(|p| p.display().to_string());
         let mut writer = crate::run_store::RunWriter::begin_at(started_at_ms, job_id, agent, root);
         writer.push(EventKind::RunStarted {
@@ -1606,6 +1614,15 @@ impl JobManager {
                     turn,
                     text: line.clone(),
                 });
+                // L0 granularity: index this turn's tool calls in tape order right
+                // after their raw Output (gemini / unknown agent -> empty).
+                if let Some(resolved) = resolved
+                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+                {
+                    for kind in delegate_runtime::parse_tool_events(resolved, &value, turn) {
+                        writer.push(kind);
+                    }
+                }
             }
             if let Some(usage) = &captured.usage {
                 writer.push(delegate_usage_event(turn, usage, captured.cost_usd));

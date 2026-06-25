@@ -35,6 +35,18 @@ pub fn hash_event(event: &Event) -> String {
     hex(Sha256::digest(bytes).as_slice())
 }
 
+/// Lowercase-hex SHA-256 over a JSON value's canonical bytes — the digest that
+/// fills the `args_hash` / `output_hash` fields of the tool-lifecycle
+/// [`EventKind`]s. `serde_json` emits object keys in sorted order (no
+/// `preserve_order` feature), so the bytes are canonical and the digest is
+/// deterministic; capture (in `nerve-workstation`) calls this so the hashing stays
+/// pure and above-the-boundary code never reimplements it (INV-R2).
+#[must_use]
+pub fn hash_canonical_json(value: &serde_json::Value) -> String {
+    let bytes = serde_json::to_vec(value).expect("Value serializes infallibly");
+    hex(Sha256::digest(bytes).as_slice())
+}
+
 /// Fold an ordered tape into its content-addressed spine. For each event,
 /// `chained[n] = sha256(chained[n-1] || event_hash[n])` with `chained[-1] = ""`;
 /// the returned root is `chained[last]` (`""` for an empty tape). Each
@@ -228,6 +240,60 @@ mod tests {
         let (ledger, root) = build_ledger(&[]);
         assert!(ledger.is_empty());
         assert_eq!(root, "");
+    }
+
+    #[test]
+    fn hash_canonical_json_is_stable_and_key_order_independent() {
+        use serde_json::json;
+        // Same logical value built in two key orders -> same canonical digest
+        // (serde_json sorts object keys when `preserve_order` is off).
+        let a = json!({ "command": "cargo test", "cwd": "/repo" });
+        let b = json!({ "cwd": "/repo", "command": "cargo test" });
+        assert_eq!(hash_canonical_json(&a), hash_canonical_json(&b));
+        assert_eq!(hash_canonical_json(&a).len(), 64);
+        // A different payload differs.
+        let c = json!({ "command": "cargo build", "cwd": "/repo" });
+        assert_ne!(hash_canonical_json(&a), hash_canonical_json(&c));
+    }
+
+    #[test]
+    fn tool_lifecycle_events_hash_deterministically_and_distinguish_content() {
+        // A tape that USES the new ToolStarted/ToolFinished variants seals
+        // deterministically (same tape -> same content address) and a different
+        // tool/title/hash yields a different address.
+        let tape_with_tools = |title: &str, args_hash: &str| {
+            vec![
+                ev(0, EventKind::TurnStarted { turn: 0 }),
+                ev(
+                    1,
+                    EventKind::ToolStarted {
+                        turn: 0,
+                        tool: "Edit".into(),
+                        title: Some(title.into()),
+                        args_hash: args_hash.into(),
+                    },
+                ),
+                ev(
+                    2,
+                    EventKind::ToolFinished {
+                        turn: 0,
+                        tool: "Edit".into(),
+                        ok: true,
+                        title: Some(title.into()),
+                        output_hash: "ff".into(),
+                    },
+                ),
+            ]
+        };
+        let (_, root_a) = build_ledger(&tape_with_tools("src/a.rs", "aa"));
+        let (_, root_again) = build_ledger(&tape_with_tools("src/a.rs", "aa"));
+        assert_eq!(root_a, root_again, "same tool tape -> same content address");
+        // A different title distinguishes content.
+        let (_, root_b) = build_ledger(&tape_with_tools("src/b.rs", "aa"));
+        assert_ne!(root_a, root_b);
+        // A different args_hash distinguishes content.
+        let (_, root_c) = build_ledger(&tape_with_tools("src/a.rs", "bb"));
+        assert_ne!(root_a, root_c);
     }
 
     #[test]

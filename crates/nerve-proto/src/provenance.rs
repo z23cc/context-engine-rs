@@ -33,10 +33,14 @@ pub const RUN_SCHEMA_VERSION: u32 = 2;
 /// §5 `Event.kind`). Internally tagged (`{"kind": "...", ...}`), mirroring
 /// [`crate::FlowDecisionKind`] / [`crate::AgentEventKind`] so the audit trail is
 /// golden-diffable. The set is intentionally small and **execution-grounded** —
-/// only events a real delegated CLI run actually produces today. Tool-lifecycle
-/// kinds (`tool_started` / `tool_finished`) are deliberately absent: the external
-/// CLIs emit raw text, not parsed tool structure, so a reserved-but-unfilled kind
-/// would be dead protocol. Additive: new kinds may be appended.
+/// only events a real delegated CLI run actually produces today. The tool-lifecycle
+/// kinds (`tool_started` / `tool_finished`) lift the structured tool calls the agent
+/// streams DO carry — claude `tool_use` / `tool_result` content blocks, codex
+/// `command_execution` / `file_change` items — into a queryable index of *which*
+/// tools ran, files were edited, and commands executed (the full inputs/outputs also
+/// remain verbatim in the raw `Output` lines). They are appended AFTER the
+/// pre-existing variants, so a run that uses none of them serializes — and
+/// content-addresses — byte-for-byte as before. Additive: new kinds may be appended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -82,6 +86,33 @@ pub enum EventKind {
         exit_code: Option<i32>,
         #[serde(default)]
         timed_out: bool,
+    },
+    /// A tool / command the delegated agent invoked, lifted from the agent's own
+    /// structured stream (claude `tool_use` content blocks; codex
+    /// `command_execution` / `file_change` items). `tool` is the vendor tool name
+    /// (e.g. "Bash", "Edit", "Read"); `title` is a bounded human-identifying summary
+    /// — the file path for file tools, the command for a shell tool — truncated to
+    /// <= 200 chars (never a float); `args_hash` is the SHA-256 of the canonical args
+    /// JSON (the full inputs also remain verbatim in the raw `Output` lines, so this
+    /// is a queryable index, not the only copy). Appended AFTER the pre-existing
+    /// variants so a run using none of them serializes — and content-addresses —
+    /// byte-for-byte as before (L0 granularity, additive; INV-R2/INV-R5).
+    ToolStarted {
+        turn: u64,
+        tool: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        args_hash: String,
+    },
+    /// The result of a tool the agent invoked. `ok` is the tool's success as the
+    /// agent stream reported it; `output_hash` is the SHA-256 of the tool output.
+    ToolFinished {
+        turn: u64,
+        tool: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        output_hash: String,
     },
 }
 
