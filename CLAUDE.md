@@ -147,7 +147,9 @@ change.
   2. **`nerve daemon`** (`daemon/`): frontend-facing local runtime that executes commands as
      cancellable in-memory **jobs** (`jobs.rs`); job state disappears when the daemon exits.
   Also: the CLI (`cli.rs` — `mcp serve` / `daemon` / `doctor` / `config` / `auth` / `agent` /
-  `install` / `chat` / `flow` [hidden]), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
+  `install` / `chat` / `verify` / `gate` / `flow` [hidden]; `verify` re-checks a captured run against
+  its sealed Receipt [L2/L4] and `gate` turns a sealed Receipt into a merge-gate decision + exit code
+  [L5] — both in `commands/gate.rs`), the agent wiring (`agent.rs` — `RuntimeToolBox` bridging `Runtime`→`ToolBox`, plus
   `nerve agent run/login`), the xAI/Grok tools (`xai/`), and the xAI-only `nerve auth` alias
   (`auth/`, a thin adapter over `nerve-agent::auth`, which now owns all provider credentials).
 
