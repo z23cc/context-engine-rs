@@ -278,6 +278,7 @@ impl SubAgentSpawner {
             root.map(Path::to_path_buf),
             config.allow_delegate && depth == 0,
             config.delegate_event_sink.clone(),
+            config.workspace.clone(),
         );
         Box::new(self.gate.clone().wrap(delegate))
     }

@@ -23,7 +23,10 @@
 
 use crate::ledger_store::LedgerStore;
 use nerve_core::ledger::{LedgerKind, PolicyDecisionOutcome};
-use nerve_core::policy::{Capability, PolicyDecisionRecord, PolicyDoc, seal_policy};
+use nerve_core::policy::{
+    Capability, POLICY_SCHEMA_VERSION, PolicyDecisionRecord, PolicyDoc, seal_policy,
+};
+use nerve_runtime::{DelegateAutonomy, DelegateRole};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -206,6 +209,64 @@ pub(crate) fn run_policy_decisions(
         "session_id": session_id,
         "decisions": decisions,
     })
+}
+
+/// Record a delegated run's authorization posture to the evidence ledger via `plane`,
+/// returning the `(record, ledger_seq)` pairs so a host with an event sink can announce
+/// each (a host without one — the in-chat ToolBox — relies on the persisted ledger).
+///
+/// Two axes are recorded so the audit trail does not UNDER-state the posture:
+/// 1. the filesystem/exec ceiling the (role-expanded) `autonomy` authorizes — reflecting
+///    the autonomy *contract* (`ReadOnly`→Read, `Edit`→Write, `Full`→Exec); an agent
+///    sandbox may differ (codex `workspace-write` permits confined exec), captured by the
+///    run's pinned inputs;
+/// 2. the **always-granted outbound network** — every delegate spawns with
+///    `NetPolicy::Allow` to reach its LLM API regardless of autonomy, so even a read-only
+///    scout holds egress (the exfiltration axis); recording it keeps that visible.
+///
+/// Best-effort (a `None` ledger seq just means the no-op sink). INV-R1: records the
+/// authorization posture, never asserts the run's output is correct.
+pub(crate) fn record_delegate_authorization(
+    plane: &PolicyPlane,
+    session_id: &str,
+    agent: &str,
+    role: DelegateRole,
+    autonomy: DelegateAutonomy,
+) -> Vec<(PolicyDecisionRecord, Option<u64>)> {
+    let policy_version = plane.policy_version();
+    let fs_capability = match autonomy {
+        DelegateAutonomy::ReadOnly => Capability::Read,
+        DelegateAutonomy::Edit => Capability::Write,
+        DelegateAutonomy::Full => Capability::Exec,
+    };
+    let axes = [
+        (
+            fs_capability,
+            format!("delegated agent authorized at {autonomy:?} autonomy (role {role:?})"),
+        ),
+        (
+            Capability::Egress,
+            "delegated agent granted outbound network (LLM API egress, all autonomy levels)"
+                .to_string(),
+        ),
+    ];
+    axes.into_iter()
+        .map(|(capability, reason)| {
+            let record = PolicyDecisionRecord {
+                schema_version: POLICY_SCHEMA_VERSION,
+                policy_version: policy_version.clone(),
+                session_id: session_id.to_string(),
+                agent: agent.to_string(),
+                tool: "delegate.start".to_string(),
+                capability,
+                decision: "allow".to_string(),
+                reason,
+                args_hash: String::new(),
+            };
+            let seq = plane.record_decision(&record);
+            (record, seq)
+        })
+        .collect()
 }
 
 /// Read + parse `<root>/.nerve/policy-plane.json` when present. An absent file (or a

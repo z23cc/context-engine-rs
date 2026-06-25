@@ -64,6 +64,10 @@ pub(crate) struct DelegateAgentToolBox<T: ToolBox> {
     enabled: bool,
     /// Optional live-progress sink (session/agent-run path); `None` on the CLI.
     progress: Option<Arc<DelegateProgressSink>>,
+    /// Workspace scope handle for the L3↔L1 authorization record (`config.workspace`).
+    /// The in-chat path has no session/job id, so the recorded decision keys on this
+    /// (coarser than `delegate.start`'s job handle); `None` falls back to a label.
+    scope: Option<String>,
 }
 
 impl<T: ToolBox> DelegateAgentToolBox<T> {
@@ -73,6 +77,7 @@ impl<T: ToolBox> DelegateAgentToolBox<T> {
         root: Option<PathBuf>,
         enabled: bool,
         progress: Option<Arc<DelegateProgressSink>>,
+        scope: Option<String>,
     ) -> Self {
         Self {
             inner,
@@ -80,7 +85,31 @@ impl<T: ToolBox> DelegateAgentToolBox<T> {
             root,
             enabled,
             progress,
+            scope,
         }
+    }
+
+    /// L3↔L1 — record the delegated run's authorization posture (fs/exec ceiling +
+    /// always-on egress) to the served scope's evidence ledger, best-effort. The in-chat
+    /// path has no protocol event sink, so it relies on the persisted ledger; the
+    /// decision keys on the workspace `scope` (coarser than `delegate.start`'s job
+    /// handle, `None` → a label). Mirrors the protocol path via the shared
+    /// [`crate::policy_plane::record_delegate_authorization`].
+    fn record_authorization(
+        &self,
+        root: &std::path::Path,
+        agent: &str,
+        role: DelegateRole,
+        autonomy: DelegateAutonomy,
+    ) {
+        let Ok(ledger) = crate::ledger_store::LedgerStore::for_scope(Some(root)) else {
+            return;
+        };
+        let plane = crate::policy_plane::PolicyPlane::with_ledger(Some(root), ledger);
+        let session_id = self.scope.as_deref().unwrap_or("in-chat-delegate");
+        let _ = crate::policy_plane::record_delegate_authorization(
+            &plane, session_id, agent, role, autonomy,
+        );
     }
 
     fn run(&self, args: &Value, cancel: &CancelToken) -> AgentResult<Value> {
@@ -108,6 +137,9 @@ impl<T: ToolBox> DelegateAgentToolBox<T> {
         })?;
         let cwd = delegate_runtime::resolve_delegate_cwd(root, args.cwd.as_deref())
             .map_err(delegate_tool_error)?;
+        // L3↔L1: commit the delegated run's authorization posture to the evidence ledger
+        // before it runs (best-effort; mirrors the protocol `delegate.start` path).
+        self.record_authorization(root, &args.agent, args.role, autonomy);
         // DA-6: for a codex delegation, disable the configured MCP servers that are
         // not on the effective allowlist (per-call `mcp_enable` overriding the
         // persisted `[delegate.codex] mcp_enable` config). Non-codex agents get an
@@ -290,6 +322,7 @@ mod tests {
     use crate::delegate_runtime::DEFAULT_DELEGATE_TIMEOUT;
     use crate::sandbox::{CommandSpec, Output, RefuseLauncher, SandboxPolicy};
     use std::sync::Mutex;
+    use tempfile::tempdir;
 
     struct FakeInner;
 
@@ -356,7 +389,51 @@ mod tests {
             Some(PathBuf::from("/work")),
             enabled,
             progress,
+            Some("test-workspace".to_string()),
         )
+    }
+
+    #[test]
+    fn in_chat_delegate_records_authorization_to_the_evidence_ledger() {
+        use crate::ledger_store::LedgerStore;
+        use nerve_core::ledger::LedgerKind;
+
+        // The in-chat `delegate_agent` path commits the same L3↔L1 authorization the
+        // protocol `delegate.start` path does — to the served root's evidence ledger.
+        let dir = tempdir().unwrap();
+        let tools = DelegateAgentToolBox::new(
+            FakeInner,
+            Arc::new(RefuseLauncher),
+            Some(dir.path().to_path_buf()),
+            true,
+            None,
+            Some("ws-1".to_string()),
+        );
+        tools.record_authorization(
+            dir.path(),
+            "claude",
+            DelegateRole::default(),
+            DelegateAutonomy::Full,
+        );
+
+        // Two PolicyDecision records land in L1: the fs/exec ceiling (Full → exec) and
+        // the always-on outbound network (egress), keyed by the workspace scope.
+        let ledger = LedgerStore::for_scope(Some(dir.path())).unwrap();
+        let decisions: Vec<(String, String)> = ledger
+            .read_all()
+            .into_iter()
+            .filter_map(|record| match record.kind {
+                LedgerKind::PolicyDecision {
+                    run_id, capability, ..
+                } => Some((run_id, capability)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(decisions.len(), 2, "fs/exec ceiling + egress");
+        assert!(decisions.iter().all(|(run_id, _)| run_id == "ws-1"));
+        let caps: Vec<&str> = decisions.iter().map(|(_, cap)| cap.as_str()).collect();
+        assert!(caps.contains(&"exec"), "Full autonomy → exec ceiling");
+        assert!(caps.contains(&"egress"), "outbound network always granted");
     }
 
     #[test]
