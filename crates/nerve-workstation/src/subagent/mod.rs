@@ -14,17 +14,19 @@ use crate::tools::NerveRuntime;
 use anyhow::{Result, anyhow};
 use nerve_agent::{
     AgentDef, AgentError, AgentEvent, AgentResult, Hook, Message, Orchestrator, ResumeState,
-    RunOutcome, ToolBox, ToolSpec,
+    RunOutcome, ToolBox,
 };
 use nerve_core::{CancelToken, WorkspaceResolver};
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+mod toolbox;
+
+pub(crate) use toolbox::{SpawnRunner, SubAgentToolBox};
+
 pub(crate) const DEFAULT_MAX_DEPTH: usize = 2;
-const SPAWN_AGENT: &str = "spawn_agent";
 
 /// Default cap on how many sub-agent investigations run concurrently in a
 /// [`SubAgentSpawner::fan_out`]. Bounds thread + provider-connection pressure;
@@ -561,116 +563,13 @@ where
     results
 }
 
-pub(crate) trait SpawnRunner: Send + Sync {
-    fn max_depth(&self) -> usize;
-    fn run_spawn(
-        &self,
-        depth: usize,
-        parent: &ParentRun,
-        args: SpawnAgentArgs,
-        cancel: &CancelToken,
-    ) -> AgentResult<RunOutcome>;
-}
-
-pub(crate) struct SubAgentToolBox<T: ToolBox> {
-    inner: T,
-    spawner: Arc<dyn SpawnRunner>,
-    depth: usize,
-    parent: ParentRun,
-}
-
-impl<T: ToolBox> SubAgentToolBox<T> {
-    pub(crate) fn new(
-        inner: T,
-        spawner: Arc<dyn SpawnRunner>,
-        depth: usize,
-        parent: ParentRun,
-    ) -> Self {
-        Self {
-            inner,
-            spawner,
-            depth,
-            parent,
-        }
-    }
-
-    fn may_spawn(&self) -> bool {
-        self.depth < self.spawner.max_depth()
-    }
-}
-
-impl<T: ToolBox> ToolBox for SubAgentToolBox<T> {
-    fn specs(&self) -> Vec<ToolSpec> {
-        let mut specs = self.inner.specs();
-        if self.may_spawn() {
-            specs.push(spawn_spec());
-        }
-        specs
-    }
-
-    fn call(&self, name: &str, args: &Value, cancel: &CancelToken) -> AgentResult<Value> {
-        if name != SPAWN_AGENT {
-            return self.inner.call(name, args, cancel);
-        }
-        if !self.may_spawn() {
-            return Err(AgentError::Tool(format!(
-                "spawn_agent depth limit reached: max_depth={} depth={}",
-                self.spawner.max_depth(),
-                self.depth
-            )));
-        }
-        let args: SpawnAgentArgs = serde_json::from_value(args.clone())
-            .map_err(|err| AgentError::Tool(format!("invalid spawn_agent args: {err}")))?;
-        let outcome = self
-            .spawner
-            .run_spawn(self.depth + 1, &self.parent, args, cancel)?;
-        Ok(json!({
-            "final_text": outcome.final_text,
-            "turns": outcome.turns,
-            "usage": {
-                "input_tokens": outcome.usage.input_tokens,
-                "output_tokens": outcome.usage.output_tokens,
-            },
-        }))
-    }
-}
-
-fn spawn_spec() -> ToolSpec {
-    ToolSpec {
-        name: SPAWN_AGENT.to_string(),
-        description: "Run a fresh sub-agent for a delegated task and return its final result."
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The subtask for the sub-agent to perform."
-                },
-                "agent": {
-                    "type": "string",
-                    "description": "Optional named agent definition to use."
-                },
-                "provider": {
-                    "type": "string",
-                    "description": "Optional provider override; defaults to the parent provider."
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model override; defaults to the parent model."
-                }
-            },
-            "required": ["task"],
-            "additionalProperties": false
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::toolbox::SPAWN_AGENT;
     use super::*;
     use crate::policy::{Policy, ToolGate};
-    use nerve_agent::Usage;
+    use nerve_agent::{ToolSpec, Usage};
+    use serde_json::{Value, json};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

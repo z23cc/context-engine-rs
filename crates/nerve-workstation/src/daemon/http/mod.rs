@@ -34,14 +34,16 @@ use crate::workspace;
 use anyhow::{Result, anyhow};
 use nerve_agent::auth::oauth::random_urlsafe;
 use serde_json::Value;
-use std::collections::VecDeque;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+
+mod sse;
+
+use sse::{SseFrame, SseHub};
 
 /// Idle interval after which an open SSE connection emits a keep-alive comment.
 /// Also bounds how quickly a vanished client is noticed (its next write fails).
@@ -65,7 +67,7 @@ const SSE_SUBSCRIBER_CAPACITY: usize = 512;
 /// The self-contained runtime GUI, embedded into the binary so the daemon serves
 /// it with no build step or external assets. It is a *client* of Protocol v3:
 /// it only POSTs `/rpc` and subscribes to `/events`, adding no new transport.
-const GUI_HTML: &str = include_str!("gui.html");
+const GUI_HTML: &str = include_str!("../gui.html");
 
 /// Placeholder in [`GUI_HTML`] replaced with the per-run bearer token on a
 /// loopback bind. Kept distinct from its bare substring so [`HttpSecurity::render_gui`]
@@ -363,161 +365,6 @@ fn write_sse_chunk(writer: &mut dyn Write, payload: &[u8]) -> std::io::Result<()
     writer.write_all(payload)?;
     writer.write_all(b"\r\n")?;
     writer.flush()
-}
-
-// ---- SSE broadcast hub ----------------------------------------------------
-
-/// One fan-out unit: the rendered JSON plus the routing facts the hub extracts
-/// from it once (so each subscriber doesn't re-parse). `session` scopes delivery;
-/// `seq` becomes the SSE `id:` and drives `Last-Event-ID` replay.
-struct SseFrame {
-    seq: u64,
-    /// `Some` for a session-scoped event (delivered only to subscribers watching
-    /// that session, plus unscoped subscribers); `None` for global events.
-    session: Option<String>,
-    json: Arc<str>,
-}
-
-impl SseFrame {
-    /// Build a frame from a `runtime/event` notification, lifting `event_seq` and
-    /// the event's `session_id` out of `params` for routing. Both are advisory: a
-    /// missing/garbled field degrades to seq `0` / unscoped rather than dropping.
-    fn from_notification(value: &Value) -> Self {
-        let params = value.get("params");
-        // `event_seq` serializes as camelCase `eventSeq` (the notification
-        // carrier's own `rename_all`); the flattened event keeps snake_case, so
-        // its `session_id` field stays `session_id`.
-        let seq = params
-            .and_then(|p| p.get("eventSeq"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let session = params
-            .and_then(|p| p.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        Self {
-            seq,
-            session,
-            json: Arc::from(value.to_string()),
-        }
-    }
-
-    /// Whether this frame should reach a subscriber with the given session filter.
-    /// Unfiltered subscribers (`None`) see everything; a session subscriber sees
-    /// its own session-scoped frames plus all unscoped (global) frames.
-    fn visible_to(&self, filter: Option<&str>) -> bool {
-        match (filter, self.session.as_deref()) {
-            (None, _) => true,
-            (Some(_), None) => true,
-            (Some(want), Some(have)) => want == have,
-        }
-    }
-}
-
-/// A broadcast hub with per-session fan-out and bounded replay: the router's
-/// single notification sink feeds it, and every open `/events` subscriber
-/// receives only the frames its filter selects. It lives in the transport (not in
-/// `nerve-runtime`) so the protocol vocabulary stays untouched.
-struct SseHub {
-    inner: Mutex<HubState>,
-    next_id: AtomicU64,
-}
-
-#[derive(Default)]
-struct HubState {
-    subscribers: Vec<Subscriber>,
-    /// Bounded ring of recent frames for `Last-Event-ID` replay, oldest first.
-    replay: VecDeque<Arc<SseFrame>>,
-}
-
-struct Subscriber {
-    id: u64,
-    /// `None` = unfiltered (all frames); `Some(session_id)` = only that session's
-    /// frames plus global ones.
-    session_filter: Option<String>,
-    sender: SyncSender<Arc<SseFrame>>,
-}
-
-impl SseHub {
-    fn new() -> Self {
-        Self {
-            inner: Mutex::new(HubState::default()),
-            next_id: AtomicU64::new(1),
-        }
-    }
-
-    /// Register a subscriber with an optional session filter. Returns its id, the
-    /// receiver its `/events` connection drains, and any buffered frames after
-    /// `after_seq` that match the filter (bounded replay on reconnect).
-    fn subscribe(
-        &self,
-        session_filter: Option<String>,
-        after_seq: Option<u64>,
-    ) -> (u64, Receiver<Arc<SseFrame>>, Vec<Arc<SseFrame>>) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = mpsc::sync_channel(SSE_SUBSCRIBER_CAPACITY);
-        let mut state = crate::sync::lock_recover(&self.inner);
-        let backlog = match after_seq {
-            Some(after) => state
-                .replay
-                .iter()
-                .filter(|frame| frame.seq > after && frame.visible_to(session_filter.as_deref()))
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
-        state.subscribers.push(Subscriber {
-            id,
-            session_filter,
-            sender,
-        });
-        (id, receiver, backlog)
-    }
-
-    fn unsubscribe(&self, id: u64) {
-        crate::sync::lock_recover(&self.inner)
-            .subscribers
-            .retain(|subscriber| subscriber.id != id);
-    }
-
-    /// Record a runtime notification in the bounded replay ring and fan it out to
-    /// every live subscriber whose filter selects it, dropping any whose receiver
-    /// has hung up.
-    fn broadcast(&self, value: Value) {
-        let frame = Arc::new(SseFrame::from_notification(&value));
-        let mut state = crate::sync::lock_recover(&self.inner);
-        state.replay.push_back(Arc::clone(&frame));
-        while state.replay.len() > SSE_REPLAY_CAPACITY {
-            state.replay.pop_front();
-        }
-        state.subscribers.retain(|subscriber| {
-            // A subscriber the frame isn't addressed to is kept untouched. For one
-            // we *do* address, a non-blocking `try_send` keeps `broadcast` from
-            // ever blocking on a slow reader: a full buffer (stalled `/events`
-            // reader) or a dropped receiver both prune the subscriber — a slow
-            // client is treated as disconnected (it can reconnect and replay via
-            // `Last-Event-ID`). A long-idle subscriber is also pruned when its
-            // connection closes (its `/events` thread calls `unsubscribe`).
-            if frame.visible_to(subscriber.session_filter.as_deref()) {
-                match subscriber.sender.try_send(Arc::clone(&frame)) {
-                    Ok(()) => true,
-                    Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
-                }
-            } else {
-                true
-            }
-        });
-    }
-
-    #[cfg(test)]
-    fn subscriber_count(&self) -> usize {
-        self.inner.lock().expect("sse hub lock").subscribers.len()
-    }
-
-    #[cfg(test)]
-    fn replay_len(&self) -> usize {
-        self.inner.lock().expect("sse hub lock").replay.len()
-    }
 }
 
 // ---- HTTP responses -------------------------------------------------------
