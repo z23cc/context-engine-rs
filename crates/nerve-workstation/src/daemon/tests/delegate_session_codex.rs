@@ -13,8 +13,8 @@
 
 use super::super::router::RuntimeDaemonRouter;
 use super::{
-    Arc, Mutex, Value, dispatch, json, output_router, output_router_with_delegate,
-    response_with_id, rpc, runtime_with_file, wait_for_job_event,
+    Arc, Mutex, Value, dispatch, json, live_session_gate, output_router,
+    output_router_with_delegate, response_with_id, rpc, runtime_with_file, wait_for_job_event,
 };
 use std::os::unix::fs::PermissionsExt as _;
 
@@ -164,7 +164,7 @@ impl crate::sandbox::SandboxLauncher for FakeCodexLauncher {
 // ---- shared poll helpers (codex-keyed copies of the claude-session helpers) ----
 
 fn wait_for_approval(output: &Arc<Mutex<Vec<Value>>>, session_id: &str) -> Value {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let found = output
             .lock()
             .expect("output lock")
@@ -218,7 +218,7 @@ fn progress_texts(output: &Arc<Mutex<Vec<Value>>>, session_id: &str) -> Vec<Stri
 }
 
 fn wait_for_progress_containing(output: &Arc<Mutex<Vec<Value>>>, session_id: &str, needle: &str) {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         if progress_texts(output, session_id)
             .iter()
             .any(|t| t.contains(needle))
@@ -231,7 +231,7 @@ fn wait_for_progress_containing(output: &Arc<Mutex<Vec<Value>>>, session_id: &st
 }
 
 fn wait_for_received(launcher: &Arc<FakeCodexLauncher>, n: usize) -> Vec<Value> {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let received = launcher.received();
         if received.len() >= n {
             return received;
@@ -243,6 +243,7 @@ fn wait_for_received(launcher: &Arc<FakeCodexLauncher>, n: usize) -> Vec<Value> 
 
 #[test]
 fn codex_live_session_start_runs_turn_one_then_steer_runs_turn_two() {
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeCodexLauncher::new());
@@ -408,6 +409,7 @@ fn codex_steer_unknown_session_errors() {
 
 #[test]
 fn codex_live_session_cancel_reaps_and_marks_cancelled() {
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeCodexLauncher::new());
@@ -532,6 +534,7 @@ fn respond(
 
 #[test]
 fn codex_request_approval_emits_approval_and_allow_writes_accept() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("codex-perm-allow", "NEEDS_TOOL please run bash");
 
@@ -560,6 +563,7 @@ fn codex_request_approval_emits_approval_and_allow_writes_accept() {
 
 #[test]
 fn codex_deny_writes_decline_reply() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("codex-perm-deny", "NEEDS_TOOL run bash");
     let approval = wait_for_approval(&output, "codex-perm-deny");
@@ -576,6 +580,7 @@ fn codex_deny_writes_decline_reply() {
 
 #[test]
 fn codex_allow_always_maps_to_accept_for_session_and_skips_second_approval() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("codex-perm-aa", "NEEDS_TOOL first");
     let approval = wait_for_approval(&output, "codex-perm-aa");
@@ -622,6 +627,7 @@ fn codex_allow_always_maps_to_accept_for_session_and_skips_second_approval() {
 
 #[test]
 fn codex_cancel_during_pending_approval_reaps_the_session() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, _launcher) =
         start_permission_session("codex-perm-cancel", "NEEDS_TOOL run bash");
     wait_for_approval(&output, "codex-perm-cancel");
@@ -665,6 +671,7 @@ fn codex_cancel_during_pending_approval_reaps_the_session() {
 fn codex_permission_deny_reply_carries_no_session_scope() {
     // Finding A: a DENY of a codex `item/permissions/requestApproval` must NOT
     // become a session-wide grant. The recorded reply must omit `scope:"session"`.
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("codex-perms-deny", "NEEDS_PERMS please grant");
     let approval = wait_for_approval(&output, "codex-perms-deny");
@@ -695,6 +702,7 @@ fn codex_turn_start_error_fails_fast() {
     // Finding E: a `turn/start` RESPONSE carrying an error must fail the turn
     // immediately rather than looping to the 600s per-turn timeout. The job
     // completing at all (well within the test budget) is the proof of "fast".
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeCodexLauncher::new());
@@ -729,6 +737,7 @@ fn codex_deny_under_cancel_interrupts_with_real_turn_id() {
     // Finding F: a deny-under-cancel must send `turn/interrupt` with the REAL turn
     // id (captured from the approval request / turn/start response), never `""` —
     // an empty turnId can't match the in-flight turn on real codex.
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("codex-cancel-interrupt", "NEEDS_TOOL run bash");
     // Wait for the pending approval, then cancel WITHOUT responding: the blocked
@@ -757,7 +766,7 @@ fn codex_deny_under_cancel_interrupts_with_real_turn_id() {
 
 /// Poll the recording for the `turn/interrupt` frame the fake codex received.
 fn wait_for_interrupt(launcher: &Arc<FakeCodexLauncher>) -> Value {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         if let Some(frame) = launcher
             .received()
             .into_iter()

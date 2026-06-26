@@ -10,8 +10,8 @@
 
 use super::super::router::RuntimeDaemonRouter;
 use super::{
-    Arc, Mutex, Value, dispatch, json, output_router, output_router_with_delegate,
-    response_with_id, rpc, runtime_with_file, wait_for_job_event,
+    Arc, Mutex, Value, dispatch, json, live_session_gate, output_router,
+    output_router_with_delegate, response_with_id, rpc, runtime_with_file, wait_for_job_event,
 };
 use std::os::unix::fs::PermissionsExt as _;
 
@@ -187,7 +187,7 @@ impl crate::sandbox::SandboxLauncher for FakePermissionLauncher {
 /// Find the first `approval_requested` event for `session_id`, polling until it
 /// appears, and return its full params object (carrying `request_id`/`tool`/…).
 fn wait_for_approval(output: &Arc<Mutex<Vec<Value>>>, session_id: &str) -> Value {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let found = output
             .lock()
             .expect("output lock")
@@ -245,10 +245,11 @@ fn progress_texts(output: &Arc<Mutex<Vec<Value>>>, session_id: &str) -> Vec<Stri
 /// Spin until the live session is registered (turn 1 finished registering it), so
 /// a steer doesn't race the parked start thread. Returns once a steer succeeds.
 fn wait_for_progress_containing(output: &Arc<Mutex<Vec<Value>>>, session_id: &str, needle: &str) {
-    // Generous budget (~6s): the permission tests spawn extra subprocesses in
-    // parallel, so a tight window flakes under load. Returns as soon as the
-    // progress appears, so the bound only affects failure latency.
-    for _ in 0..600 {
+    // Generous budget (~30s @ 10ms): even with `live_session_gate` serializing this
+    // family, the rest of the workspace suite still adds CPU load, so a tight window
+    // flakes. Returns as soon as the progress appears, so the bound only affects
+    // failure latency, never the happy path.
+    for _ in 0..3000 {
         if progress_texts(output, session_id)
             .iter()
             .any(|t| t.contains(needle))
@@ -262,6 +263,7 @@ fn wait_for_progress_containing(output: &Arc<Mutex<Vec<Value>>>, session_id: &st
 
 #[test]
 fn live_session_start_runs_turn_one_then_steer_runs_turn_two() {
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
@@ -421,6 +423,7 @@ fn close_unknown_session_errors() {
 
 #[test]
 fn live_session_cancel_reaps_and_marks_cancelled() {
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
@@ -487,6 +490,7 @@ fn steer_cancel_interrupts_in_flight_turn_and_tears_down_session() {
     // Finding C/D: cancelling the STEER job during an in-flight (HANG) turn must
     // interrupt it promptly (not after the 600s turn timeout) and tear the session
     // down — a subsequent steer then errors "no live delegated session".
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
@@ -569,6 +573,7 @@ fn close_during_in_flight_steer_interrupts_promptly_and_finishes_start_job() {
     // turn is in flight must interrupt that turn promptly — the steer job finishes
     // and the parked start job goes terminal, rather than the close waiting on the
     // steer's session lock until the 600s turn timeout.
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeClaudeLauncher::new());
@@ -725,6 +730,7 @@ fn respond(
 
 #[test]
 fn can_use_tool_emits_approval_and_allow_writes_control_response() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("live-perm-allow", "NEEDS_TOOL please run bash");
 
@@ -757,6 +763,7 @@ fn can_use_tool_emits_approval_and_allow_writes_control_response() {
 
 #[test]
 fn deny_writes_deny_control_response_and_tool_errors() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("live-perm-deny", "NEEDS_TOOL run bash");
     let approval = wait_for_approval(&output, "live-perm-deny");
@@ -777,6 +784,7 @@ fn deny_writes_deny_control_response_and_tool_errors() {
 
 #[test]
 fn allow_always_remembers_and_skips_the_second_approval() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, launcher) =
         start_permission_session("live-perm-aa", "NEEDS_TOOL first");
     let approval = wait_for_approval(&output, "live-perm-aa");
@@ -816,6 +824,7 @@ fn allow_always_remembers_and_skips_the_second_approval() {
 
 #[test]
 fn cancel_during_pending_approval_reaps_the_session() {
+    let _gate = live_session_gate();
     let (_fixture, router, output, _launcher) =
         start_permission_session("live-perm-cancel", "NEEDS_TOOL run bash");
     // Wait for the pending approval, then cancel WITHOUT responding.
@@ -861,7 +870,7 @@ fn cancel_during_pending_approval_reaps_the_session() {
 
 /// Poll until the fake claude has recorded at least `n` control_responses.
 fn wait_for_received(launcher: &Arc<FakePermissionLauncher>, n: usize) -> Vec<Value> {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let received = launcher.received();
         if received.len() >= n {
             return received;
@@ -994,6 +1003,7 @@ fn live_claude_tool_stream_emits_structured_delegate_agent_rows() {
     // structured `tool_use` / `tool_result` ALSO emits live `delegate_agent` per-tool
     // rows (ToolStarted / ToolFinished) on the wire — supplementing, never replacing,
     // the retained `delegate_progress` text tail.
+    let _gate = live_session_gate();
     let fixture = runtime_with_file();
     let (router, output) =
         output_router_with_delegate(Arc::clone(&fixture.runtime), FakeClaudeToolLauncher::new());

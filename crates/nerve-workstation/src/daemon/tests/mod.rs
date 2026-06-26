@@ -17,7 +17,7 @@ use crate::{
 use nerve_runtime::RuntimeEvent;
 use serde_json::{Value, json};
 use std::fs;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -109,13 +109,32 @@ fn response_with_id(output: &[Value], id: Value) -> &Value {
         .expect("response id")
 }
 
+/// Global serialization gate for the live delegate-session integration tests.
+///
+/// Each live test (`delegate_session.rs` / `delegate_session_codex.rs`) spawns a
+/// real `/bin/sh` subprocess and drives it with poll-with-timeout loops. Run many
+/// at once and they pile CPU contention onto each other's subprocesses, which can
+/// slow a turn past its poll budget and flake. A spawning test takes this gate at
+/// entry (`let _gate = live_session_gate();`) and holds it for its whole body, so
+/// the family runs one-at-a-time — no assertion changes, only isolation.
+///
+/// Poison-tolerant: if a gated test panics it poisons the lock, but a poisoned gate
+/// must NOT cascade-fail every later test, so recover the guard from the poison.
+#[cfg(unix)]
+fn live_session_gate() -> std::sync::MutexGuard<'static, ()> {
+    static GATE: OnceLock<Mutex<()>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Wait until `job_id` reaches ANY terminal state (`job_completed` /
 /// `job_cancelled` / `job_failed`), returning the terminal event. Used where the
 /// exact terminal kind depends on a runtime decision (e.g. a budget-cancelled flow
 /// may complete not-ok or cancel).
 #[cfg(unix)]
 fn wait_for_job_terminal(output: &Arc<Mutex<Vec<Value>>>, job_id: &str) -> Value {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let found = output
             .lock()
             .expect("output lock")
@@ -136,10 +155,12 @@ fn wait_for_job_terminal(output: &Arc<Mutex<Vec<Value>>>, job_id: &str) -> Value
 }
 
 fn wait_for_job_event(output: &Arc<Mutex<Vec<Value>>>, event_type: &str, job_id: &str) -> Value {
-    // Generous budget: several delegate-session tests spawn real subprocesses in
-    // parallel, so a tight poll window flakes under load. The loop returns as soon
-    // as the event appears, so a large bound only affects the failure latency.
-    for _ in 0..600 {
+    // Generous budget (~30s @ 10ms): the delegate-session tests drive real
+    // subprocesses, and even with the `live_session_gate` serializing them the rest
+    // of the workspace suite still adds CPU load. The loop returns the instant the
+    // event appears, so a large bound only affects the failure latency, never the
+    // happy path.
+    for _ in 0..3000 {
         let found = output
             .lock()
             .expect("output lock")

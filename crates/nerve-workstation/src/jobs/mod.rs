@@ -29,8 +29,9 @@ use crate::session_manager::SessionManager;
 use crate::{providers::ProviderRegistry, tools};
 use nerve_core::CancelToken;
 use nerve_runtime::{
-    RuntimeCommand, RuntimeEvent, RuntimeJobError, RuntimeJobErrorExt, RuntimeJobGetRequest,
-    RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest, RuntimeJobStatus,
+    RuntimeCommand, RuntimeError, RuntimeEvent, RuntimeJobError, RuntimeJobErrorExt,
+    RuntimeJobGetRequest, RuntimeJobListRequest, RuntimeJobSnapshot, RuntimeJobStartRequest,
+    RuntimeJobStatus,
 };
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -309,30 +310,9 @@ impl JobManager {
             None,
             None,
         ));
-        // Executor routing — every command is claimed by exactly one executor:
-        // the agent.run job, the session manager, the auth manager, or the core
-        // Runtime hub. `executor_for` is an *exhaustive* match on `RuntimeCommand`
-        // (§10 hard gate): a new variant fails to COMPILE until it is mapped here,
-        // so a command can never silently fall through to the hub. The
-        // `command_executor_partition` test then asserts the mapping is total over
-        // `RUNTIME_COMMAND_NAMES`.
-        let outcome = match executor_for(&command) {
-            Executor::AgentRun => self.run_agent_command(&job_id, command, &token),
-            Executor::Delegate => self.run_delegate_command(&job_id, command, &token),
-            Executor::Run => self.run_run_command(command),
-            Executor::Replay => self.run_replay_command(&job_id, command, &token),
-            Executor::Ledger => self.run_ledger_command(command),
-            Executor::Verify => self.run_verify_command(command, &token),
-            Executor::Policy => self.run_policy_command(command),
-            Executor::Receipt => self.run_receipt_command(command),
-            Executor::Outcome => self.run_outcome_command(command),
-            Executor::Host => self.run_host_command(command, &token),
-            Executor::Session => self.sessions.handle_command(command, &token),
-            Executor::Auth => self.auth.handle_command(command, &token),
-            Executor::Flow => self.run_flow_command(&job_id, command, &token),
-            Executor::Wechat => self.run_wechat_command(command, &token),
-            Executor::CoreHub => self.runtime.handle_command_cancellable(command, &token),
-        };
+        // Route + catch: `dispatch_catching` runs the executor under `catch_unwind`,
+        // so a panic fails the job instead of wedging it in `Running` forever.
+        let outcome = self.dispatch_catching(&job_id, command, &token);
         let event = {
             let mut store = crate::sync::lock_recover(&self.jobs);
             let Some(record) = store.records.get_mut(&job_id) else {
@@ -346,8 +326,60 @@ impl JobManager {
         self.emit(event);
     }
 
+    /// Route `command` to its owning executor (an exhaustive §10 match) under
+    /// `catch_unwind`. `AssertUnwindSafe` is justified: the only shared state is
+    /// `&self`, whose `Mutex`es use poison-recovering `crate::sync::lock_recover`
+    /// (so a panic can't corrupt observable state); the default hook logs first.
+    fn dispatch_catching(
+        &self,
+        job_id: &str,
+        command: RuntimeCommand,
+        token: &CancelToken,
+    ) -> Result<Value, RuntimeError> {
+        catch_executor_panic(|| match executor_for(&command) {
+            Executor::AgentRun => self.run_agent_command(job_id, command, token),
+            Executor::Delegate => self.run_delegate_command(job_id, command, token),
+            Executor::Run => self.run_run_command(command),
+            Executor::Replay => self.run_replay_command(job_id, command, token),
+            Executor::Ledger => self.run_ledger_command(command),
+            Executor::Verify => self.run_verify_command(command, token),
+            Executor::Policy => self.run_policy_command(command),
+            Executor::Receipt => self.run_receipt_command(command),
+            Executor::Outcome => self.run_outcome_command(command),
+            Executor::Host => self.run_host_command(command, token),
+            Executor::Session => self.sessions.handle_command(command, token),
+            Executor::Auth => self.auth.handle_command(command, token),
+            Executor::Flow => self.run_flow_command(job_id, command, token),
+            Executor::Wechat => self.run_wechat_command(command, token),
+            Executor::CoreHub => self.runtime.handle_command_cancellable(command, token),
+        })
+    }
+
     fn emit(&self, event: RuntimeEvent) {
         (self.emit)(event);
+    }
+}
+
+/// Run `dispatch` under `catch_unwind`, mapping a caught panic to a non-cancelled
+/// [`RuntimeError::panicked`] (caller guarantees `dispatch` is unwind-safe — see
+/// [`JobManager::dispatch_catching`]).
+fn catch_executor_panic(
+    dispatch: impl FnOnce() -> Result<Value, RuntimeError>,
+) -> Result<Value, RuntimeError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dispatch)) {
+        Ok(outcome) => outcome,
+        Err(payload) => Err(RuntimeError::panicked(panic_message(&*payload))),
+    }
+}
+
+/// Human-readable message from a caught panic payload (`&str`/`String`, else generic).
+fn panic_message(payload: &dyn std::any::Any) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        format!("executor panicked: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("executor panicked: {message}")
+    } else {
+        "executor panicked".to_string()
     }
 }
 
@@ -766,5 +798,68 @@ mod command_executor_partition {
             nerve_runtime::RUNTIME_COMMAND_NAMES.len(),
             "RUNTIME_COMMAND_NAMES contains duplicate entries"
         );
+    }
+}
+
+#[cfg(test)]
+mod panic_safety {
+    //! A panicking executor must not wedge its job. Without `catch_unwind` the
+    //! spawned job thread unwinds past `run_job`'s `record.finish` tail, leaving
+    //! the `JobRecord` stuck in `Running` forever so any awaiting client hangs.
+    //! `catch_executor_panic` maps the unwind to a NON-cancelled error, so
+    //! `JobRecord::finish` lands the job `Failed` and emits `job_failed`.
+    use super::*;
+
+    #[test]
+    fn caught_panic_is_a_non_cancelled_failed_error() {
+        let outcome = catch_executor_panic(|| panic!("boom in executor"));
+        let error = outcome.expect_err("a panicking executor must surface an error");
+        assert!(
+            !error.is_cancelled(),
+            "a panic must classify as Failed, never Cancelled"
+        );
+        assert_eq!(error.kind(), "panic");
+        assert!(
+            error.to_string().contains("boom in executor"),
+            "panic message should be preserved: {error}"
+        );
+    }
+
+    #[test]
+    fn success_path_passes_through_unchanged() {
+        let outcome = catch_executor_panic(|| Ok(serde_json::json!({ "ok": true })));
+        assert_eq!(
+            outcome.expect("no panic"),
+            serde_json::json!({ "ok": true })
+        );
+    }
+
+    #[test]
+    fn caught_panic_finishes_job_failed_and_emits_job_failed() {
+        let mut record = JobRecord::new(
+            "panic-job".to_string(),
+            1,
+            &RuntimeCommand::Ping,
+            CancelToken::new(),
+        );
+        let outcome = catch_executor_panic(|| panic!("kaboom"));
+        let event = record.finish(outcome);
+        assert_eq!(record.status, RuntimeJobStatus::Failed);
+        assert!(
+            matches!(event, RuntimeEvent::JobFailed { .. }),
+            "terminal event must be job_failed"
+        );
+        assert!(record.error.is_some(), "a failed job must record an error");
+    }
+
+    #[test]
+    fn panic_message_covers_string_and_non_string_payloads() {
+        // `panic!` with format args carries a `String` payload (vs. the `&str`
+        // payload of a bare literal exercised above).
+        let from_string = catch_executor_panic(|| panic!("{}", String::from("owned msg")));
+        assert!(from_string.unwrap_err().to_string().contains("owned msg"));
+        // A non-string payload falls back to the generic label.
+        let from_other = catch_executor_panic(|| std::panic::panic_any(42u8));
+        assert_eq!(from_other.unwrap_err().to_string(), "executor panicked");
     }
 }
