@@ -62,3 +62,49 @@
     - |
       echo "+ nerve gate --run $NERVE_RUN_ID --root $NERVE_ROOT --emit gitlab --repo $CI_PROJECT_ID --sha $CI_COMMIT_SHA"
       nerve gate --run "$NERVE_RUN_ID" --root "$NERVE_ROOT" --emit gitlab --repo "$CI_PROJECT_ID" --sha "$CI_COMMIT_SHA"
+
+# Post-merge OUTCOME ingestion (opt-in, L6). The gate above runs BEFORE merge; this
+# records the REAL post-merge disposition into the cross-agent outcome corpus AND mirrors
+# it onto the L1 evidence ledger (`OutcomeRecorded`). It is ADVISORY — never a gate, never
+# an input to a verdict/receipt (INV-R1/R3/R4). `nerve outcome` records what the CALLER
+# asserts happened (the merge pipeline merged it); it never invents an outcome or derives
+# one from a verify verdict. Default rule fires on the default-branch push a merge produces.
+#
+# Usage — in a consumer .gitlab-ci.yml:
+#
+#   nerve-outcome:
+#     extends: .nerve-outcome
+#     variables:
+#       NERVE_RUN_ID: "$NERVE_RUN_ID"   # the captured Run id from a delegated nerve run
+#       # NERVE_OUTCOME: "merged"       # or "reverted" in a revert pipeline
+#       # NERVE_RECEIPT: "$RECEIPT_ID"  # optional, denormalized onto the corpus for query
+.nerve-outcome:
+  stage: test
+  image: "rust:latest"
+  variables:
+    NERVE_RUN_ID: ""               # REQUIRED — captured Run id (content address).
+    NERVE_OUTCOME: "merged"        # merged | reverted | incident | shipped-no-regress.
+    NERVE_RECEIPT: ""              # optional receipt id (denormalized for query).
+    NERVE_ROOT: "."
+    NERVE_REPO: "z23cc/nerve-workstation"
+    NERVE_INSTALL: >-
+      if command -v nerve >/dev/null 2>&1; then :;
+      elif [ -f Cargo.toml ] && grep -q nerve-workstation Cargo.toml; then
+        cargo install --path crates/nerve-workstation --bin nerve --locked --force;
+      else
+        cargo install nerve-workstation --bin nerve --locked --force;
+      fi
+  # A merge lands as a push to the default branch — record the outcome there.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - set -euo pipefail
+    - test -n "$NERVE_RUN_ID" || { echo "NERVE_RUN_ID is required"; exit 1; }
+    - eval "$NERVE_INSTALL"
+    - command -v nerve >/dev/null 2>&1 || { echo "nerve not installed"; exit 1; }
+    # Record the REAL outcome (advisory; --source ci asserts CI witnessed the merge).
+    - |
+      OUTCOME_ARGS="outcome $NERVE_OUTCOME --run $NERVE_RUN_ID --source ci --root $NERVE_ROOT"
+      if [ -n "$NERVE_RECEIPT" ]; then OUTCOME_ARGS="$OUTCOME_ARGS --receipt $NERVE_RECEIPT"; fi
+      echo "+ nerve $OUTCOME_ARGS"
+      nerve $OUTCOME_ARGS

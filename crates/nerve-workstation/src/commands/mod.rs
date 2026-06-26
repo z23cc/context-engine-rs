@@ -5,4 +5,5 @@ pub(crate) mod flow;
 pub(crate) mod gate;
 pub(crate) mod install;
 pub(crate) mod ledger;
+pub(crate) mod outcome;
 pub(crate) mod verify;

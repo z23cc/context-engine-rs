@@ -38,6 +38,8 @@ enum CommandKind {
     Gate(commands::gate::GateArgs),
     /// Inspect the L1 cross-run evidence ledger (re-derive its hash chain).
     Ledger(LedgerArgs),
+    /// Record a REAL post-merge outcome into a run's L6 corpus (advisory; never a gate).
+    Outcome(commands::outcome::OutcomeArgs),
     /// EXPERIMENTAL: run a declarative agent-orchestration workflow (C1). Hidden
     /// from help; off-protocol, the WorkflowDef shape is not yet a stable contract.
     #[command(hide = true)]
@@ -135,6 +137,13 @@ pub(crate) fn run() -> Result<()> {
                 std::process::exit(code)
             }
         },
+        // `outcome` is the L6 ingestion rail (the offline twin of the daemon's
+        // `outcome.label`): it records a REAL post-merge disposition + mirrors it onto
+        // the L1 ledger, then exits 0 (a recording failure surfaces as a real error).
+        CommandKind::Outcome(args) => {
+            let code = commands::outcome::record(args)?;
+            std::process::exit(code)
+        }
         CommandKind::Flow(args) => match args.command {
             FlowCommand::Run(flow_args) => commands::flow::run(flow_args),
         },
@@ -197,6 +206,42 @@ mod tests {
         ])
         .expect("ledger query flags parse");
         assert!(matches!(with_flags.command, CommandKind::Ledger(_)));
+    }
+
+    #[test]
+    fn cli_parses_outcome() {
+        // The bare post-merge form a CI hook uses.
+        let merged = Cli::try_parse_from([
+            "nerve", "outcome", "merged", "--run", "run-abc", "--root", ".",
+        ])
+        .expect("outcome merged parse");
+        assert!(matches!(merged.command, CommandKind::Outcome(_)));
+        // The full flag surface, incl. the multi-word disposition + source/receipt/session.
+        let full = Cli::try_parse_from([
+            "nerve",
+            "outcome",
+            "shipped-no-regress",
+            "--run",
+            "run-abc",
+            "--receipt",
+            "rcpt-1",
+            "--session",
+            "job-2",
+            "--source",
+            "ci",
+            "--note",
+            "post-merge hook",
+            "--root",
+            ".",
+            "--json",
+        ])
+        .expect("outcome full flags parse");
+        assert!(matches!(full.command, CommandKind::Outcome(_)));
+        // A bogus disposition is rejected (the value-enum is the allowlist).
+        assert!(
+            Cli::try_parse_from(["nerve", "outcome", "bogus", "--run", "x"]).is_err(),
+            "an unknown disposition must not parse"
+        );
     }
 
     #[test]

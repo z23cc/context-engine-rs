@@ -153,6 +153,82 @@ free-form label, so a forger could spoof it to your key while signing with their
 > log) remains the deferred upgrade behind the same signing seam — it would establish
 > issuer identity without a manually distributed key.
 
+## Feeding the outcome corpus (L6)
+
+The gate above runs **before** merge. The trust substrate also wants to know what
+**actually happened after** merge — did the change ship and stick, or get reverted, or
+cause an incident? That post-merge signal is the **L6 cross-agent outcome corpus**
+(trust-substrate.md §3 L6): the data a future calibration model reads to learn "which
+evidence predicts shipped-and-didn't-regress". It is the late dividend, not the day-one
+moat — and it is **advisory and non-load-bearing**: a recorded outcome **never** feeds a
+verdict, a gate, or a receipt (INV-R1/R3/R4).
+
+`nerve outcome` is the **ingestion rail** — the offline, daemon-free twin of the daemon's
+`outcome.label`, symmetric with `nerve verify` / `nerve gate` / `nerve ledger`:
+
+```bash
+nerve outcome <merged|reverted|incident|shipped-no-regress> --run <run_id> \
+  [--receipt <id>] [--session <id>] [--source human|ci|observation] [--note <text>] \
+  --root <path> [--json]
+```
+
+It appends the REAL outcome to the run's L6 corpus (`<root>/.nerve/outcomes/<run>.json`)
+**and** mirrors it onto the L1 evidence ledger as an `OutcomeRecorded` fact, so the
+observation joins the same tamper-evident chain `nerve ledger verify` re-derives.
+
+> **Honest ingestion, not invention (INV-R1).** `nerve outcome` records what the **caller
+> asserts happened** — a post-merge hook asserts `merged` because the platform merged the
+> PR; a revert pipeline asserts `reverted`. Nerve does **not** invent the outcome, and it
+> **never** derives one from a verify verdict (an `Outcome` is a *real-world* disposition —
+> `merged` / `reverted` / `incident` / `shipped-no-regress` — not a pass/fail). The corpus
+> stays advisory: it is **never** an input to a verdict, gate, or receipt.
+
+### Auto-loop: record the outcome when a PR actually merges
+
+This is an **opt-in** post-merge step a team adds. On GitHub, trigger it on a closed PR
+that was actually merged and call `nerve outcome merged`:
+
+```yaml
+# .github/workflows/nerve-outcome.yml in YOUR repo (opt-in, post-merge)
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  record-outcome:
+    # Only when the PR was actually MERGED (not just closed).
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # install `nerve` however the gate job does (pinned release or `cargo install`)…
+      - name: Record the real merge outcome (advisory, never a gate)
+        env:
+          NERVE_RUN_ID: ${{ needs.delegate.outputs.run-id }}   # the captured Run id
+          RECEIPT_ID: ${{ needs.gate.outputs.receipt-id }}      # optional, for query
+        run: |
+          nerve outcome merged --run "$NERVE_RUN_ID" \
+            ${RECEIPT_ID:+--receipt "$RECEIPT_ID"} --source ci --root .
+```
+
+A push-to-`main` job works equally well (`on: push: branches: [main]`) when you key the
+outcome off the merge commit rather than the PR-close event.
+
+GitLab adopters `extend` the post-merge template (it runs on the default-branch push that
+a merge produces):
+
+```yaml
+nerve-outcome:
+  extends: .nerve-outcome
+  variables:
+    NERVE_RUN_ID: "$NERVE_RUN_ID"
+    # NERVE_OUTCOME defaults to "merged"; set "reverted" in a revert pipeline.
+```
+
+Later real-world dispositions append to the same corpus and chain — e.g. a revert
+pipeline records `nerve outcome reverted --run "$NERVE_RUN_ID" --source ci`, and an
+incident monitor records `nerve outcome incident --run "$NERVE_RUN_ID" --source observation`.
+
 ## Honest limitations / follow-ups
 
 - **Hermetic isolation is partial.** Replay/re-run currently relies on the runner's

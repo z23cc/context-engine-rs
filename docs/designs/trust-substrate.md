@@ -149,6 +149,16 @@ FLOOR
   place ML is load-bearing, and it is calibration, never generation.** It is the cross-agent corpus
   only the neutral cockpit-at-the-merge-boundary can collect. Treat as a compounding dividend; the
   ignition moat is the replay kernel + receipt, valuable at n=1.
+  - **Automatic real-outcome ingestion rail (live).** The corpus is no longer fed only by a manual,
+    daemon-gated `outcome.label`: the offline `nerve outcome <merged|reverted|incident|shipped-no-regress>
+    --run <id>` CLI (the daemon-free twin of `outcome.label`, symmetric with `nerve ledger verify`) lets a
+    **post-merge CI hook** record the REAL outcome the platform observed — `nerve outcome merged --run
+    "$NERVE_RUN_ID" --source ci` on a `pull_request: closed`/`merged == true` (or push-to-`main`) event —
+    so every real merge auto-feeds the corpus and the observation joins the L1 tamper-evident chain
+    (`LedgerKind::OutcomeRecorded`). **Honest by construction (INV-R1):** the rail records what the CALLER
+    asserts happened (the platform merged it) — it NEVER derives an outcome from a verify verdict, and the
+    corpus stays **advisory / non-load-bearing** (it never feeds a verdict, gate, or receipt — INV-R1/R3/R4).
+    See `docs/integrations/ci-merge-gate.md` → "Feeding the outcome corpus (L6)".
 
 ---
 

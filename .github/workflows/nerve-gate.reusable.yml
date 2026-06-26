@@ -12,6 +12,27 @@
 # This wraps the composite action at .github/actions/nerve-gate. See
 # docs/integrations/ci-merge-gate.md for the adopter walkthrough and
 # docs/designs/trust-substrate.md §L4/§L5/§8 for what a Receipt is.
+#
+# POST-MERGE OUTCOME (opt-in, L6) — the gate above runs BEFORE merge. To also feed the
+# cross-agent outcome corpus with the REAL post-merge disposition, add a SEPARATE opt-in
+# job in your repo that runs when a PR actually merges and records it (advisory; NEVER a
+# gate — INV-R1/R3/R4). `nerve outcome` is the offline twin of the daemon `outcome.label`:
+#
+#   on:
+#     pull_request:
+#       types: [closed]
+#   jobs:
+#     record-outcome:
+#       if: github.event.pull_request.merged == true   # only a real merge, not just close
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v4
+#         # install `nerve` (pinned release or `cargo install`) …
+#         - run: nerve outcome merged --run "$NERVE_RUN_ID" --source ci --root .
+#
+# Nerve records what the CALLER asserts happened (the platform merged it); it never
+# invents an outcome or derives one from a verify verdict. See
+# docs/integrations/ci-merge-gate.md → "Feeding the outcome corpus (L6)".
 name: Nerve gate (reusable)
 
 on:
