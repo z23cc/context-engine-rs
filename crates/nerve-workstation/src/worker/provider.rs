@@ -321,7 +321,7 @@ mod tests {
         // The wiring is end-to-end: a WorkerTask carrying a per-node grant produces an
         // AgentRunConfig whose `cost_budget_usd` IS the grant ceiling (so the hook arms).
         let runtime = Arc::new(crate::tools::runtime(
-            nerve_core::WorkspaceRegistry::default(),
+            nerve_fs::FsWorkspaceRegistry::default(),
         ));
         let worker = ProviderWorker::new(
             runtime,

@@ -8,6 +8,12 @@ repository.workspace = true
 
 [features]
 default = []
+# Exposes a small `test_internals` re-export module (kernel-internal snapshot
+# memos + a path-scoring helper) so the relocated provider-dependent integration
+# tests in `tests/` can reach them. Off by default; turned on in CI via
+# `cargo test --workspace --features nerve-core/test-internals`. Production builds
+# never enable it, so the internals stay crate-private in the shipped engine.
+test-internals = []
 
 [dependencies]
 aho-corasick.workspace = true
@@ -48,6 +54,13 @@ ignore.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
+# Host-side filesystem provider, used ONLY by the relocated provider-dependent
+# integration tests in `tests/` (a separate compilation unit). It must never be a
+# normal dependency: that would be a true dependency cycle (nerve-fs -> nerve-core),
+# and even as a dev-dependency it must not be referenced from in-src `#[cfg(test)]`
+# modules, which would compile nerve-core twice ("multiple versions of crate
+# nerve_core"). The provider-dependent tests therefore live in `tests/`, not in-src.
+nerve-fs.workspace = true
 tempfile.workspace = true
 insta.workspace = true
 serde_json.workspace = true

@@ -73,7 +73,10 @@ pub enum NerveError {
 }
 
 impl NerveError {
-    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    /// Build an [`NerveError::Io`] from a path + source error. `pub` so the
+    /// host-side `nerve-fs` provider (which owns all real filesystem I/O) can
+    /// construct kernel errors through the same constructor.
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
             source,

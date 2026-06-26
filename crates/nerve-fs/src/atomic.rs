@@ -1,5 +1,13 @@
-use super::*;
-use std::io::{Read, Write};
+//! Atomic / sequential filesystem batch application with rollback. Moved
+//! verbatim out of the kernel (was `nerve-core` `catalog/fs_atomic`).
+
+use crate::provider::FsCatalogProvider;
+use nerve_core::{NerveError, edit::FileChange};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug)]
 struct FsBackup {
@@ -7,9 +15,9 @@ struct FsBackup {
     backup: Option<PathBuf>,
 }
 
-pub(super) fn apply_atomic_batch(
+pub(crate) fn apply_atomic_batch(
     provider: &FsCatalogProvider,
-    changes: &[crate::edit::FileChange],
+    changes: &[FileChange],
 ) -> Result<(), NerveError> {
     let mut backups = Vec::new();
     let mut applied_paths = Vec::new();
@@ -50,40 +58,40 @@ fn fail_atomic(
 
 fn change_targets(
     provider: &FsCatalogProvider,
-    change: &crate::edit::FileChange,
+    change: &FileChange,
 ) -> Result<Vec<PathBuf>, NerveError> {
     Ok(match change {
-        crate::edit::FileChange::Create { path, .. } => {
+        FileChange::Create { path, .. } => {
             vec![provider.policy.resolve_for_write(Path::new(path))?]
         }
-        crate::edit::FileChange::Update { path, .. } | crate::edit::FileChange::Delete { path } => {
+        FileChange::Update { path, .. } | FileChange::Delete { path } => {
             vec![provider.policy.resolve_allowed(Path::new(path))?]
         }
-        crate::edit::FileChange::Rename { from, to, .. } => vec![
+        FileChange::Rename { from, to, .. } => vec![
             provider.policy.resolve_allowed(Path::new(from))?,
             provider.policy.resolve_for_write(Path::new(to))?,
         ],
     })
 }
 
-pub(super) fn apply_change(
+pub(crate) fn apply_change(
     provider: &FsCatalogProvider,
-    change: &crate::edit::FileChange,
+    change: &FileChange,
 ) -> Result<(), NerveError> {
     match change {
-        crate::edit::FileChange::Create { path, content } => {
+        FileChange::Create { path, content } => {
             let target = provider.policy.resolve_for_write(Path::new(path))?;
             write_new_text(&target, content)
         }
-        crate::edit::FileChange::Update { path, content } => {
+        FileChange::Update { path, content } => {
             let target = provider.policy.resolve_for_write(Path::new(path))?;
             write_text(&target, content)
         }
-        crate::edit::FileChange::Delete { path } => {
+        FileChange::Delete { path } => {
             let target = provider.policy.resolve_allowed(Path::new(path))?;
             fs::remove_file(&target).map_err(|err| NerveError::io(target, err))
         }
-        crate::edit::FileChange::Rename { from, to, content } => {
+        FileChange::Rename { from, to, content } => {
             let source = provider.policy.resolve_allowed(Path::new(from))?;
             let destination = provider.policy.resolve_for_write(Path::new(to))?;
             if let Some(parent) = destination.parent() {
@@ -188,12 +196,12 @@ fn cleanup_backups(backups: &[FsBackup]) {
     }
 }
 
-fn change_display_paths(change: &crate::edit::FileChange) -> Vec<PathBuf> {
+fn change_display_paths(change: &FileChange) -> Vec<PathBuf> {
     match change {
-        crate::edit::FileChange::Create { path, .. }
-        | crate::edit::FileChange::Update { path, .. }
-        | crate::edit::FileChange::Delete { path } => vec![PathBuf::from(path)],
-        crate::edit::FileChange::Rename { from, to, .. } => {
+        FileChange::Create { path, .. }
+        | FileChange::Update { path, .. }
+        | FileChange::Delete { path } => vec![PathBuf::from(path)],
+        FileChange::Rename { from, to, .. } => {
             vec![PathBuf::from(from), PathBuf::from(to)]
         }
     }

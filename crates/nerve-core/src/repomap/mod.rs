@@ -21,8 +21,20 @@ mod symbols;
 #[cfg(test)]
 mod tests;
 
+// `repomap` is a `pub` module, so these re-exports are conditionally widened to
+// `pub` only under the off-by-default `test-internals` feature (the relocated
+// integration tests read `IndexedFile`/`ReferenceGraph` fields and call
+// `indexed_files_cancellable`). In normal builds they stay `pub(crate)`, so the
+// shipped public surface is unchanged. The underlying items live in the private
+// `analysis`/`graph` submodules, so their `pub` declaration never leaks on its own.
+#[cfg(not(feature = "test-internals"))]
 pub(crate) use analysis::{IndexedFile, indexed_files_cancellable};
+#[cfg(feature = "test-internals")]
+pub use analysis::{IndexedFile, indexed_files_cancellable};
+#[cfg(not(feature = "test-internals"))]
 pub(crate) use graph::ReferenceGraph;
+#[cfg(feature = "test-internals")]
+pub use graph::ReferenceGraph;
 pub(crate) use imports::resolve_import_reference;
 
 use crate::{

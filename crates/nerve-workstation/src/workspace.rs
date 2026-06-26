@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use nerve_core::{FsCatalogProvider, RootPolicy, ScanOptions, WorkspaceRegistry};
+use nerve_core::RootPolicy;
+use nerve_fs::{FsCatalogProvider, FsWorkspaceRegistry, ScanOptions};
 use std::{collections::BTreeMap, path::PathBuf, str::FromStr};
 
 #[derive(Debug, Args, Clone)]
@@ -65,10 +66,9 @@ pub(crate) fn provider_for_roots(
     Ok(FsCatalogProvider::new(policy, options))
 }
 
-pub(crate) fn registry(args: &ServeArgs) -> Result<WorkspaceRegistry> {
+pub(crate) fn registry(args: &ServeArgs) -> Result<FsWorkspaceRegistry> {
     let options = scan_options(args);
-    let registry: WorkspaceRegistry<FsCatalogProvider> =
-        WorkspaceRegistry::with_scan_options(options.clone());
+    let registry: FsWorkspaceRegistry = FsWorkspaceRegistry::with_scan_options(options.clone());
     registry.insert(
         "default",
         std::sync::Arc::new(provider_for_roots(

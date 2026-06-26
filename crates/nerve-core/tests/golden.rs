@@ -1,10 +1,11 @@
 use nerve_core::{
-    BuildContextRequest, CatalogProvider, FsCatalogProvider, LineRange, ManageSelectionMode,
-    ManageSelectionOp, ManageSelectionRequest, ReadFileRequest, RepoMapRequest, RootPolicy,
-    ScanOptions, SearchMode, SearchRequest, SelectionSliceArg, WorkspaceContextInclude,
-    WorkspaceContextRequest, build_context, get_code_structure, get_file_tree, get_repo_map,
-    handle_tool_call, manage_selection, read_file, search_snapshot, tool_specs, workspace_context,
+    BuildContextRequest, CatalogProvider, LineRange, ManageSelectionMode, ManageSelectionOp,
+    ManageSelectionRequest, ReadFileRequest, RepoMapRequest, RootPolicy, SearchMode, SearchRequest,
+    SelectionSliceArg, WorkspaceContextInclude, WorkspaceContextRequest, build_context,
+    get_code_structure, get_file_tree, get_repo_map, handle_tool_call, manage_selection, read_file,
+    search_snapshot, tool_specs, workspace_context,
 };
+use nerve_fs::{FsCatalogProvider, ScanOptions};
 use serde_json::{Value, json};
 use std::{
     fs,

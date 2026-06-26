@@ -1,27 +1,27 @@
 use super::*;
-use crate::{FsCatalogProvider, RootPolicy, ScanOptions, codemap::CodeReference};
-use std::{fs, path::PathBuf};
+use crate::codemap::CodeReference;
+use crate::{HostFile, MemoryCatalogProvider};
+use std::path::PathBuf;
 
-fn temp_provider(
-    files: &[(&str, &str)],
-) -> (tempfile::TempDir, FsCatalogProvider, CatalogSnapshot) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    for (path, content) in files {
-        let full_path = dir.path().join(path);
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).expect("create dirs");
-        }
-        fs::write(full_path, content).expect("write fixture");
-    }
-    let provider = FsCatalogProvider::new(
-        RootPolicy::new(vec![dir.path().to_path_buf()]).expect("policy"),
-        ScanOptions::default(),
-    );
+// These tests stay in-src (they exercise repomap-internal helpers like
+// `analyze_files` / `ReferenceGraph::build` / `page_rank_cancellable`) and so use
+// the kernel-resident `MemoryCatalogProvider` rather than `nerve_fs`'s
+// `FsCatalogProvider`. The repo-map ranking/graph logic under test is a pure
+// function of file CONTENT, so the provider backend is irrelevant here — this
+// keeps the tests in-src without widening the kernel's internal API.
+fn temp_provider(files: &[(&str, &str)]) -> (MemoryCatalogProvider, CatalogSnapshot) {
+    let provider = MemoryCatalogProvider::new(
+        files
+            .iter()
+            .map(|(path, content)| HostFile::new(*path, *content))
+            .collect(),
+    )
+    .expect("provider");
     let snapshot = provider.snapshot().expect("snapshot");
-    (dir, provider, snapshot)
+    (provider, snapshot)
 }
 
-fn indexed_files(provider: &FsCatalogProvider, snapshot: &CatalogSnapshot) -> Vec<IndexedFile> {
+fn indexed_files(provider: &MemoryCatalogProvider, snapshot: &CatalogSnapshot) -> Vec<IndexedFile> {
     let analyses = analyze_files(provider, snapshot, None).expect("analysis");
     let mut files: Vec<_> = analyses
         .into_iter()
@@ -45,7 +45,7 @@ fn edge_weight(graph: &ReferenceGraph, files: &[IndexedFile], from: &str, to: &s
 
 #[test]
 fn builds_reference_edges_from_ast_calls_and_type_paths() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         (
             "target.rs",
             "pub struct Target;\npub fn make_target() -> usize { 1 }\n",
@@ -64,7 +64,7 @@ fn builds_reference_edges_from_ast_calls_and_type_paths() {
 
 #[test]
 fn ignores_identifiers_inside_comments_and_strings() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("target.rs", "pub struct Target;\n"),
         (
             "caller.rs",
@@ -80,7 +80,7 @@ fn ignores_identifiers_inside_comments_and_strings() {
 
 #[test]
 fn ignores_high_document_frequency_symbols() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("one.rs", "pub fn CommonThing() {}\n"),
         ("two.rs", "pub fn CommonThing() {}\n"),
         ("three.rs", "pub fn CommonThing() {}\n"),
@@ -99,7 +99,7 @@ fn ignores_high_document_frequency_symbols() {
 
 #[test]
 fn does_not_create_cross_language_edges_for_same_name() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("shared.js", "export class SharedThing {}\n"),
         ("caller.rs", "pub fn caller() { SharedThing(); }\n"),
     ]);
@@ -114,7 +114,7 @@ fn js_family_resolves_references_across_ts_and_tsx_display_languages() {
     // Display `language` is the accurate per-extension label, but JS/TS/TSX
     // share one resolution family, so a `.ts` consumer still links to a
     // `.tsx` definition.
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("widget.tsx", "export class Widget {}\n"),
         (
             "consumer.ts",
@@ -139,7 +139,7 @@ fn js_family_resolves_references_across_ts_and_tsx_display_languages() {
 
 #[test]
 fn natural_language_query_terms_personalize_symbol_matches() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("auth.rs", "pub struct AuthService;\n"),
         ("billing.rs", "pub struct PaymentGateway;\n"),
     ]);
@@ -160,7 +160,7 @@ fn natural_language_query_terms_personalize_symbol_matches() {
 
 #[test]
 fn explicit_seed_paths_take_precedence_over_query_terms() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("auth.rs", "pub struct AuthService;\n"),
         ("billing.rs", "pub struct PaymentGateway;\n"),
     ]);
@@ -181,7 +181,7 @@ fn explicit_seed_paths_take_precedence_over_query_terms() {
 
 #[test]
 fn same_language_consumer_reference_ranks_definer_higher() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         (
             "target.rs",
             "pub struct Target;\npub fn make_target() -> usize { 1 }\n",
@@ -223,7 +223,7 @@ fn same_language_consumer_reference_ranks_definer_higher() {
 
 #[test]
 fn pagerank_prefers_file_referenced_by_multiple_files() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("target.rs", "pub fn make_target() -> usize { 1 }\n"),
         ("caller_one.rs", "pub fn one() -> usize { make_target() }\n"),
         ("caller_two.rs", "pub fn two() -> usize { make_target() }\n"),
@@ -236,7 +236,7 @@ fn pagerank_prefers_file_referenced_by_multiple_files() {
 
 #[test]
 fn python_calls_imports_and_names_build_edges() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         (
             "target.py",
             "class Target:\n    pass\n\ndef make_target():\n    return Target()\n",
@@ -254,7 +254,7 @@ fn python_calls_imports_and_names_build_edges() {
 
 #[test]
 fn javascript_import_require_calls_and_identifiers_build_edges() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("target.js", "export function makeTarget() { return 1; }\n"),
         (
             "caller.js",
@@ -300,7 +300,7 @@ fn embedded_markdown_imports_do_not_resolve_relative_to_host_doc() {
 
 #[test]
 fn personalized_pagerank_biases_seed_files() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("target.rs", "pub fn make_target() -> usize { 1 }\n"),
         ("caller.rs", "pub fn caller() -> usize { make_target() }\n"),
         ("isolated.rs", "pub fn isolated() {}\n"),
@@ -322,7 +322,7 @@ fn personalized_pagerank_biases_seed_files() {
 
 #[test]
 fn pre_cancelled_repo_map_returns_cancelled() {
-    let (_dir, provider, snapshot) = temp_provider(&[("lib.rs", "pub fn alpha() {}\n")]);
+    let (provider, snapshot) = temp_provider(&[("lib.rs", "pub fn alpha() {}\n")]);
     let token = CancelToken::new();
     token.cancel();
 
@@ -334,7 +334,7 @@ fn pre_cancelled_repo_map_returns_cancelled() {
 
 #[test]
 fn repo_map_cancel_after_n_checks_is_deterministic() {
-    let (_dir, provider, snapshot) = temp_provider(&[
+    let (provider, snapshot) = temp_provider(&[
         ("target.rs", "pub struct Target;\n"),
         ("caller.rs", "pub fn caller() { let _ = Target; }\n"),
     ]);

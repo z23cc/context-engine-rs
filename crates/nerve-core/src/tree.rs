@@ -594,16 +594,23 @@ fn render_children(children: &[FileTreeNode], prefix: String, lines: &mut Vec<St
 
 #[cfg(test)]
 mod tests {
+    // Only this one test stays in-src: it asserts on the module-private
+    // `AUTO_SIBLING_CAP`, unreachable via the public API. `get_file_tree` takes a
+    // snapshot, so it uses the kernel-resident `MemoryCatalogProvider` (no
+    // `nerve_fs` back-edge). The provider-API tree tests moved to
+    // `tests/relocated_read_tree_list.rs`.
     use super::*;
-    use crate::{FsCatalogProvider, RootPolicy, catalog::ScanOptions, port::CatalogProvider};
-    use std::fs;
+    use crate::port::CatalogProvider;
+    use crate::{HostFile, MemoryCatalogProvider};
 
-    fn snapshot_for(dir: &std::path::Path) -> crate::CatalogSnapshot {
-        let provider = FsCatalogProvider::new(
-            RootPolicy::new(vec![dir.to_path_buf()]).expect("policy"),
-            ScanOptions::default(),
-        );
-        provider.snapshot().expect("snapshot")
+    fn wide_snapshot(n: usize) -> crate::CatalogSnapshot {
+        let files: Vec<HostFile> = (0..n)
+            .map(|i| HostFile::new(format!("f{i:04}.txt"), "x\n"))
+            .collect();
+        MemoryCatalogProvider::new(files)
+            .expect("provider")
+            .snapshot()
+            .expect("snapshot")
     }
 
     fn opts(mode: TreeMode, path: Option<&str>) -> FileTreeOptions {
@@ -615,224 +622,8 @@ mod tests {
     }
 
     #[test]
-    fn tree_mode_from_arg() {
-        assert_eq!(TreeMode::from_arg(None), TreeMode::Auto);
-        assert_eq!(TreeMode::from_arg(Some("auto")), TreeMode::Auto);
-        assert_eq!(TreeMode::from_arg(Some("full")), TreeMode::Full);
-        assert_eq!(TreeMode::from_arg(Some("folders")), TreeMode::Folders);
-        assert_eq!(TreeMode::from_arg(Some("selected")), TreeMode::Auto);
-        assert_eq!(TreeMode::from_arg(Some("bogus")), TreeMode::Auto);
-    }
-
-    #[test]
-    fn markers_show_selected_and_codemap_files() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir(dir.path().join("src")).expect("mkdir");
-        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
-        fs::write(dir.path().join("src/b.py"), "def b():\n    pass\n").expect("write");
-        fs::write(dir.path().join("README.md"), "```rust\nfn doc() {}\n```\n").expect("write");
-        fs::write(dir.path().join("notes.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let mut selection = Selection::default();
-        for path in ["src/a.rs", "notes.txt"] {
-            let entry = snap
-                .entries
-                .iter()
-                .find(|entry| entry.rel_path == path)
-                .expect("entry exists");
-            selection.files.insert(
-                SelectionKey {
-                    root_id: entry.root_id.clone(),
-                    path: entry.rel_path.clone(),
-                },
-                crate::SelectionMode::Full,
-            );
-        }
-        let resp = get_file_tree_with_selection(
-            &snap,
-            &FileTreeOptions {
-                mode: TreeMode::Full,
-                max_depth: None,
-                path: None,
-            },
-            &selection,
-        );
-
-        assert!(resp.uses_legend);
-        assert!(resp.tree.contains("a.rs *+"), "{}", resp.tree);
-        assert!(resp.tree.contains("b.py +"), "{}", resp.tree);
-        assert!(resp.tree.contains("README.md +"), "{}", resp.tree);
-        assert!(resp.tree.contains("notes.txt *"), "{}", resp.tree);
-    }
-
-    #[test]
-    fn scoped_path_preserves_markers_for_original_rel_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir(dir.path().join("src")).expect("mkdir");
-        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
-        fs::write(dir.path().join("src/readme.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let entry = snap
-            .entries
-            .iter()
-            .find(|entry| entry.rel_path == "src/a.rs")
-            .expect("entry exists");
-        let mut selection = Selection::default();
-        selection.files.insert(
-            SelectionKey {
-                root_id: entry.root_id.clone(),
-                path: entry.rel_path.clone(),
-            },
-            crate::SelectionMode::Full,
-        );
-
-        let resp = get_file_tree_with_selection(
-            &snap,
-            &FileTreeOptions {
-                mode: TreeMode::Full,
-                max_depth: None,
-                path: Some("src".to_string()),
-            },
-            &selection,
-        );
-
-        assert!(resp.tree.contains("a.rs *+"), "{}", resp.tree);
-        assert!(resp.tree.contains("readme.txt"), "{}", resp.tree);
-        assert!(resp.uses_legend);
-    }
-
-    #[test]
-    fn selected_mode_renders_only_selected_files_and_parents() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir(dir.path().join("src")).expect("mkdir");
-        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
-        fs::write(dir.path().join("src/b.py"), "def b():\n    pass\n").expect("write");
-        fs::write(dir.path().join("notes.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let mut selection = Selection::default();
-        for path in ["src/a.rs", "notes.txt"] {
-            let entry = snap
-                .entries
-                .iter()
-                .find(|entry| entry.rel_path == path)
-                .expect("entry exists");
-            selection.files.insert(
-                SelectionKey {
-                    root_id: entry.root_id.clone(),
-                    path: entry.rel_path.clone(),
-                },
-                crate::SelectionMode::Full,
-            );
-        }
-
-        let resp =
-            get_selected_file_tree_with_selection(&snap, &opts(TreeMode::Auto, None), &selection);
-
-        assert!(resp.tree.contains("src/"), "{}", resp.tree);
-        assert!(resp.tree.contains("a.rs *+"), "{}", resp.tree);
-        assert!(resp.tree.contains("notes.txt *"), "{}", resp.tree);
-        assert!(!resp.tree.contains("b.py"), "{}", resp.tree);
-        assert!(resp.uses_legend);
-    }
-
-    #[test]
-    fn selected_mode_ignores_depth_to_keep_selected_files_visible() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir_all(dir.path().join("deep/a/b/c")).expect("mkdir");
-        fs::write(dir.path().join("deep/a/b/c/file.rs"), "fn selected() {}\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let entry = snap
-            .entries
-            .iter()
-            .find(|entry| entry.rel_path == "deep/a/b/c/file.rs")
-            .expect("entry exists");
-        let mut selection = Selection::default();
-        selection.files.insert(
-            SelectionKey {
-                root_id: entry.root_id.clone(),
-                path: entry.rel_path.clone(),
-            },
-            crate::SelectionMode::Full,
-        );
-        let resp = get_selected_file_tree_with_selection(
-            &snap,
-            &FileTreeOptions {
-                mode: TreeMode::Auto,
-                max_depth: Some(1),
-                path: None,
-            },
-            &selection,
-        );
-
-        assert!(resp.tree.contains("file.rs *+"), "{}", resp.tree);
-        assert!(!resp.was_truncated);
-    }
-
-    #[test]
-    fn selected_mode_reports_empty_selection() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("a.rs"), "fn a() {}\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let resp = get_selected_file_tree_with_selection(
-            &snap,
-            &opts(TreeMode::Auto, None),
-            &Selection::default(),
-        );
-
-        assert!(resp.tree.is_empty());
-        assert_eq!(resp.note.as_deref(), Some("selection is empty"));
-    }
-
-    #[test]
-    fn folders_mode_omits_files() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir(dir.path().join("src")).expect("mkdir");
-        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
-        fs::write(dir.path().join("top.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let resp = get_file_tree(&snap, &opts(TreeMode::Folders, None));
-        assert!(resp.tree.contains("src"));
-        assert!(!resp.tree.contains("a.rs"), "folders mode must omit files");
-        assert!(!resp.tree.contains("top.txt"));
-    }
-
-    #[test]
-    fn path_scopes_to_subdirectory() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::create_dir(dir.path().join("src")).expect("mkdir");
-        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
-        fs::write(dir.path().join("other.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let resp = get_file_tree(&snap, &opts(TreeMode::Auto, Some("src")));
-        assert!(resp.tree.contains("a.rs"));
-        assert!(
-            !resp.tree.contains("other.txt"),
-            "path scope must exclude siblings"
-        );
-    }
-
-    #[test]
-    fn unknown_path_reports_note() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("a.txt"), "x\n").expect("write");
-        let snap = snapshot_for(dir.path());
-        let resp = get_file_tree(&snap, &opts(TreeMode::Auto, Some("does/not/exist")));
-        assert!(resp.roots.is_empty());
-        assert!(
-            resp.note
-                .as_deref()
-                .unwrap_or_default()
-                .contains("path not found")
-        );
-    }
-
-    #[test]
     fn auto_sibling_cap_truncates_wide_directory() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        for i in 0..1500 {
-            fs::write(dir.path().join(format!("f{i:04}.txt")), "x\n").expect("write");
-        }
-        let snap = snapshot_for(dir.path());
+        let snap = wide_snapshot(1500);
         let resp = get_file_tree(&snap, &opts(TreeMode::Auto, None));
         let lines = resp.tree.lines().count();
         assert!(

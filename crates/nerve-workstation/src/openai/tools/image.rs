@@ -2,7 +2,7 @@ use super::*;
 use crate::openai::API_IMAGE_MODEL;
 
 pub(super) fn openai_image_generate(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
 ) -> Result<Value> {
     let prompt = required_string(arguments, "prompt")?;

@@ -24,9 +24,9 @@ run "version coherence"     bash Scripts/check-versions.sh
 run "dist SRI consistency"  bash Scripts/check-dist-consistency.sh
 
 if [ "${NERVE_PREPUSH_FULL:-0}" = "1" ]; then
-  run "clippy (-D warnings)" cargo clippy --workspace --all-targets -- -D warnings
+  run "clippy (-D warnings)" cargo clippy --workspace --all-targets --features nerve-core/test-internals -- -D warnings
   run "clippy wasm32"        cargo clippy -p nerve-gui --target wasm32-unknown-unknown -- -D warnings
-  run "test (workspace)"     cargo test --workspace
+  run "test (workspace)"     cargo test --workspace --features nerve-core/test-internals
 fi
 
 printf '\033[1;32m[pre-push] all local gates passed\033[0m\n'

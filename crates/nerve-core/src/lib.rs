@@ -45,14 +45,29 @@ pub use build_context::{
     ScoutResponse, build_context, build_context_cancellable, scout, scout_cancellable,
 };
 pub use cancel::CancelToken;
-#[cfg(not(target_arch = "wasm32"))]
-pub use catalog::{FsCatalogProvider, ScanOptions};
 pub use catalog::{HostFile, MemoryCatalogProvider};
 pub use changes::{
     AffectedSymbol, ChangedFileImpact, DetectChangesRequest, DetectChangesResponse,
     detect_changes_cancellable,
 };
 pub use codemap::get_code_structure;
+
+/// Parse lightweight code symbols for one source file (provider-support facade).
+///
+/// Wraps the kernel-internal codemap parser so the host-side `nerve-fs` provider
+/// can fill its parse cache without reaching into `pub(crate)` internals. Returns
+/// the same [`port::CodeSymbolsResult`] the in-memory provider produces.
+pub fn parse_symbols_for_path(source: &str, rel_path: &str) -> port::CodeSymbolsResult {
+    codemap::symbols_for_path(source, rel_path).map(|maybe| maybe.map(std::sync::Arc::new))
+}
+
+/// Display language name for a path's extension (provider-support facade).
+///
+/// Wraps the kernel-internal language detector so the host-side `nerve-fs`
+/// provider can decide which files are worth a background codemap warm.
+pub fn language_name_for_path(path: &str) -> Option<&'static str> {
+    codemap::path_language_name(path)
+}
 pub use dispatch::{
     DispatchError, dispatch_error_json, dispatch_error_json_for, dispatch_error_kind,
     dispatch_error_value, handle_tool_call, handle_tool_call_cancellable, handle_tool_call_json,
@@ -109,4 +124,25 @@ pub use workspace_context::{
 pub mod fuzzing {
     pub use crate::codemap::fuzz_symbols_for_path as codemap_symbols_for_path;
     pub use crate::search::fuzz_match_content as search_match_content;
+}
+
+/// Test-only re-exports for the relocated provider-dependent integration tests.
+///
+/// The provider-dependent unit tests that used to live in `nerve-core`'s in-src
+/// `#[cfg(test)]` modules now live in `crates/nerve-core/tests/` — a separate
+/// compilation unit, so they can link `nerve-fs`'s `FsCatalogProvider` without the
+/// `dev-dependencies` back-edge compiling `nerve-core` twice ("multiple versions
+/// of crate `nerve_core`"). A few of those tests reach kernel internals (the
+/// shared snapshot memos and a path-scoring helper). Rather than make those
+/// internals permanently public, this module — gated behind the off-by-default
+/// `test-internals` feature — re-exports exactly what the relocated tests need.
+/// Plain `cargo test` (feature off) skips the `#![cfg(feature = "test-internals")]`
+/// test files; CI runs them with `--features nerve-core/test-internals`.
+#[cfg(feature = "test-internals")]
+pub mod test_internals {
+    pub use crate::dispatch::{DiffOptions, apply_changes};
+    pub use crate::graph::{
+        DefinitionNameIndex, shared_definition_index, shared_indexed_files, shared_reference_graph,
+    };
+    pub use crate::repomap::{IndexedFile, ReferenceGraph, indexed_files_cancellable};
 }

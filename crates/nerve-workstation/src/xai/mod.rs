@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nerve_core::WorkspaceRegistry;
+use nerve_fs::FsWorkspaceRegistry;
 use serde_json::Value;
 
 const DEFAULT_CHAT_MODEL: &str = "grok-build-0.1";
@@ -24,7 +24,7 @@ pub(crate) fn tool_specs() -> Vec<Value> {
 }
 
 pub(crate) fn handle_tool_call(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     params: &Value,
 ) -> Result<Option<Value>> {
     tools::handle_tool_call(registry, params)
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_not_claimed() {
-        let registry = WorkspaceRegistry::new();
+        let registry = FsWorkspaceRegistry::new();
         let result = handle_tool_call(
             &registry,
             &json!({ "name": "file_search", "arguments": {} }),

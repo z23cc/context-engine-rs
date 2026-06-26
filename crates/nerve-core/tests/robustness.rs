@@ -1,8 +1,9 @@
 use nerve_core::{
-    CatalogProvider, FsCatalogProvider, ReadFileRequest, RepoMapRequest, RootPolicy, ScanOptions,
-    SearchMode, SearchRequest, get_code_structure, get_file_tree, get_repo_map,
-    handle_tool_call_json, read_file, search_snapshot,
+    CatalogProvider, ReadFileRequest, RepoMapRequest, RootPolicy, SearchMode, SearchRequest,
+    get_code_structure, get_file_tree, get_repo_map, handle_tool_call_json, read_file,
+    search_snapshot,
 };
+use nerve_fs::{FsCatalogProvider, ScanOptions};
 use proptest::prelude::*;
 use serde_json::json;
 use std::{fs, path::Path};

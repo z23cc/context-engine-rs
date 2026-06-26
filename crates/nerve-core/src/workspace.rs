@@ -1,8 +1,12 @@
 //! Workspace routing abstractions for multi-project hosts.
+//!
+//! The registry is **generic over the `CatalogProvider`** and defaults to the
+//! kernel-resident `MemoryCatalogProvider`. The filesystem-backed registry (with
+//! `add_workspace` / `manage_workspaces` that build `FsCatalogProvider`s from
+//! roots) lives host-side as `nerve_fs::FsWorkspaceRegistry` — a local newtype, so
+//! its `WorkspaceResolver` impl is legal there despite the orphan rule.
 
 use crate::{CatalogProvider, NerveError};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{FsCatalogProvider, RootPolicy, ScanOptions, models::RootRef};
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 use std::{collections::HashMap, ops::Deref, sync::Arc};
@@ -95,20 +99,16 @@ type WorkspaceStore<P> = RwLock<HashMap<WorkspaceId, Arc<P>>>;
 type WorkspaceStore<P> = RefCell<HashMap<WorkspaceId, Arc<P>>>;
 
 /// Registry of independent catalog-provider-backed workspaces.
+///
+/// Generic over the provider; defaults to the kernel `MemoryCatalogProvider`. The
+/// filesystem variant lives in `nerve-fs` as `FsWorkspaceRegistry`.
 #[derive(Debug)]
-pub struct WorkspaceRegistry<P = NativeWorkspaceProvider>
+pub struct WorkspaceRegistry<P = crate::MemoryCatalogProvider>
 where
     P: CatalogProvider + Sync,
 {
     workspaces: WorkspaceStore<P>,
-    #[cfg(not(target_arch = "wasm32"))]
-    scan_options: ScanOptions,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-type NativeWorkspaceProvider = FsCatalogProvider;
-#[cfg(target_arch = "wasm32")]
-type NativeWorkspaceProvider = crate::MemoryCatalogProvider;
 
 impl<P> Default for WorkspaceRegistry<P>
 where
@@ -127,8 +127,6 @@ where
     pub fn new() -> Self {
         Self {
             workspaces: new_workspace_store(),
-            #[cfg(not(target_arch = "wasm32"))]
-            scan_options: ScanOptions::default(),
         }
     }
 
@@ -153,6 +151,14 @@ where
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Arc<P>> {
         workspace_get(&self.workspaces, id)
+    }
+
+    /// Snapshot of every `(name, provider)` pair. Used by host registries (e.g.
+    /// `nerve_fs::FsWorkspaceRegistry`) to enumerate workspaces for listing without
+    /// exposing the internal store.
+    #[must_use]
+    pub fn entries(&self) -> Vec<(WorkspaceId, Arc<P>)> {
+        workspace_entries(&self.workspaces)
     }
 }
 
@@ -240,6 +246,23 @@ fn workspace_singleton<P>(store: &WorkspaceStore<P>) -> Option<Arc<P>> {
     store.borrow().values().next().cloned()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn workspace_entries<P>(store: &WorkspaceStore<P>) -> Vec<(WorkspaceId, Arc<P>)> {
+    read_store(store)
+        .iter()
+        .map(|(name, provider)| (name.clone(), Arc::clone(provider)))
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn workspace_entries<P>(store: &WorkspaceStore<P>) -> Vec<(WorkspaceId, Arc<P>)> {
+    store
+        .borrow()
+        .iter()
+        .map(|(name, provider)| (name.clone(), Arc::clone(provider)))
+        .collect()
+}
+
 fn resolve_from_store<'a, P>(
     store: &'a WorkspaceStore<P>,
     workspace: Option<&str>,
@@ -266,65 +289,21 @@ where
     Ok(ResolvedWorkspaceProvider::Shared(resolved))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl WorkspaceRegistry<FsCatalogProvider> {
-    #[must_use]
-    pub fn with_scan_options(scan_options: ScanOptions) -> Self {
-        Self {
-            workspaces: new_workspace_store(),
-            scan_options,
-        }
-    }
+/// Blanket resolver: any provider-backed registry resolves a workspace id from its
+/// store. The filesystem variant (`nerve_fs::FsWorkspaceRegistry`) is a newtype
+/// that overrides `manage_workspaces`; the generic registry uses the trait default
+/// (`ManageWorkspacesUnsupported`).
+impl<P> WorkspaceResolver for WorkspaceRegistry<P>
+where
+    P: CatalogProvider + Sync,
+{
+    type Provider = P;
 
-    pub fn add_workspace(
+    fn resolve_workspace(
         &self,
-        name: impl Into<WorkspaceId>,
-        roots: Vec<PathBuf>,
-    ) -> Result<Option<Arc<FsCatalogProvider>>, NerveError> {
-        let policy = RootPolicy::new(roots)?;
-        let provider = Arc::new(FsCatalogProvider::new(policy, self.scan_options.clone()));
-        Ok(self.insert(name, provider))
-    }
-
-    #[must_use]
-    pub fn list(&self) -> Vec<WorkspaceInfo> {
-        let mut workspaces: Vec<_> = read_store(&self.workspaces)
-            .iter()
-            .map(|(name, provider)| workspace_info(name, provider.roots()))
-            .collect();
-        workspaces.sort_by(|left, right| left.name.cmp(&right.name));
-        workspaces
-    }
-
-    fn workspace(&self, name: &str) -> Result<WorkspaceInfo, NerveError> {
-        let provider = self
-            .get(name)
-            .ok_or_else(|| NerveError::UnknownWorkspace(name.to_string()))?;
-        Ok(workspace_info(name, provider.roots()))
-    }
-
-    fn add_from_request(
-        &self,
-        name: WorkspaceId,
-        roots: Vec<PathBuf>,
-    ) -> Result<ManageWorkspacesResponse, NerveError> {
-        self.add_workspace(name.clone(), roots)?;
-        Ok(ManageWorkspacesResponse {
-            workspaces: vec![self.workspace(&name)?],
-            changed: Some(name),
-        })
-    }
-
-    fn remove_from_request(
-        &self,
-        name: WorkspaceId,
-    ) -> Result<ManageWorkspacesResponse, NerveError> {
-        self.remove(&name)
-            .ok_or_else(|| NerveError::UnknownWorkspace(name.clone()))?;
-        Ok(ManageWorkspacesResponse {
-            workspaces: self.list(),
-            changed: Some(name),
-        })
+        workspace: Option<&str>,
+    ) -> Result<ResolvedWorkspaceProvider<'_, Self::Provider>, NerveError> {
+        resolve_from_store(&self.workspaces, workspace)
     }
 }
 
@@ -363,62 +342,4 @@ pub enum ManageWorkspacesOp {
 pub struct ManageWorkspacesResponse {
     pub workspaces: Vec<WorkspaceInfo>,
     pub changed: Option<WorkspaceId>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn workspace_info(name: &str, roots: &[RootRef]) -> WorkspaceInfo {
-    WorkspaceInfo {
-        name: name.to_string(),
-        roots: roots.iter().map(|root| root.path.clone()).collect(),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl WorkspaceResolver for WorkspaceRegistry<FsCatalogProvider> {
-    type Provider = FsCatalogProvider;
-
-    fn resolve_workspace(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<ResolvedWorkspaceProvider<'_, Self::Provider>, NerveError> {
-        resolve_from_store(&self.workspaces, workspace)
-    }
-
-    fn manage_workspaces(
-        &self,
-        request: ManageWorkspacesRequest,
-    ) -> Result<ManageWorkspacesResponse, NerveError> {
-        match request.op {
-            ManageWorkspacesOp::List => Ok(ManageWorkspacesResponse {
-                workspaces: self.list(),
-                changed: None,
-            }),
-            ManageWorkspacesOp::Get => {
-                let name = request.name.ok_or(NerveError::MissingWorkspaceName)?;
-                Ok(ManageWorkspacesResponse {
-                    workspaces: vec![self.workspace(&name)?],
-                    changed: None,
-                })
-            }
-            ManageWorkspacesOp::Add => {
-                let name = request.name.ok_or(NerveError::MissingWorkspaceName)?;
-                self.add_from_request(name, request.roots)
-            }
-            ManageWorkspacesOp::Remove => {
-                let name = request.name.ok_or(NerveError::MissingWorkspaceName)?;
-                self.remove_from_request(name)
-            }
-        }
-    }
-}
-
-impl WorkspaceResolver for WorkspaceRegistry<crate::MemoryCatalogProvider> {
-    type Provider = crate::MemoryCatalogProvider;
-
-    fn resolve_workspace(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<ResolvedWorkspaceProvider<'_, Self::Provider>, NerveError> {
-        resolve_from_store(&self.workspaces, workspace)
-    }
 }

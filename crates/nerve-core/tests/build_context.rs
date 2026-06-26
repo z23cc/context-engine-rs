@@ -1,6 +1,5 @@
-use nerve_core::{
-    BuildContextRequest, CatalogProvider, FsCatalogProvider, RootPolicy, ScanOptions, build_context,
-};
+use nerve_core::{BuildContextRequest, CatalogProvider, RootPolicy, build_context};
+use nerve_fs::{FsCatalogProvider, ScanOptions};
 use std::{
     fs,
     path::{Path, PathBuf},

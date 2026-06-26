@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
-use nerve_core::{RootPolicy, WorkspaceRegistry, WorkspaceResolver};
+use nerve_core::{RootPolicy, WorkspaceResolver};
+use nerve_fs::FsWorkspaceRegistry;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -120,7 +121,7 @@ pub(super) fn string_arg(value: &Value, key: &str, default: &str) -> String {
 }
 
 pub(super) fn workspace_policy(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
 ) -> Result<RootPolicy> {
     let workspace = optional_string(arguments, "workspace");
@@ -134,7 +135,7 @@ pub(super) fn workspace_policy(
 }
 
 pub(super) fn resolve_workspace_read_path(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
     key: &str,
 ) -> Result<PathBuf> {
@@ -147,7 +148,7 @@ pub(super) fn resolve_workspace_read_path(
 }
 
 pub(super) fn resolve_workspace_write_path(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
     key: &str,
 ) -> Result<PathBuf> {
@@ -160,7 +161,7 @@ pub(super) fn resolve_workspace_write_path(
 }
 
 pub(super) fn optional_workspace_write_path(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
     key: &str,
 ) -> Result<Option<PathBuf>> {
@@ -299,12 +300,12 @@ pub(super) fn validate_yyyy_mm_dd(value: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nerve_core::{FsCatalogProvider, ScanOptions};
+    use nerve_fs::{FsCatalogProvider, ScanOptions};
     use serde_json::json;
     use std::{fs, sync::Arc};
 
-    fn registry_for(root: &Path) -> WorkspaceRegistry {
-        let registry = WorkspaceRegistry::new();
+    fn registry_for(root: &Path) -> FsWorkspaceRegistry {
+        let registry = FsWorkspaceRegistry::new();
         let policy = RootPolicy::new(vec![root.to_path_buf()]).expect("policy");
         registry.insert(
             "default",

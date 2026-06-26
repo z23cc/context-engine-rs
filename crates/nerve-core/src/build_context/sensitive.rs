@@ -331,17 +331,16 @@ mod tests {
 
     #[test]
     fn detects_private_key_body_when_only_body_slice_is_included() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("key.pem");
-        std::fs::write(
-            &path,
+        // In-src test: uses the kernel-resident `MemoryCatalogProvider` (not
+        // `nerve_fs::FsCatalogProvider`) so it can reach the private
+        // `scan_selection`/`selection_key` helpers without relocation. The
+        // sensitive-content scan is a pure function of file CONTENT, so the
+        // provider backend is irrelevant here.
+        let provider = crate::MemoryCatalogProvider::new(vec![crate::HostFile::new(
+            "key.pem",
             "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n",
-        )
-        .expect("write key");
-        let provider = crate::FsCatalogProvider::new(
-            crate::RootPolicy::new(vec![dir.path().to_path_buf()]).expect("policy"),
-            crate::ScanOptions::default(),
-        );
+        )])
+        .expect("provider");
         let snapshot = provider.snapshot().expect("snapshot");
         let entry = snapshot
             .entries
@@ -363,16 +362,11 @@ mod tests {
 
     #[test]
     fn scans_codemap_only_signatures_for_secret_defaults() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("client.py"),
+        let provider = crate::MemoryCatalogProvider::new(vec![crate::HostFile::new(
+            "client.py",
             "def connect(token=\"sk-proj-1234567890abcdefghijklmnopqrstuvwxyz\"):\n    pass\n",
-        )
-        .expect("write client");
-        let provider = crate::FsCatalogProvider::new(
-            crate::RootPolicy::new(vec![dir.path().to_path_buf()]).expect("policy"),
-            crate::ScanOptions::default(),
-        );
+        )])
+        .expect("provider");
         let snapshot = provider.snapshot().expect("snapshot");
         let entry = snapshot
             .entries

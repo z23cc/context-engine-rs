@@ -1,7 +1,7 @@
 use super::*;
 use crate::xai::{DEFAULT_TTS_LANGUAGE, DEFAULT_TTS_VOICE};
 
-pub(super) fn xai_tts(registry: &WorkspaceRegistry, arguments: &Value) -> Result<Value> {
+pub(super) fn xai_tts(registry: &FsWorkspaceRegistry, arguments: &Value) -> Result<Value> {
     let text = required_string(arguments, "text")?;
     let output_path = resolve_workspace_write_path(registry, arguments, "output_path")?;
     let creds = auth::resolve_runtime_credentials(false)?;
@@ -31,7 +31,7 @@ pub(super) fn xai_tts(registry: &WorkspaceRegistry, arguments: &Value) -> Result
     ))
 }
 
-pub(super) fn xai_transcribe(registry: &WorkspaceRegistry, arguments: &Value) -> Result<Value> {
+pub(super) fn xai_transcribe(registry: &FsWorkspaceRegistry, arguments: &Value) -> Result<Value> {
     let file_path = resolve_workspace_read_path(registry, arguments, "file_path")?;
     let creds = auth::resolve_runtime_credentials(false)?;
     let response = http_post_multipart_stt(

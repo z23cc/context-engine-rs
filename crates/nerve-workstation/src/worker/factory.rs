@@ -217,7 +217,7 @@ mod tests {
     fn factory() -> WorkerFactory {
         let registry = ProviderRegistry::default();
         let runtime = Arc::new(crate::tools::runtime(
-            nerve_core::WorkspaceRegistry::default(),
+            nerve_fs::FsWorkspaceRegistry::default(),
         ));
         WorkerFactory::new(
             crate::sandbox::refuse_launcher(),

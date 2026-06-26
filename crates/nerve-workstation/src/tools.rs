@@ -1,9 +1,10 @@
 use crate::{delegate, openai, xai};
-use nerve_core::{WorkspaceRegistry, WorkspaceResolver};
+use nerve_core::WorkspaceResolver;
+use nerve_fs::FsWorkspaceRegistry;
 use nerve_runtime::{Runtime, RuntimeError, RuntimeToolAdapter};
 use serde_json::Value;
 
-pub(crate) type NerveRuntime = Runtime<WorkspaceRegistry>;
+pub(crate) type NerveRuntime = Runtime<FsWorkspaceRegistry>;
 
 struct XaiToolAdapter;
 struct OpenAiToolAdapter;
@@ -13,14 +14,14 @@ struct OpenAiToolAdapter;
 /// manager's delegate executor, not this adapter.
 struct DelegateToolAdapter;
 
-impl RuntimeToolAdapter<WorkspaceRegistry> for XaiToolAdapter {
+impl RuntimeToolAdapter<FsWorkspaceRegistry> for XaiToolAdapter {
     fn tool_specs(&self) -> Vec<Value> {
         xai::tool_specs()
     }
 
     fn handle_tool_call(
         &self,
-        registry: &WorkspaceRegistry,
+        registry: &FsWorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
         xai::handle_tool_call(registry, params)
@@ -28,14 +29,14 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for XaiToolAdapter {
     }
 }
 
-impl RuntimeToolAdapter<WorkspaceRegistry> for OpenAiToolAdapter {
+impl RuntimeToolAdapter<FsWorkspaceRegistry> for OpenAiToolAdapter {
     fn tool_specs(&self) -> Vec<Value> {
         openai::tool_specs()
     }
 
     fn handle_tool_call(
         &self,
-        registry: &WorkspaceRegistry,
+        registry: &FsWorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
         openai::handle_tool_call(registry, params)
@@ -43,14 +44,14 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for OpenAiToolAdapter {
     }
 }
 
-impl RuntimeToolAdapter<WorkspaceRegistry> for DelegateToolAdapter {
+impl RuntimeToolAdapter<FsWorkspaceRegistry> for DelegateToolAdapter {
     fn tool_specs(&self) -> Vec<Value> {
         delegate::tool_specs()
     }
 
     fn handle_tool_call(
         &self,
-        registry: &WorkspaceRegistry,
+        registry: &FsWorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
         // Resolve the workspace root so `list_agents` discovers the C6 worker-as-data
@@ -63,7 +64,7 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for DelegateToolAdapter {
     }
 }
 
-impl RuntimeToolAdapter<WorkspaceRegistry> for crate::substrate_mcp::SubstrateToolAdapter {
+impl RuntimeToolAdapter<FsWorkspaceRegistry> for crate::substrate_mcp::SubstrateToolAdapter {
     fn tool_specs(&self) -> Vec<Value> {
         // UFCS so this resolves to the inherent method, not this trait method.
         crate::substrate_mcp::SubstrateToolAdapter::tool_specs(self)
@@ -71,7 +72,7 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for crate::substrate_mcp::SubstrateTo
 
     fn handle_tool_call(
         &self,
-        registry: &WorkspaceRegistry,
+        registry: &FsWorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
         let name = params
@@ -98,7 +99,7 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for crate::substrate_mcp::SubstrateTo
     }
 }
 
-pub(crate) fn runtime(registry: WorkspaceRegistry) -> NerveRuntime {
+pub(crate) fn runtime(registry: FsWorkspaceRegistry) -> NerveRuntime {
     Runtime::new(registry)
         .with_adapter(XaiToolAdapter)
         .with_adapter(OpenAiToolAdapter)
@@ -109,12 +110,11 @@ pub(crate) fn runtime(registry: WorkspaceRegistry) -> NerveRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nerve_core::{FsCatalogProvider, WorkspaceRegistry};
     use std::collections::HashSet;
 
     #[test]
     fn runtime_tool_specs_include_core_and_xai_tools() {
-        let registry: WorkspaceRegistry<FsCatalogProvider> = WorkspaceRegistry::new();
+        let registry: FsWorkspaceRegistry = FsWorkspaceRegistry::new();
         let runtime = runtime(registry);
         let specs = runtime.tool_specs();
         let names: Vec<_> = specs
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn runtime_dispatches_list_agents() {
-        let registry: WorkspaceRegistry<FsCatalogProvider> = WorkspaceRegistry::new();
+        let registry: FsWorkspaceRegistry = FsWorkspaceRegistry::new();
         let runtime = runtime(registry);
         let response = runtime
             .handle_tool_call(&serde_json::json!({ "name": "list_agents", "arguments": {} }))

@@ -23,6 +23,7 @@ directories = { workspace = true }
 ed25519-dalek = { workspace = true }
 nerve-agent = { path = "../nerve-agent" }
 nerve-core = { path = "../nerve-core" }
+nerve-fs = { path = "../nerve-fs" }
 nerve-runtime = { path = "../nerve-runtime" }
 nerve-wechat = { path = "../nerve-wechat" }
 serde.workspace = true

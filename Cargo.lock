@@ -2136,6 +2136,7 @@ dependencies = [
  "ignore",
  "insta",
  "memchr",
+ "nerve-fs",
  "nerve-proto",
  "nucleo-matcher",
  "proptest",
@@ -2161,6 +2162,15 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-tags",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "nerve-fs"
+version = "0.0.75"
+dependencies = [
+ "ignore",
+ "nerve-core",
+ "tempfile",
 ]
 
 [[package]]
@@ -2250,6 +2260,7 @@ dependencies = [
  "libc",
  "nerve-agent",
  "nerve-core",
+ "nerve-fs",
  "nerve-runtime",
  "nerve-wechat",
  "schemars",

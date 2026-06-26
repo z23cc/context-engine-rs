@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use nerve_core::{RootPolicy, WorkspaceRegistry, WorkspaceResolver};
+use nerve_core::{RootPolicy, WorkspaceResolver};
+use nerve_fs::FsWorkspaceRegistry;
 use serde_json::{Value, json};
 use std::{fs, path::Path, path::PathBuf};
 
@@ -32,7 +33,7 @@ pub(super) fn timeout_arg(value: &Value, key: &str, default: u64) -> u64 {
 }
 
 pub(super) fn resolve_workspace_write_path(
-    registry: &WorkspaceRegistry,
+    registry: &FsWorkspaceRegistry,
     arguments: &Value,
     key: &str,
 ) -> Result<PathBuf> {

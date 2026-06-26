@@ -1,16 +1,19 @@
-use crate::{
-    cancel::CancelToken,
-    models::{CatalogEntry, Diagnostic, NerveError, RootRef},
-    snapshot::CatalogSnapshot,
-};
+//! Parallel ignore-aware filesystem walk that builds an immutable catalog
+//! snapshot. Moved verbatim out of the kernel (was `nerve-core` `catalog/fs_scan`)
+//! so the impure walk lives host-side.
+
 use ignore::WalkBuilder;
+use nerve_core::{
+    CancelToken, CatalogSnapshot,
+    models::{CatalogEntry, Diagnostic, NerveError, RootRef},
+};
 use std::{
     mem,
     path::{Path, PathBuf},
     sync::mpsc,
 };
 
-pub(super) fn scan_root(root: &RootRef, cancel: &CancelToken) -> ScanRootOutput {
+pub(crate) fn scan_root(root: &RootRef, cancel: &CancelToken) -> ScanRootOutput {
     let mut builder = WalkBuilder::new(&root.path);
     let filter_cancel = cancel.clone();
     builder
@@ -55,15 +58,15 @@ struct ScanRootContext {
 }
 
 #[derive(Default)]
-pub(super) struct ScanRootOutput {
-    pub(super) entries: Vec<CatalogEntry>,
-    pub(super) diagnostics: Vec<Diagnostic>,
+pub(crate) struct ScanRootOutput {
+    pub(crate) entries: Vec<CatalogEntry>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 struct ScanWorkerState {
     context: ScanRootContext,
-    pub(super) entries: Vec<CatalogEntry>,
-    pub(super) diagnostics: Vec<Diagnostic>,
+    entries: Vec<CatalogEntry>,
+    diagnostics: Vec<Diagnostic>,
     sender: Option<mpsc::Sender<ScanRootOutput>>,
 }
 
@@ -153,7 +156,7 @@ fn push_catalog_entry(
     });
 }
 
-pub(super) fn finalize_snapshot(
+pub(crate) fn finalize_snapshot(
     mut entries: Vec<CatalogEntry>,
     mut diagnostics: Vec<Diagnostic>,
     roots: &[RootRef],

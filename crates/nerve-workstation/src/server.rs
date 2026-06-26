@@ -67,13 +67,13 @@ pub(crate) fn handle_message(
 mod tests {
     use super::*;
     use crate::workspace::{WorkspaceArg, args_with, registry};
-    use nerve_core::{FsCatalogProvider, WorkspaceRegistry};
+    use nerve_fs::FsWorkspaceRegistry;
     use std::fs;
 
     #[test]
     fn requires_initialized_after_initialize() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry: WorkspaceRegistry<FsCatalogProvider> = WorkspaceRegistry::new();
+        let registry: FsWorkspaceRegistry = FsWorkspaceRegistry::new();
         registry
             .add_workspace("default", vec![dir.path().to_path_buf()])
             .expect("workspace");

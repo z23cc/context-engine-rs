@@ -1,5 +1,8 @@
+// `pub` (in the private `dispatch::editing::diff` module, so no external leak)
+// so the gated `test-internals` re-export can reach it for the relocated
+// fs-atomic dispatch integration tests, which call `DiffOptions::default()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::dispatch) struct DiffOptions {
+pub struct DiffOptions {
     pub(in crate::dispatch) context_lines: usize,
     pub(in crate::dispatch) ignore_whitespace: bool,
 }

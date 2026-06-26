@@ -27,8 +27,12 @@ poisons neutrality). See `docs/designs/trust-substrate.md` and `architecture-nor
 cargo build                                   # whole workspace
 cargo build -p nerve-workstation --bin nerve  # just the nerve binary
 
-# Test
-cargo test --workspace
+# Test. The provider-dependent kernel tests live in crates/nerve-core/tests/ as
+# integration tests (they drive the host-side nerve-fs FsCatalogProvider, which an
+# in-src #[cfg(test)] module cannot construct). A few reach kernel internals via a
+# gated `test_internals` re-export, so CI runs the suite WITH the feature; a plain
+# run stays green (those gated files compile to nothing without the feature).
+cargo test --workspace --features nerve-core/test-internals
 cargo test --workspace golden_build_context             # run a single test by name substring
 
 # Golden snapshots (insta) — after an *intentional* change to tool output:
@@ -103,12 +107,13 @@ Usage notes that bite if you don't know them:
 
 ## Architecture
 
-Eight Rust crates form a layered seam. The determinism kernel `nerve-core` depends only on the
-wasm-safe protocol-vocabulary crate `nerve-proto`; above the kernel sit the siblings `nerve-runtime`
-and `nerve-agent`, then the `nerve-workstation` binary; `nerve-tui`, `nerve-gui`, and `nerve-wechat`
-are runtime-protocol clients of the daemon, not the engine. The long-term seam/plugin model and the
-binding invariants live in `docs/designs/architecture-north-star.md` — read it before any structural
-change.
+Nine Rust crates form a layered seam. The determinism kernel `nerve-core` depends only on the
+wasm-safe protocol-vocabulary crate `nerve-proto`; the impure filesystem provider lives **below the
+host** in the leaf crate `nerve-fs` (it depends on `nerve-core`, never the reverse); above the kernel
+sit the siblings `nerve-runtime` and `nerve-agent`, then the `nerve-workstation` binary; `nerve-tui`,
+`nerve-gui`, and `nerve-wechat` are runtime-protocol clients of the daemon, not the engine. The
+long-term seam/plugin model and the binding invariants live in
+`docs/designs/architecture-north-star.md` — read it before any structural change.
 
 - **`crates/nerve-proto`** — the **single protocol authority** and the one internal crate the kernel
   may depend on: transport-neutral, wasm-safe `serde` vocabulary (the `RuntimeCommand` / `RuntimeEvent`
@@ -128,7 +133,22 @@ change.
   `dispatch/mod.rs`): it takes a JSON `tools/call` params object and returns a JSON result.
   Core errors are `NerveError`; dispatch surfaces `DispatchError`. Its only internal dependency is
   `nerve-proto`, whose L0 provenance shapes it content-addresses (`provenance.rs`) — pure, so the
-  kernel stays deterministic.
+  kernel stays deterministic. The kernel keeps only the host-fed in-memory `MemoryCatalogProvider`;
+  the impure native provider was lifted out into `nerve-fs` (below).
+
+- **`crates/nerve-fs`** — the host-side filesystem adapter (a leaf crate that depends on `nerve-core`,
+  never the reverse). It holds the impure `CatalogProvider` the kernel must not contain: the real
+  ignore-aware filesystem walk (`scan.rs`), atomic write batches with rollback (`atomic.rs`), the
+  snapshot/codemap caches, and everything the determinism boundary forbids — wall-clock `Instant`
+  reads, `SystemTime` freshness signatures, the background `std::thread` codemap warmer
+  (`FsCatalogProvider` in `provider.rs`). It plugs into the kernel only through the declared
+  `CatalogProvider` + `WorkspaceResolver` seams; `FsWorkspaceRegistry` (`registry.rs`) is a local
+  newtype over `WorkspaceRegistry<FsCatalogProvider>` so its resolver impl is legal despite the orphan
+  rule. The kernel uses a tiny facade (`parse_symbols_for_path` / `language_name_for_path`) for the
+  codemap parse this crate needs. Provider-dependent kernel tests are integration tests in
+  `crates/nerve-core/tests/` (an in-src `#[cfg(test)]` module can't construct `nerve_fs` types — the
+  `[dev-dependencies] nerve-fs` back-edge would compile `nerve-core` twice). See
+  architecture-north-star §3.1 / §4 / INV-R2.
 
 - **`crates/nerve-runtime`** — the runtime seam above the engine: a `WorkspaceResolver` plus
   optional capability adapters (`RuntimeToolAdapter`) plus the job/event protocol. It **re-exports

@@ -85,15 +85,18 @@ pub(super) enum FileAnalysisResult {
     Diagnostic(Diagnostic),
 }
 
+// `pub` (in the private `analysis` submodule) so the gated `test-internals`
+// re-export can expose this type + fields to the relocated integration tests; the
+// private module keeps it crate-internal in normal builds.
 #[derive(Debug, Clone)]
-pub(crate) struct IndexedFile {
-    pub(crate) path: String,
-    pub(crate) display_path: String,
-    pub(crate) abs_path: PathBuf,
-    pub(crate) language: String,
-    pub(crate) symbols: Vec<CodeSymbol>,
-    pub(crate) references: Vec<CodeReference>,
-    pub(crate) query_match: bool,
+pub struct IndexedFile {
+    pub path: String,
+    pub display_path: String,
+    pub abs_path: PathBuf,
+    pub language: String,
+    pub symbols: Vec<CodeSymbol>,
+    pub references: Vec<CodeReference>,
+    pub query_match: bool,
 }
 
 /// Parse every supported file in the snapshot and return its indexed symbols and
@@ -101,7 +104,7 @@ pub(crate) struct IndexedFile {
 /// are parsed once through the provider's codemap cache. Unsupported files and
 /// per-file parse diagnostics are dropped (navigation is best-effort, like the
 /// repo-map's own indexing).
-pub(crate) fn indexed_files_cancellable<P: CatalogProvider + Sync>(
+pub fn indexed_files_cancellable<P: CatalogProvider + Sync>(
     provider: &P,
     snapshot: &CatalogSnapshot,
     cancel: &CancelToken,

@@ -12,6 +12,10 @@ mod derived;
 mod memo;
 mod snapshot_memo;
 
-pub(crate) use definitions::{DefinitionNameIndex, shared_definition_index};
-pub(crate) use derived::shared_reference_graph;
-pub(crate) use memo::shared_indexed_files;
+// `pub` (not `pub(crate)`) so the gated `crate::test_internals` module can
+// re-export them to the relocated integration tests. The `graph` module itself is
+// `pub(crate)`, so these stay crate-private in normal builds — they are reachable
+// externally ONLY through the off-by-default `test-internals` feature.
+pub use definitions::{DefinitionNameIndex, shared_definition_index};
+pub use derived::shared_reference_graph;
+pub use memo::shared_indexed_files;

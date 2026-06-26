@@ -6,7 +6,8 @@
 //! snapshots are independent of the shared `tests/fixtures/` tree and of each
 //! other.
 
-use nerve_core::{FsCatalogProvider, RootPolicy, ScanOptions, handle_tool_call};
+use nerve_core::{RootPolicy, handle_tool_call};
+use nerve_fs::{FsCatalogProvider, ScanOptions};
 use serde_json::json;
 use std::fs;
 

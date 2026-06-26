@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) fn xai_video_generate(registry: &WorkspaceRegistry, arguments: &Value) -> Result<Value> {
+pub(super) fn xai_video_generate(
+    registry: &FsWorkspaceRegistry,
+    arguments: &Value,
+) -> Result<Value> {
     let prompt = required_string(arguments, "prompt")?;
     let output_path = optional_workspace_write_path(registry, arguments, "output_path")?;
     let creds = auth::resolve_runtime_credentials(false)?;

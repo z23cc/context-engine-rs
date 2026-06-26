@@ -21,6 +21,11 @@ use args::*;
 use ast::*;
 use batch::*;
 use editing::*;
+// Gated re-export so the relocated fs-atomic dispatch integration tests can reach
+// the dispatch-internal edit applier + diff options. Off by default (the shipped
+// public surface is unchanged); CI turns it on with `--features test-internals`.
+#[cfg(feature = "test-internals")]
+pub use editing::{DiffOptions, apply_changes};
 pub use error::{
     DispatchError, dispatch_error_json, dispatch_error_json_for, dispatch_error_kind,
     dispatch_error_value,

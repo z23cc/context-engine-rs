@@ -1,6 +1,6 @@
 mod diff;
 
-pub(super) use diff::DiffOptions;
+pub use diff::DiffOptions;
 use diff::{unified_diff, unified_diff_with_options};
 
 use super::{DispatchError, ToolText, edit, preflight_changes};
@@ -113,8 +113,12 @@ impl EditedFile {
     }
 }
 
+// `pub` (in the private `dispatch::editing` module) only so the now-`pub`
+// `apply_changes` can name it in its return type without a private-in-public
+// error; it stays unreachable externally (the gated re-export exposes only
+// `apply_changes`/`DiffOptions`).
 #[derive(serde::Serialize)]
-pub(super) struct EditResult {
+pub struct EditResult {
     pub(super) files: Vec<EditedFile>,
 }
 
@@ -184,7 +188,9 @@ fn push_selection_summary(out: &mut String, files: &[EditedFile]) {
     ));
 }
 
-pub(super) fn apply_changes<P: CatalogProvider + ?Sized>(
+// `pub` (in the private `dispatch::editing` module) so the gated `test-internals`
+// re-export can reach it for the relocated fs-atomic dispatch integration tests.
+pub fn apply_changes<P: CatalogProvider + ?Sized>(
     provider: &P,
     changes: Vec<FileChange>,
     diff_options: DiffOptions,

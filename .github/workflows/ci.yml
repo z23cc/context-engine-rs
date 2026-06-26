@@ -48,7 +48,9 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (-D warnings, all targets)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # `--features nerve-core/test-internals` so the relocated kernel integration
+        # tests that reach `nerve_core::test_internals` are lint-checked too.
+        run: cargo clippy --workspace --all-targets --features nerve-core/test-internals -- -D warnings
 
       # Gate the wasm32 frontend (nerve-gui is wasm-only; the host clippy above
       # checks it on the host target, but wasm-specific API breakage only shows up
@@ -67,7 +69,13 @@ jobs:
         run: cargo build -p nerve-workstation --bin nerve
 
       - name: Test (whole workspace)
-        run: cargo test --workspace
+        # `--features nerve-core/test-internals` so the relocated provider-dependent
+        # kernel tests that reach the gated `test_internals` re-export (graph memos,
+        # fs-atomic dispatch, the cancellation-injection hook) actually RUN. The
+        # impure `FsCatalogProvider` now lives in `nerve-fs`, so these are
+        # integration tests under crates/nerve-core/tests/ (an in-src #[cfg(test)]
+        # module cannot construct a `nerve-fs` type — it would compile nerve-core twice).
+        run: cargo test --workspace --features nerve-core/test-internals
         # Runtime-protocol drift is already asserted by the
         # `generated_protocol_rust_artifacts_are_current` test in nerve-runtime
         # (run here), so a separate `export-runtime-protocol --check` step would

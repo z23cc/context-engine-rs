@@ -177,12 +177,29 @@ nerve-workstation   composition root (the `nerve` binary): MCP face (server.rs),
   │                 trust-substrate stores (run/ledger/verify/receipt/outcome), xAI tools (xai/),
   │                 thin `nerve auth` alias (auth/ → nerve-agent::auth).
   │
+nerve-fs   host-side filesystem adapter (leaf, depends on nerve-core, never the reverse):
+           the impure `FsCatalogProvider` + ignore walk + atomic write batches + snapshot/
+           codemap caches — all the wall-clock / SystemTime / std::thread the kernel forbids.
+           Plugs in via the `CatalogProvider` + `WorkspaceResolver` seams (`FsWorkspaceRegistry`
+           is a local newtype, legal under the orphan rule). Used by `nerve-workstation`.
+  │
 nerve-tui · nerve-gui (Leptos wasm CSR) · nerve-wechat (iLink bot bridge)
                                   clients of the versioned runtime protocol — never the engine.
 ```
 
 `nerve-agent` and `nerve-runtime` are **siblings** (both depend only on `nerve-core`); the binary
 marries them via the `ToolBox` port (`RuntimeToolBox` in `agent.rs`).
+
+> **`nerve-fs` is the impure provider, lifted out of the kernel (INV-R2 / §3.1).** The native
+> `FsCatalogProvider` used to live in `nerve-core` behind a `cfg(not(wasm))` gate; it has been moved
+> into a host-side leaf crate so the kernel's source tree contains **no** wall-clock (`Instant`),
+> `SystemTime`, or `std::thread` use at all (the crate boundary is the enforcement — `grep` for those
+> in `nerve-core/src` is empty). `nerve-core` keeps only the host-fed, pure `MemoryCatalogProvider`;
+> `nerve-fs` depends on `nerve-core` (and a tiny `parse_symbols_for_path` / `language_name_for_path`
+> facade), never the reverse. Provider-dependent kernel tests are integration tests under
+> `crates/nerve-core/tests/` (a `[dev-dependencies] nerve-fs` back-edge cannot be used from in-src
+> `#[cfg(test)]` modules — it would compile `nerve-core` twice); the few that need kernel internals go
+> through an off-by-default `test-internals` feature re-export.
 
 > **`nerve-proto` is below the kernel.** The wasm-safe, zero-internal-dependency protocol-vocabulary
 > crate is the one internal crate `nerve-core` may depend on: it carries pure serde data only (no

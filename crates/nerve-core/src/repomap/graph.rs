@@ -11,11 +11,14 @@ use super::{
 
 const IMPORT_EDGE_WEIGHT: f64 = 8.0;
 
+// `pub` (in the private `graph` submodule) so the gated `test-internals`
+// re-export can expose this type + counters to the relocated integration tests;
+// the private module keeps it crate-internal in normal builds.
 #[derive(Debug)]
-pub(crate) struct ReferenceGraph {
-    pub(crate) edges: Vec<Vec<(usize, f64)>>,
-    pub(crate) symbols_indexed: usize,
-    pub(crate) edge_count: usize,
+pub struct ReferenceGraph {
+    pub edges: Vec<Vec<(usize, f64)>>,
+    pub symbols_indexed: usize,
+    pub edge_count: usize,
 }
 
 impl ReferenceGraph {

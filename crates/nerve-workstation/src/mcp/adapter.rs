@@ -8,7 +8,7 @@
 use super::client::McpStdioClient;
 use super::config::McpServerConfig;
 use anyhow::{Result, bail};
-use nerve_core::WorkspaceRegistry;
+use nerve_fs::FsWorkspaceRegistry;
 use nerve_runtime::{RuntimeError, RuntimeToolAdapter};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -77,7 +77,7 @@ impl McpClientToolAdapter {
     }
 }
 
-impl RuntimeToolAdapter<WorkspaceRegistry> for McpClientToolAdapter {
+impl RuntimeToolAdapter<FsWorkspaceRegistry> for McpClientToolAdapter {
     fn tool_specs(&self) -> Vec<Value> {
         self.specs.clone()
     }
@@ -88,7 +88,7 @@ impl RuntimeToolAdapter<WorkspaceRegistry> for McpClientToolAdapter {
 
     fn handle_tool_call(
         &self,
-        _resolver: &WorkspaceRegistry,
+        _resolver: &FsWorkspaceRegistry,
         params: &Value,
     ) -> Result<Option<Value>, RuntimeError> {
         let Some(name) = params.get("name").and_then(Value::as_str) else {

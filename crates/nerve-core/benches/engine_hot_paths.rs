@@ -1,8 +1,8 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nerve_core::{
-    CatalogProvider, FsCatalogProvider, RootPolicy, ScanOptions, SearchMode, SearchRequest,
-    handle_tool_call, search_snapshot,
+    CatalogProvider, RootPolicy, SearchMode, SearchRequest, handle_tool_call, search_snapshot,
 };
+use nerve_fs::{FsCatalogProvider, ScanOptions};
 use serde_json::json;
 use std::{
     fs,

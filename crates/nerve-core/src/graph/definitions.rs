@@ -44,7 +44,7 @@ const SHARED_DEFINITION_INDEX_CAP: usize = 8;
 /// occurrence. Repeats encode multiple same-named symbols within one file, so a
 /// consumer can recover either the defining-file set (dedup) or the symbol count
 /// (with repeats) by applying its own per-file filter at lookup.
-pub(crate) struct DefinitionNameIndex {
+pub struct DefinitionNameIndex {
     by_name: HashMap<String, Vec<usize>>,
 }
 
@@ -62,7 +62,7 @@ impl DefinitionNameIndex {
     /// File index of every symbol occurrence whose name is `name` (one entry per
     /// matching symbol, so a file with N same-named symbols appears N times);
     /// empty if the name defines nothing.
-    pub(crate) fn occurrences(&self, name: &str) -> &[usize] {
+    pub fn occurrences(&self, name: &str) -> &[usize] {
         self.by_name.get(name).map_or(&[], Vec::as_slice)
     }
 }
@@ -74,7 +74,7 @@ fn cache() -> &'static Mutex<SnapshotMemo<DefinitionNameIndex>> {
 
 /// Return the memoized [`DefinitionNameIndex`] for `snapshot`, building it once
 /// on a miss from the shared indexed-file set.
-pub(crate) fn shared_definition_index<P: CatalogProvider + Sync>(
+pub fn shared_definition_index<P: CatalogProvider + Sync>(
     provider: &P,
     snapshot: &Arc<CatalogSnapshot>,
     cancel: &CancelToken,
@@ -84,92 +84,4 @@ pub(crate) fn shared_definition_index<P: CatalogProvider + Sync>(
         cancel.check_cancelled()?;
         Ok(DefinitionNameIndex::build(&files))
     })
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-    use crate::catalog::{FsCatalogProvider, ScanOptions};
-    use crate::security::RootPolicy;
-    use std::fs;
-
-    fn provider_for(dir: &std::path::Path) -> FsCatalogProvider {
-        FsCatalogProvider::new(
-            RootPolicy::new(vec![dir.to_path_buf()]).expect("policy"),
-            ScanOptions::default(),
-        )
-    }
-
-    #[test]
-    fn same_cached_snapshot_returns_ptr_eq_definition_index() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        fs::write(dir.path().join("a.rs"), "pub fn alpha() {}\n").expect("write");
-        let provider = provider_for(dir.path());
-
-        let snapshot = provider.snapshot_arc().expect("snapshot");
-        let first =
-            shared_definition_index(&provider, &snapshot, &CancelToken::never()).expect("index");
-        let second =
-            shared_definition_index(&provider, &snapshot, &CancelToken::never()).expect("index");
-
-        assert!(
-            Arc::ptr_eq(&first, &second),
-            "repeated calls on the same snapshot Arc must reuse the memoized definition index"
-        );
-    }
-
-    #[test]
-    fn occurrences_count_matches_repeated_symbols() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Two symbols named `dup` in one file -> two occurrences at the same idx.
-        fs::write(
-            dir.path().join("a.rs"),
-            "pub fn dup() {}\npub struct dup;\n",
-        )
-        .expect("write");
-        let provider = provider_for(dir.path());
-        let snapshot = provider.snapshot_arc().expect("snapshot");
-        let index =
-            shared_definition_index(&provider, &snapshot, &CancelToken::never()).expect("index");
-        assert_eq!(
-            index.occurrences("dup").len(),
-            2,
-            "each same-named symbol occurrence must be recorded (count semantics)"
-        );
-        assert!(index.occurrences("missing").is_empty());
-    }
-
-    #[test]
-    fn fs_provider_edit_invalidate_serves_fresh_index_not_stale_memo() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("a.rs");
-        fs::write(&file, "pub fn alpha() {}\n").expect("write");
-        let provider = provider_for(dir.path());
-
-        let snapshot_a = provider.snapshot_arc().expect("snapshot a");
-        let index_a = shared_definition_index(&provider, &snapshot_a, &CancelToken::never())
-            .expect("index a");
-        assert!(!index_a.occurrences("alpha").is_empty());
-        assert!(index_a.occurrences("beta").is_empty());
-
-        // Edit: rename the only symbol, invalidate, re-snapshot (fresh Arc).
-        fs::write(&file, "pub fn beta() {}\n").expect("rewrite");
-        provider.invalidate();
-        let snapshot_b = provider.snapshot_arc().expect("snapshot b");
-        assert!(
-            !Arc::ptr_eq(&snapshot_a, &snapshot_b),
-            "invalidate must force a fresh snapshot Arc after an edit"
-        );
-        let index_b = shared_definition_index(&provider, &snapshot_b, &CancelToken::never())
-            .expect("index b");
-
-        assert!(
-            !index_b.occurrences("beta").is_empty(),
-            "index after edit+invalidate must reflect the new symbol, not the stale memo"
-        );
-        assert!(
-            index_b.occurrences("alpha").is_empty(),
-            "the renamed-away symbol must be gone, not served from the stale memo"
-        );
-    }
 }
