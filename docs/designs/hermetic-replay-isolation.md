@@ -104,6 +104,11 @@ value* is pure data in `nerve-proto` (§3).
 | **macOS (dev box)** | `sandbox-exec` / Seatbelt SBPL (`file-read*`/`file-write*` scoped to root + tmp) | Seatbelt `(deny network*)` | none | **`BestEffort`** | **NEW (low priority)** |
 | **Windows** | — | — | — | **`Unconfined`** | **explicit non-goal v1** (CI isn't Windows) |
 
+> **Amended 2026-06-27 (see §7).** "macOS low priority / Windows non-goal" is the *build-order* call,
+> not a platform lock: the honest tier already works everywhere, and the cross-platform guarantee is
+> carried by the universal tier + a portable pinned Linux image (§7.5), not by native parity. macOS is
+> first-class in intent, honestly capped at `BestEffort`; Windows reuses the Linux backend via WSL2.
+
 **The `Hermetic` contract pins:** (1) declared FS roots (read: root + toolchain dirs; write: root +
 ephemeral tmp; else denied); (2) no network by default (`NetPolicy::Deny` *enforced*, not intent —
 `Allow` is opt-in and downgrades the tier, §5); (3) a pinned toolchain digest (extend
@@ -216,7 +221,10 @@ additive, fully-deterministic work that closes the *overclaim* even before any k
 
 **Recommendation:** **(a) is shipped** (proto v16 — the invariant-critical piece is done; the INV-R1
 overclaim is closed and the `--require-isolation` lever exists). Next: **(b)+(c)** on Linux to actually
-earn `Hermetic` where CI seals receipts. **(d)** deepens the closure; **(e)** is a dev nicety, last.
+earn `Hermetic` where CI seals receipts. **(d)** deepens the closure *and* is the "Hermetic anywhere"
+lever (§7.5); **(e)** is a dev nicety, last. The whole ladder is a **cross-platform** target, not a
+Linux lock — see §7 for the per-OS backend kit (permissive primitives, since the cross-platform
+`birdcage` crate is GPL-incompatible) and the portable pinned-image route.
 
 ---
 
@@ -275,3 +283,75 @@ The whole plan is **additive, seam-respecting, and `nerve-core`-pure**: the stro
 entirely in `nerve-workstation` behind the existing `SandboxLauncher` port (INV-R2), the tier is
 signed protocol data added per the additive/versioned discipline (INV-R5), and brick (a) closes the
 INV-R1 overclaim *before* any kernel work lands — which is the point.
+
+---
+
+## 7. Cross-platform strategy — earning the tier without locking to Linux
+
+Added 2026-06-27. The §2/§4 ordering puts **Linux first** because the gating verify (the run that
+seals a *trusted* Receipt) belongs in CI, and the dominant CI is Linux. But "Linux-first" is a build
+**priority**, not a platform **lock**. The amendment below makes the cross-platform stance explicit and
+records why we do **not** chase native sandbox parity on each OS.
+
+### 7.1 Two layers — only the *strongest tier* is platform-specific
+
+| Layer | Cross-platform today? | Why |
+|---|---|---|
+| **Honest `IsolationTier` (brick a)** | **Yes — all platforms now.** | It is pure `nerve-proto` data. macOS/Windows already run Nerve and seal honest receipts, stamped `Contained`/`Unconfined`. |
+| **The default gate** | **Yes.** | `nerve gate` is **report, don't block** by default — no platform is locked out of using Nerve. |
+| **Earning `Hermetic`** | **Per-OS kernel work.** | `Hermetic` requires kernel-enforced FS+net closure; the primitives differ by OS. |
+
+So the only thing "Linux-only" today is the **opt-in** `--require-isolation hermetic` *floor*. Using
+Nerve — capturing runs, gating on the org's checks, sealing signed receipts — is fully cross-platform
+now. This is the court-reporter design working as intended: we never *forbid* a platform, we *disclose*
+its tier.
+
+### 7.2 A unified API does NOT unify the guarantee
+
+The `SandboxLauncher` seam already lets each OS plug in its own backend with zero caller change
+(§2.1). A cross-platform sandbox *library* can smooth the **code** across OSes — but it cannot smooth
+the **guarantee**: Linux Landlock (a kernel LSM) and macOS Seatbelt (an Apple-**deprecated** policy
+engine whose network denial is a filter, not namespace isolation) are not equally strong. Therefore the
+probed `IsolationTier` (INV-R7) stays load-bearing **on top of** any cross-platform crate: the same API
+still resolves to `Hermetic` on Linux and `BestEffort` on macOS. Claim less where we are less sure.
+
+### 7.3 Cross-platform Rust sandbox crates — surveyed, and the license wall
+
+| Crate | Coverage | Mechanism | License | Verdict |
+|---|---|---|---|---|
+| **`birdcage`** (phylum-dev) | Linux + macOS | Landlock (Linux) + Seatbelt/`sandbox-exec` (macOS), unified **FS + network** API — exactly our surface | **GPL-3.0-or-later** | **Cannot link.** This workspace is `MIT OR Apache-2.0`; GPL-3.0 copyleft is incompatible as a linked dependency. Excellent **open reference design**, not a dependency. |
+| **`gaol`** (servo) | Linux + macOS + Windows | multiprocess broker | MPL-2.0 | Adds Windows, but self-described "lightly reviewed… not battle-tested" and effectively dormant — unfit for a determinism-critical dependency. |
+
+**Conclusion:** there is no permissively-licensed, maintained, all-three-OS sandbox crate to adopt
+wholesale. Build thin backends from permissive primitives behind the seam, using `birdcage` as the
+design reference (its scope — FS + network only — is precisely ours).
+
+### 7.4 The permissive backend kit (all impure, `nerve-workstation`-only, zero `nerve-core` change)
+
+| OS | FS closure | Network deny | Syscall | Earns | Primitive (license to confirm via `cargo-deny`) |
+|---|---|---|---|---|---|
+| **Linux** | `rust-landlock` (Apache-2.0/MIT) | `nix`/`rustix` `unshare(CLONE_NEWNET)` | `seccompiler` (Apache-2.0) denylist | **`Hermetic`** | all permissive |
+| **macOS** | Seatbelt SBPL via direct `sandbox_init` FFI (a system API — no crate-license issue) | Seatbelt `(deny network*)` | — | **`BestEffort`** (honest cap — deprecated + filter-not-namespace) | FFI, no third-party license |
+| **Windows** | defer native (AppContainer / Job Objects) | — | — | — | **pragmatic path: WSL2 reuses the Linux backend** |
+
+A `cargo-deny` license gate (the repo has no `deny.toml` yet) should be added alongside the first
+backend so a GPL/again-incompatible transitive dep can never slip into an `MIT OR Apache-2.0` product.
+
+### 7.5 The portable "Hermetic anywhere" route — preferred for the strongest claim
+
+The robust cross-platform answer is **not** to reimplement each OS's weaker native sandbox, but to
+**decouple the dev-host from the seal-host** (the Bazel-RBE / Nix pattern): run the gating verify inside
+a **content-addressed pinned Linux OCI image** (brick (d)'s `EnvironmentPinner`) via a local container
+runtime, so any host — Mac, Windows, Linux — reaches **one verified `Hermetic` path** instead of three
+uneven native ones. This also fills the currently-empty `repo_snapshot_hash` / toolchain closure (§1.1),
+so the `Hermetic` claim rests on a real per-byte closure rather than a path+size proxy.
+
+### 7.6 Revised stance (amends the §2.2 "macOS low priority / Windows non-goal" framing)
+
+- **macOS is first-class in *intent*** — Mac CI is real (iOS/Swift shops *are* macOS CI). It gets a
+  Seatbelt backend so Mac verify is not bottom-tier, but it is **honestly capped at `BestEffort`**
+  (INV-R1), never a fabricated `Hermetic`.
+- **The cross-platform guarantee is carried by (a) the universal honest tier and (b) the portable
+  pinned image** — not by faking native parity on each OS's sandbox.
+- **Build order is unchanged** (Linux (b)+(c) first, where the gating CI runs), but the target is
+  explicitly a *cross-platform* substrate, with the portable image (d) as the "Hermetic anywhere" lever.
