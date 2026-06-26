@@ -130,6 +130,13 @@ pub(crate) fn host_capabilities() -> Value {
     to_value(&RuntimeCommand::HostCapabilities)
 }
 
+/// `ledger.verify` — re-derive the append-only evidence ledger's hash chain and
+/// report whether it is intact (read-only; the tamper-detection moat). A unit
+/// variant, so the wire is just `{ "kind": "ledger.verify" }`.
+pub(crate) fn ledger_verify() -> Value {
+    to_value(&RuntimeCommand::LedgerVerify)
+}
+
 /// `host.clipboard.write_text`.
 pub(crate) fn host_clipboard_write_text(text: String) -> Value {
     to_value(&RuntimeCommand::HostClipboardWriteText { text })
@@ -316,6 +323,11 @@ mod tests {
     #[test]
     fn host_capabilities_matches_literal() {
         assert_eq!(host_capabilities(), json!({ "kind": "host.capabilities" }));
+    }
+
+    #[test]
+    fn ledger_verify_matches_literal() {
+        assert_eq!(ledger_verify(), json!({ "kind": "ledger.verify" }));
     }
 
     #[test]

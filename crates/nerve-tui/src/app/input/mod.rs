@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 use super::Shell;
 use super::state::{ApprovalState, Mode, Tone};
 use crate::ui::commands::{
-    COMMANDS, CommandSpec, HELP_TEXT, SlashCommand, approval_mode_label, format_models,
-    match_commands, parse_approval_mode, parse_command, provider_models_tool,
+    COMMANDS, CommandSpec, HELP_TEXT, SlashCommand, approval_mode_label, format_ledger_verdict,
+    format_models, match_commands, parse_approval_mode, parse_command, provider_models_tool,
 };
 use crate::ui::theme::THEMES;
 use delegate::{SubmitRoute, submit_route};
@@ -272,6 +272,7 @@ impl Shell {
             "new" | "reset" => self.new_session().await,
             "login" => self.cmd_login(&rest),
             "lease" => self.cmd_lease(&rest).await,
+            "ledger" => self.cmd_ledger().await,
             "theme" => self.cmd_theme(),
             other => self.state.hint = format!("unknown command: /{other} — try /help"),
         }
@@ -427,6 +428,24 @@ impl Shell {
         }
     }
 
+    /// `/ledger`: verify the L1 evidence ledger's tamper-evident chain and surface
+    /// the same chain-integrity verdict CI/MCP get. Read-only — it builds
+    /// [`RuntimeCommand::LedgerVerify`] (proto v13), awaits the job result, and
+    /// appends a concise verdict as a system notice: "ledger intact — N records,
+    /// head <first8>" on an intact chain, or "ledger TAMPERED — <class> at seq K"
+    /// on tamper. Mirrors the one-shot `run_job` dispatch used by `/models`.
+    async fn cmd_ledger(&mut self) {
+        self.state.note("verifying ledger chain…");
+        match self.client.run_job(ledger_verify_command(), None).await {
+            Ok(result) => {
+                self.state.hint.clear();
+                let (tone, line) = format_ledger_verdict(&result);
+                self.state.push_notice(tone, line);
+            }
+            Err(err) => self.state.push_notice(Tone::Error, err.to_string()),
+        }
+    }
+
     /// Ctrl-C interrupt of the in-flight turn (a no-op when idle).
     async fn interrupt(&mut self) {
         let Some(session_id) = self.state.session_id.clone() else {
@@ -511,6 +530,14 @@ fn respond_command(
             decision,
         }
     }
+}
+
+/// Build the read-only `ledger.verify` command (proto v13) that `/ledger` runs.
+/// A unit variant with no args; pulled into a pure helper so the slash-command
+/// dispatch is testable without a live daemon (mirrors [`respond_command`]).
+#[must_use]
+fn ledger_verify_command() -> RuntimeCommand {
+    RuntimeCommand::LedgerVerify
 }
 
 /// Past-tense verb for a decision notice. Ports the TS `decisionVerb`.
@@ -703,5 +730,18 @@ mod tests {
     fn palette_specs_are_the_command_list() {
         assert!(palette_specs().iter().any(|c| c.name == "model"));
         assert!(palette_specs().iter().any(|c| c.name == "quit"));
+    }
+
+    #[test]
+    fn ledger_command_is_in_palette_and_builds_ledger_verify() {
+        // The `/ledger` slash command is offered by the palette and its dispatch
+        // builds the read-only `ledger.verify` runtime command (proto v13) — the
+        // same chain-integrity check CI/MCP run. (mirrors `respond_command_*`.)
+        assert!(palette_specs().iter().any(|c| c.name == "ledger"));
+        assert!(matches!(
+            ledger_verify_command(),
+            RuntimeCommand::LedgerVerify
+        ));
+        assert_eq!(ledger_verify_command().name(), "ledger.verify");
     }
 }

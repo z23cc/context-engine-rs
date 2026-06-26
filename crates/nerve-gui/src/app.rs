@@ -88,6 +88,9 @@ pub fn App() -> impl IntoView {
     // The daemon's live runtime protocol version (`runtime/info`), shown in the
     // sidebar status row; `None` until fetched (sidebar shows a neutral label).
     let protocol_version = RwSignal::new(None::<String>);
+    // The L1 evidence-ledger chain-integrity verdict (`ledger.verify`), shown as a
+    // read-only sidebar badge; `None` until fetched (badge stays neutral).
+    let ledger_integrity = RwSignal::new(None::<crate::data::LedgerIntegrity>);
     let branch = RwSignal::new("—".to_string());
     // True while the active workspace's branch is being (re)fetched — drives the
     // project rail's loading skeleton instead of flashing the previous repo's branch.
@@ -150,8 +153,12 @@ pub fn App() -> impl IntoView {
         leptos::task::spawn_local(async move {
             host_caps.set(crate::data::fetch_host_capabilities(&caps_tok).await.ok());
         });
+        let proto_tok = tok.clone();
         leptos::task::spawn_local(async move {
-            protocol_version.set(crate::data::fetch_protocol_version(&tok).await);
+            protocol_version.set(crate::data::fetch_protocol_version(&proto_tok).await);
+        });
+        leptos::task::spawn_local(async move {
+            ledger_integrity.set(crate::data::fetch_ledger_integrity(&tok).await);
         });
     });
 
@@ -490,6 +497,7 @@ pub fn App() -> impl IntoView {
                 branch_loading=branch_loading
                 reveal_workspace=reveal_workspace
                 protocol_version=protocol_version
+                ledger_integrity=ledger_integrity
                 busy=Signal::derive(active_busy) />
             <main class="main chat">
                 <Topbar agent=agent model=model mode=mode display=workspace_label branch=branch

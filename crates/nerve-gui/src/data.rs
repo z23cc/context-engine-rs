@@ -104,6 +104,39 @@ pub async fn fetch_protocol_version(token: &str) -> Option<String> {
         .map(|info| info.protocol_version)
 }
 
+/// The L1 evidence-ledger chain-integrity verdict, parsed from `ledger.verify`'s
+/// result `Value` for the sidebar badge. Intact => `{ok:true, count, head_hash}`;
+/// tamper => `{ok:false, error:"<HashMismatch|SeqGap|PrevMismatch>", seq}`.
+#[derive(Clone, Default)]
+pub struct LedgerIntegrity {
+    pub ok: bool,
+    pub count: u64,
+    pub head: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Re-derive the append-only evidence ledger's hash chain via the daemon's
+/// read-only `ledger.verify` job, mirroring [`fetch_protocol_version`] so the
+/// sidebar can surface the same tamper-evident verdict CI/MCP get. `None` if the
+/// job fails to run, so the badge can stay neutral rather than show a stale state.
+pub async fn fetch_ledger_integrity(token: &str) -> Option<LedgerIntegrity> {
+    let value = start_job_await(token, crate::command::ledger_verify())
+        .await
+        .ok()?;
+    Some(LedgerIntegrity {
+        ok: value.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        count: value.get("count").and_then(Value::as_u64).unwrap_or(0),
+        head: value
+            .get("head_hash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error: value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 pub async fn pick_host_folder(token: &str, title: &str) -> Result<String, String> {
     let result = start_job_await(token, crate::command::host_folder_pick(title)).await?;
     result

@@ -4,6 +4,8 @@
 use nerve_runtime::{ApprovalMode, DelegateRole};
 use serde_json::Value;
 
+use crate::app::state::Tone;
+
 /// A parsed `/command rest...` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {
@@ -173,6 +175,37 @@ pub fn format_models(result: &Value) -> String {
         .join("\n")
 }
 
+/// The chain-integrity verdict tone + line for a `ledger.verify` result. The
+/// result Value is the engine's raw shape — intact:
+/// `{ "ok": true, "count": N, "head_hash": "…" }`; tamper:
+/// `{ "ok": false, "error": "<class>", "seq": K }` — but a host may wrap it under
+/// `structuredContent`, so unwrap that defensively (mirrors `extract_model_rows`).
+/// Read-only: this only renders the verdict the engine/CI/MCP already computed.
+#[must_use]
+pub fn format_ledger_verdict(result: &Value) -> (Tone, String) {
+    let root = result
+        .get("structuredContent")
+        .filter(|v| v.is_object())
+        .unwrap_or(result);
+    if root.get("ok").and_then(Value::as_bool) == Some(true) {
+        let count = root.get("count").and_then(Value::as_u64).unwrap_or(0);
+        let head = root.get("head_hash").and_then(Value::as_str).unwrap_or("");
+        let head8: String = head.chars().take(8).collect();
+        let records = if count == 1 { "record" } else { "records" };
+        return (
+            Tone::Info,
+            format!("ledger intact — {count} {records}, head {head8}"),
+        );
+    }
+    let error = root
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let seq = root.get("seq").and_then(Value::as_u64);
+    let at = seq.map_or_else(String::new, |k| format!(" at seq {k}"));
+    (Tone::Error, format!("ledger TAMPERED — {error}{at}"))
+}
+
 /// A slash command offered by the autocomplete palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -227,6 +260,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "show broker OAuth lease metadata (token redacted)",
     },
     CommandSpec {
+        name: "ledger",
+        hint: "verify the L1 evidence ledger's tamper-evident chain",
+    },
+    CommandSpec {
         name: "theme",
         hint: "cycle accent color",
     },
@@ -274,6 +311,7 @@ pub const HELP_TEXT: &str = "commands:\n  \
 /new                       start a fresh session (clears history)\n  \
 /login [provider] [--device]  how to authenticate; --device is reserved/fail-closed for now\n  \
 /lease [provider] [--refresh]  show broker OAuth lease metadata; --refresh forces broker refresh; token redacted\n  \
+/ledger                    verify the L1 evidence ledger's tamper-evident chain (read-only)\n  \
 /wechat login [bot_type] [base_url]  start WeChat QR login (scan-only); scan the QR shown\n  \
 /wechat start [agent] [autonomy] [owner1,owner2,...]  start bridge (default: claude, read_only, empty owners)\n  \
 /wechat stop               stop the WeChat bridge\n  \
@@ -466,6 +504,49 @@ mod tests {
         assert!(out.contains("  grok-4"));
         assert!(out.contains("  grok-legacy (curated)"));
         assert!(out.contains("  bare-string-model"));
+    }
+
+    #[test]
+    fn ledger_is_in_palette_and_help() {
+        assert!(COMMANDS.iter().any(|c| c.name == "ledger"));
+        assert!(match_commands("/led").iter().any(|c| c.name == "ledger"));
+        assert!(HELP_TEXT.contains("/ledger"));
+    }
+
+    #[test]
+    fn format_ledger_verdict_renders_intact_chain() {
+        // Intact verdict: count + first-8 of the head hash, Info tone. Pluralizes
+        // "records" and unwraps a `structuredContent` wrapper defensively.
+        let (tone, line) = format_ledger_verdict(&json!({
+            "ok": true, "count": 3, "head_hash": "abcdef0123456789",
+        }));
+        assert_eq!(tone, Tone::Info);
+        assert_eq!(line, "ledger intact — 3 records, head abcdef01");
+        // A single record reads "record", not "records".
+        let (_, one) = format_ledger_verdict(&json!({
+            "ok": true, "count": 1, "head_hash": "ff00",
+        }));
+        assert_eq!(one, "ledger intact — 1 record, head ff00");
+        // Nested under structuredContent is unwrapped.
+        let (_, nested) = format_ledger_verdict(&json!({
+            "structuredContent": { "ok": true, "count": 2, "head_hash": "deadbeefcafe" },
+        }));
+        assert_eq!(nested, "ledger intact — 2 records, head deadbeef");
+    }
+
+    #[test]
+    fn format_ledger_verdict_renders_tampered_chain() {
+        // Tamper verdict: error class + the offending seq, Error tone.
+        let (tone, line) = format_ledger_verdict(&json!({
+            "ok": false, "error": "HashMismatch", "seq": 4,
+        }));
+        assert_eq!(tone, Tone::Error);
+        assert_eq!(line, "ledger TAMPERED — HashMismatch at seq 4");
+        // A tamper without a seq still reads cleanly.
+        let (_, no_seq) = format_ledger_verdict(&json!({
+            "ok": false, "error": "PrevMismatch",
+        }));
+        assert_eq!(no_seq, "ledger TAMPERED — PrevMismatch");
     }
 
     #[test]

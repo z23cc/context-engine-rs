@@ -106,6 +106,37 @@ pub(crate) fn rel_time(ms: f64) -> String {
     format!("{}w", (days / 7.0) as u64)
 }
 
+/// The read-only L1 evidence-ledger chain-integrity badge `(text, aria-label,
+/// tampered?)`: intact => `ledger ✓ N`; tamper => `ledger ⚠ tampered` (with the
+/// first-diverging error in the label). Mirrors the same verdict CI/MCP get.
+fn ledger_badge(state: &crate::data::LedgerIntegrity) -> (String, String, bool) {
+    if state.ok {
+        let head = state
+            .head
+            .as_deref()
+            .map(|h| format!(", head {}", short_hash(h)))
+            .unwrap_or_default();
+        (
+            format!("ledger ✓ {}", state.count),
+            format!("Evidence ledger intact: {} records{head}", state.count),
+            false,
+        )
+    } else {
+        let err = state.error.as_deref().unwrap_or("chain broken");
+        (
+            "ledger ⚠ tampered".to_string(),
+            format!("Evidence ledger tamper detected: {err}"),
+            true,
+        )
+    }
+}
+
+/// Truncate a content-address hex hash to a short, glanceable prefix for the
+/// tooltip (the full hash is not needed to read the badge).
+fn short_hash(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
 fn thread_agent_badge(agent: &str, live: bool) -> String {
     let label = crate::data::agent_label(agent);
     if live {
@@ -254,6 +285,7 @@ pub(crate) fn Sidebar(
     branch_loading: RwSignal<bool>,
     reveal_workspace: Callback<()>,
     protocol_version: RwSignal<Option<String>>,
+    ledger_integrity: RwSignal<Option<crate::data::LedgerIntegrity>>,
     busy: Signal<bool>,
 ) -> impl IntoView {
     let thread_typeahead = RwSignal::new(ThreadTypeaheadState::default());
@@ -545,6 +577,15 @@ pub(crate) fn Sidebar(
                         .map_or_else(|| "runtime".to_string(), |v| format!("runtime v{v}"));
                     view! { <span class="dot idle" aria-hidden="true"></span>{label} }.into_any()
                 }}
+                // Read-only L1 evidence-ledger chain-integrity badge: the same
+                // tamper-evident verdict CI/MCP get, surfaced in the cockpit.
+                {move || ledger_integrity.get().map(|state| {
+                    let (text, aria, tampered) = ledger_badge(&state);
+                    view! {
+                        <span class="ledger-badge" class:tampered=tampered
+                            role="status" title=aria.clone() aria-label=aria>{text}</span>
+                    }
+                })}
             </div>
         </aside>
     }
@@ -552,7 +593,8 @@ pub(crate) fn Sidebar(
 
 #[cfg(test)]
 mod tests {
-    use super::{close_command_kind, thread_agent_badge, thread_agent_class};
+    use super::{close_command_kind, ledger_badge, thread_agent_badge, thread_agent_class};
+    use crate::data::LedgerIntegrity;
 
     #[test]
     fn close_command_matches_the_backend() {
@@ -573,5 +615,31 @@ mod tests {
     fn thread_agent_class_marks_live_sessions() {
         assert_eq!(thread_agent_class(true), "rail-backend delegate live");
         assert_eq!(thread_agent_class(false), "rail-backend delegate");
+    }
+
+    #[test]
+    fn ledger_badge_renders_intact_count() {
+        let (text, aria, tampered) = ledger_badge(&LedgerIntegrity {
+            ok: true,
+            count: 42,
+            head: Some("deadbeefcafef00d".into()),
+            error: None,
+        });
+        assert_eq!(text, "ledger ✓ 42");
+        assert!(aria.contains("deadbeefcafe"));
+        assert!(!tampered);
+    }
+
+    #[test]
+    fn ledger_badge_renders_tamper_with_error() {
+        let (text, aria, tampered) = ledger_badge(&LedgerIntegrity {
+            ok: false,
+            count: 0,
+            head: None,
+            error: Some("HashMismatch".into()),
+        });
+        assert_eq!(text, "ledger ⚠ tampered");
+        assert!(aria.contains("HashMismatch"));
+        assert!(tampered);
     }
 }

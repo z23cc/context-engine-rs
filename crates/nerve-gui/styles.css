@@ -436,6 +436,21 @@ summary:focus-visible {
 .dot.busy { background: var(--ok); animation: pulse 1.1s ease-in-out infinite; }
 .dot.idle { background: var(--faint); }
 
+.ledger-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-chip);
+  color: var(--ok);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ledger-badge.tampered {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
