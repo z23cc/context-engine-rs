@@ -22,7 +22,7 @@
 // and verifies receipts through `nerve_core` alone, without its own `nerve-proto`
 // dependency.
 use nerve_proto::policy::{EvidenceRequirement, MergeBar};
-use nerve_proto::provenance::Run;
+use nerve_proto::provenance::{IsolationTier, Run};
 pub use nerve_proto::receipt::{
     LedgerRef, RECEIPT_PREDICATE_TYPE, RECEIPT_SCHEMA_VERSION, Receipt, ReceiptCheck,
     ReceiptProvenance, ReceiptSignature, ReceiptStatement, ReplayManifest,
@@ -120,6 +120,9 @@ pub fn build_statement(
         toolchain_digest,
         policy_version,
         ledger_ref,
+        // The pre-bar convenience path stamps the weak honest default; the impure verify
+        // path threads the launcher's real probed tier through `build_statement_with_bar`.
+        IsolationTier::Contained,
         issued_at_ms,
         None,
         MergeBar::default(),
@@ -146,6 +149,7 @@ pub fn build_statement_with_bar(
     toolchain_digest: Option<String>,
     policy_version: Option<String>,
     ledger_ref: Option<LedgerRef>,
+    isolation_tier: IsolationTier,
     issued_at_ms: u64,
     checkspec_hash: Option<String>,
     merge_bar: MergeBar,
@@ -159,6 +163,10 @@ pub fn build_statement_with_bar(
             toolchain_digest,
             policy_version,
             ledger_ref,
+            // The PROBED containment fact of the launcher that ran the verify re-run
+            // (INV-R7). It is canonicalized + signed here (tamper-evident, INV-R5);
+            // `Contained` (today's floor) is omitted on the wire (additive-invariance).
+            isolation_tier,
         },
         checks,
         verdict,

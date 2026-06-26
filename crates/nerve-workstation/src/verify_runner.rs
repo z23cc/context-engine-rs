@@ -223,12 +223,17 @@ pub(crate) struct SealOutcome {
 /// issued, borrowing the verdict). Returns the reloaded receipt plus the appended L1
 /// records (so the daemon can announce them). `receipt` is `None` when there is no
 /// receipt store or persistence failed.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seal binds the run, verdict, stores, bar, signer, the probed isolation tier, and the host clock — all irreducible inputs"
+)]
 pub(crate) fn seal_and_attest(
     run: &Run,
     verdict: &Verdict,
     stores: &AttestStores,
     bar: &SealedBar,
     signer: &dyn Signer,
+    isolation_tier: nerve_core::provenance::IsolationTier,
     issued_at_ms: u64,
 ) -> SealOutcome {
     let mut appended = Vec::new();
@@ -264,6 +269,10 @@ pub(crate) fn seal_and_attest(
         toolchain_digest,
         bar.policy_version.clone(),
         None,
+        // The PROBED containment fact of the launcher that ran THIS verify re-run — signed
+        // into the receipt statement so a verifier knows how hermetic the re-run was
+        // (INV-R7); `Contained` is omitted on the wire (additive-invariance).
+        isolation_tier,
         issued_at_ms,
         checkspec_hash,
         bar.clone(),
@@ -772,7 +781,15 @@ mod tests {
             receipt: Some(&receipts),
         };
 
-        let outcome = seal_and_attest(&run, &verdict, &stores, &SealedBar::empty(), &signer, 1);
+        let outcome = seal_and_attest(
+            &run,
+            &verdict,
+            &stores,
+            &SealedBar::empty(),
+            &signer,
+            nerve_core::provenance::IsolationTier::Contained,
+            1,
+        );
         // Both an L1 Verdict record and an L1 ReceiptIssued record were appended.
         assert_eq!(outcome.appended.len(), 2);
         let receipt = outcome.receipt.expect("a receipt was issued + reloaded");
@@ -845,7 +862,15 @@ mod tests {
             receipt: Some(&receipts),
         };
 
-        let outcome = seal_and_attest(&run, &verdict, &stores, &SealedBar::empty(), &signer, 1);
+        let outcome = seal_and_attest(
+            &run,
+            &verdict,
+            &stores,
+            &SealedBar::empty(),
+            &signer,
+            nerve_core::provenance::IsolationTier::Contained,
+            1,
+        );
         assert_eq!(outcome.appended.len(), 2);
 
         // The appended Verdict carries the verdict→run lineage edge = the run's root.

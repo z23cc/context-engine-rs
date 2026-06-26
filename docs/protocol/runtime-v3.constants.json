@@ -13,6 +13,6 @@
   ],
   "RUNTIME_JOB_START_METHOD": "runtime/jobs/start",
   "RUNTIME_PROTOCOL_NAME": "nerve-runtime",
-  "RUNTIME_PROTOCOL_VERSION": "15",
+  "RUNTIME_PROTOCOL_VERSION": "16",
   "RUNTIME_TOOLS_LIST_METHOD": "runtime/tools/list"
 }

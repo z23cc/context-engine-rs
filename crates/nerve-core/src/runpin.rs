@@ -77,6 +77,9 @@ pub fn build_run_inputs(
         repo_snapshot_hash,
         toolchain_digest,
         image_digest,
+        // The honest containment fact is stamped by the impure capture/verify path
+        // (the launcher's probed tier); this pure assembler leaves the weak default.
+        ..RunInputs::default()
     }
 }
 

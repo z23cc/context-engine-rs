@@ -182,6 +182,7 @@ pub(crate) fn issue_receipt_for_run(
     toolchain_digest: Option<String>,
     policy_version: Option<String>,
     ledger_ref: Option<LedgerRef>,
+    isolation_tier: nerve_core::provenance::IsolationTier,
     issued_at_ms: u64,
     checkspec_hash: Option<String>,
     bar: SealedBar,
@@ -195,6 +196,7 @@ pub(crate) fn issue_receipt_for_run(
         toolchain_digest,
         policy_version,
         ledger_ref,
+        isolation_tier,
         issued_at_ms,
         checkspec_hash,
         bar.merge_bar,
@@ -334,7 +336,7 @@ pub(crate) fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::signer::{LocalEd25519Signer, ed25519_verify};
-    use nerve_core::provenance::{Event, EventKind, RunInputs};
+    use nerve_core::provenance::{Event, EventKind, IsolationTier, RunInputs};
     use nerve_core::verdict::CheckKind;
     use tempfile::tempdir;
 
@@ -389,6 +391,7 @@ mod tests {
             Some("toolchain-x".into()),
             Some("policy-1".into()),
             None,
+            IsolationTier::Contained,
             5000,
             None,
             SealedBar::empty(),
@@ -431,6 +434,7 @@ mod tests {
             Some("toolchain-x".into()),
             None, // no policy_version pinned (no policy in force)
             None,
+            IsolationTier::Contained,
             5000,
             None,
             SealedBar::empty(),
@@ -471,6 +475,11 @@ mod tests {
             value["provenance"].get("policy_version").is_none(),
             "no policy_version pinned for the no-policy case"
         );
+        assert!(
+            value["provenance"].get("isolation_tier").is_none(),
+            "default Contained isolation tier omitted (v15→v16 additive-invariance) — \
+             existing receipt ids cannot churn"
+        );
     }
 
     /// A NON-empty `SealedBar` co-seals the bar + pins the policy_version, changing the
@@ -499,6 +508,7 @@ mod tests {
             None,
             bar.policy_version.clone(),
             None,
+            IsolationTier::Contained,
             1,
             None,
             bar,
@@ -533,6 +543,7 @@ mod tests {
             None,
             None,
             None,
+            IsolationTier::Contained,
             1,
             None,
             SealedBar::empty(),
@@ -554,6 +565,7 @@ mod tests {
             None,
             None,
             None,
+            IsolationTier::Contained,
             7,
             None,
             SealedBar::empty(),
@@ -576,6 +588,7 @@ mod tests {
             None,
             None,
             None,
+            IsolationTier::Contained,
             9,
             None,
             SealedBar::empty(),
@@ -609,6 +622,7 @@ mod tests {
                 None,
                 None,
                 None,
+                IsolationTier::Contained,
                 ts,
                 None,
                 SealedBar::empty(),

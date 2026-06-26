@@ -21,8 +21,8 @@
 // builds an event tape (and reads back a sealed `Run`) through `nerve_core` alone,
 // without taking its own `nerve-proto` dependency.
 pub use nerve_proto::provenance::{
-    Attestation, Event, EventKind, LedgerEntry, RUN_SCHEMA_VERSION, ReplayManifest, Run, RunInputs,
-    ToolchainPin,
+    Attestation, Event, EventKind, IsolationTier, LedgerEntry, RUN_SCHEMA_VERSION, ReplayManifest,
+    Run, RunInputs, ToolchainPin,
 };
 use sha2::{Digest, Sha256};
 

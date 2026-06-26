@@ -369,6 +369,9 @@ impl JobManager {
             &stores,
             &bar,
             &self.signer(),
+            // The probed containment tier of the launcher this verify re-run used (INV-R7),
+            // signed into the receipt. Matches the launcher threaded into `handle_verify_start`.
+            self.delegate_launcher.isolation_tier(),
             now_ms(),
         );
         for record in &outcome.appended {

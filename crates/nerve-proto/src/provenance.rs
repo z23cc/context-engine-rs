@@ -195,6 +195,13 @@ pub struct RunInputs {
     /// today (the strong-isolation `EnvironmentPinner` seam is deferred infra).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_digest: Option<String>,
+    /// How strongly the launcher that ran this agent contained it — a probed FACT,
+    /// never a request; downgrade-only (INV-R7). Omitted on the wire when
+    /// [`IsolationTier::Contained`] (the default), so a run captured before
+    /// isolation-tier stamping deserializes to `Contained` and re-serializes
+    /// byte-identically — its `root_hash` is unperturbed (additive-invariance).
+    #[serde(default, skip_serializing_if = "is_contained")]
+    pub isolation_tier: IsolationTier,
 }
 
 /// The resolved toolchain a [`RunInputs::toolchain_digest`] is computed over:
@@ -239,6 +246,43 @@ pub enum Attestation {
 /// predicate that keeps existing serialized runs byte-identical.
 fn is_full_attestation(attestation: &Attestation) -> bool {
     *attestation == Attestation::Full
+}
+
+/// How strongly the closure that produced an artifact was contained. A probed
+/// **fact** about the launcher that actually ran, never a request; **downgrade-only**
+/// — a probe failure, an unsupported kernel, or a net-allowed run yields a LOWER tier,
+/// never a higher one (INV-R7). Orthogonal to [`Attestation`] (which is about *capture
+/// completeness*): this is about *execution containment*.
+///
+/// Variants are declared from weakest to strongest so the derived [`Ord`] lets a
+/// `--require-isolation` floor compare with `>=`: `Unconfined < BestEffort < Contained
+/// < Hermetic`. The default is [`Self::Contained`] — the weaker honest claim — so any
+/// pre-existing serialized Run/Receipt (no field) deserializes to it, never to a
+/// fabricated `Hermetic`. No floats, so the canonical JSON is byte-stable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationTier {
+    /// No containment established (raw spawn / probe failed). Must not gate a pass.
+    Unconfined,
+    /// Best-effort OS profile (e.g. macOS Seatbelt) — weaker than kernel-enforced Linux.
+    BestEffort,
+    /// Process-level containment only (scrubbed+pinned env, forced cwd, group-kill,
+    /// net-deny INTENT) — today's `ProcessLauncher`. Replayable *modulo the host*. The
+    /// fail-closed default for unknown/legacy records.
+    #[default]
+    Contained,
+    /// Kernel-enforced closure (Landlock FS + net namespace [+ seccomp]) AND a pinned
+    /// closure digest. The bit-for-bit claim is honest.
+    Hermetic,
+}
+
+/// Whether an [`IsolationTier`] is the default `Contained` — the `skip_serializing_if`
+/// predicate that keeps existing serialized runs/receipts byte-identical. The default/
+/// weak-honest value is OMITTED on the wire, so a pre-isolation record round-trips
+/// byte-for-byte and its content address is unperturbed (additive-invariance).
+pub(crate) fn is_contained(tier: &IsolationTier) -> bool {
+    *tier == IsolationTier::Contained
 }
 
 #[cfg(test)]
@@ -322,6 +366,41 @@ mod tests {
         assert!(value["kind"].get("cost_micro_usd").is_none());
         let back: Event = serde_json::from_value(value).expect("round-trip");
         assert_eq!(back, event);
+    }
+
+    #[test]
+    fn run_inputs_isolation_tier_default_is_contained_and_omitted() {
+        // ADDITIVE-INVARIANCE (v15→v16): the default `Contained` tier is OMITTED on the
+        // wire, so a `RunInputs` (or a `RunStarted.inputs`) carrying it serializes
+        // byte-identically to a pre-isolation record — the run's `root_hash` cannot churn.
+        let inputs = RunInputs::default();
+        assert_eq!(inputs.isolation_tier, IsolationTier::Contained);
+        let value = serde_json::to_value(&inputs).expect("inputs json");
+        assert!(
+            value.get("isolation_tier").is_none(),
+            "the default Contained tier must be omitted (additive-invariance)"
+        );
+        // A pre-isolation record (no field) deserializes to the weak honest default.
+        let legacy: RunInputs = serde_json::from_value(serde_json::json!({})).expect("legacy");
+        assert_eq!(legacy.isolation_tier, IsolationTier::Contained);
+        // A non-default tier DOES serialize (snake_case) and round-trips.
+        let pinned = RunInputs {
+            isolation_tier: IsolationTier::Hermetic,
+            ..RunInputs::default()
+        };
+        let pinned_value = serde_json::to_value(&pinned).expect("pinned json");
+        assert_eq!(pinned_value["isolation_tier"], "hermetic");
+        let back: RunInputs = serde_json::from_value(pinned_value).expect("round-trip");
+        assert_eq!(back, pinned);
+    }
+
+    #[test]
+    fn isolation_tier_orders_weak_to_strong() {
+        // The `--require-isolation` floor compares with `>=`, so the derived Ord must
+        // rank Unconfined < BestEffort < Contained < Hermetic.
+        assert!(IsolationTier::Unconfined < IsolationTier::BestEffort);
+        assert!(IsolationTier::BestEffort < IsolationTier::Contained);
+        assert!(IsolationTier::Contained < IsolationTier::Hermetic);
     }
 
     #[test]

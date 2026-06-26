@@ -36,6 +36,7 @@ pub(crate) use process::ProcessLauncher;
 
 use anyhow::{Result, anyhow};
 use nerve_core::CancelToken;
+use nerve_core::provenance::IsolationTier;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -192,9 +193,26 @@ impl SandboxPolicy {
             env: EnvPolicy::dev_default(),
             timeout: DEFAULT_TIMEOUT,
             max_output: DEFAULT_MAX_OUTPUT,
-            env_overrides: Vec::new(),
+            // Pin the determinism-relevant environment so locale/timezone can no longer
+            // perturb a verdict's evidence (INV-R7). Applied via `env_overrides`, so they
+            // WIN over the inherited + scrubbed environment.
+            env_overrides: determinism_env(),
         }
     }
+}
+
+/// The determinism-pinned environment FORCED into every contained run: a fixed locale
+/// (`LANG=C` / `LC_ALL=C`) and timezone (`TZ=UTC`) so collation, number/date formatting,
+/// and time-of-day stop perturbing the verdict-producing re-run and its evidence hashes
+/// (hermetic-replay-isolation.md §2.2/§4 brick (a)). Carried in `env_overrides`, which
+/// the launcher applies AFTER the allowlist + secret scrub, so these win. (A
+/// `SOURCE_DATE_EPOCH` pin is the natural follow-up once a deterministic run-time value
+/// exists — there is none to borrow today.)
+pub(crate) fn determinism_env() -> Vec<(String, String)> {
+    [("LANG", "C"), ("LC_ALL", "C"), ("TZ", "UTC")]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
 }
 
 /// The result of a contained run. `exit_code` is `None` when the process was
@@ -272,6 +290,16 @@ pub(crate) trait SandboxLauncher: Send + Sync {
             "persistent sessions are unavailable in this context (no contained sandbox backend)"
         ))
     }
+
+    /// The PROBED containment tier this backend actually establishes — a *fact* about
+    /// what ran, never a request (INV-R7). The verify path stamps it into the signed
+    /// Run/Receipt so a verifier knows how trustworthy the re-run was; it is
+    /// **downgrade-only** (a backend may only report a tier it truly enforces). The
+    /// default is the honest weak [`IsolationTier::Contained`] — no kernel closure is
+    /// built yet, so nothing returns `Hermetic`, which is correct.
+    fn isolation_tier(&self) -> IsolationTier {
+        IsolationTier::Contained
+    }
 }
 
 /// A launcher that refuses every command — the safe default for any context
@@ -291,6 +319,13 @@ impl SandboxLauncher for RefuseLauncher {
         Err(anyhow!(
             "command execution is unavailable in this context (no contained sandbox backend)"
         ))
+    }
+
+    /// Refuses to run anything, so it establishes NO containment — the honest tier is
+    /// `Unconfined`. (In practice it never produces a receipt: every check launch errors,
+    /// sealing an `Error` verdict the gate already treats as neutral.)
+    fn isolation_tier(&self) -> IsolationTier {
+        IsolationTier::Unconfined
     }
 }
 
@@ -389,6 +424,20 @@ mod tests {
         assert_eq!(policy.net, NetPolicy::Deny);
         assert_eq!(policy.timeout, DEFAULT_TIMEOUT);
         assert_eq!(policy.max_output, DEFAULT_MAX_OUTPUT);
+    }
+
+    #[test]
+    fn for_root_pins_determinism_env_and_reports_contained_tier() {
+        // The default policy forces a fixed locale + UTC so they cannot perturb a verdict
+        // (INV-R7), and the best-effort launcher honestly reports `Contained` (never
+        // `Hermetic` — no kernel closure is built yet).
+        let policy = SandboxPolicy::for_root(Some(Path::new("/work")));
+        let pins: std::collections::BTreeMap<_, _> = policy.env_overrides.iter().cloned().collect();
+        assert_eq!(pins.get("LANG").map(String::as_str), Some("C"));
+        assert_eq!(pins.get("LC_ALL").map(String::as_str), Some("C"));
+        assert_eq!(pins.get("TZ").map(String::as_str), Some("UTC"));
+        assert_eq!(ProcessLauncher.isolation_tier(), IsolationTier::Contained);
+        assert_eq!(RefuseLauncher.isolation_tier(), IsolationTier::Unconfined);
     }
 
     #[test]

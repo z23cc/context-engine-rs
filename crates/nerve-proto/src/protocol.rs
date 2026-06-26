@@ -8,6 +8,19 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
+// v16 (hermetic-replay-isolation brick (a) — the honest isolation tier, INV-R7): a new
+// pure `IsolationTier` enum (`Unconfined < BestEffort < Contained[default] < Hermetic`)
+// plus two additive fields stamping the PROBED containment fact of the launcher that
+// actually ran — `RunInputs.isolation_tier` (the agent run) and
+// `ReceiptProvenance.isolation_tier` (the L2 verify re-run, co-sealed INSIDE the signed
+// statement so a verifier learns how hermetic the re-run was). Both are
+// `#[serde(default, skip_serializing_if = "is_contained")]`, so the default/weak-honest
+// `Contained` value is OMITTED on the wire: every pre-isolation run/receipt deserializes
+// to `Contained` and re-serializes byte-identically — its `root_hash` / `receipt_id` are
+// UNPERTURBED (additive-invariance). It closes the INV-R1 overclaim (a best-effort re-run
+// was byte-indistinguishable from a hermetic one) BEFORE any kernel sandbox exists, and
+// gives orgs the optional `nerve gate --require-isolation` downgrade-only floor. A v15
+// client keeps working byte-for-byte.
 // v13 (trust-substrate L1 lineage-by-content-address read facet): one additive optional
 // filter field — `LedgerQuery.run_root_hash` — that makes wave-3's content-addressed
 // lineage DAG traversable over the protocol/CLI/MCP: select every ledger record about one
@@ -96,7 +109,7 @@ pub const RUNTIME_PROTOCOL_NAME: &str = "nerve-runtime";
 // Both fields are `skip_serializing_if`-empty, so a receipt sealed without an org
 // bar serializes byte-identically to a v13 receipt (additive-invariance) — no
 // receipt-id churn for existing receipts. A v13 client keeps working.
-pub const RUNTIME_PROTOCOL_VERSION: &str = "15";
+pub const RUNTIME_PROTOCOL_VERSION: &str = "16";
 pub const RUNTIME_DAEMON_NAME: &str = "nerve";
 pub const RUNTIME_EVENT_METHOD: &str = "runtime/event";
 pub const RUNTIME_INFO_METHOD: &str = "runtime/info";

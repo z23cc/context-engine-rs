@@ -169,7 +169,7 @@ nerve-core       deterministic kernel — CatalogProvider port → immutable Cat
   │                     Depends only on nerve-core (for CancelToken). Runtime/protocol-agnostic.
   └────── nerve-runtime  dispatch hub wrapper + RuntimeToolAdapter registry + job/event protocol.
                          Re-exports `nerve-proto` (the protocol authority) unchanged; the contract
-                         version constant `RUNTIME_PROTOCOL_VERSION` is now "15" (additive, drift-
+                         version constant `RUNTIME_PROTOCOL_VERSION` is now "16" (additive, drift-
                          checked). Depends on nerve-core + nerve-proto.
                               ▲
 nerve-workstation   composition root (the `nerve` binary): MCP face (server.rs), daemon face

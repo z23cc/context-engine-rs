@@ -103,6 +103,14 @@ impl SandboxLauncher for ProcessLauncher {
     ) -> Result<super::PersistentChild> {
         super::PersistentChild::spawn(spec, policy)
     }
+
+    /// Best-effort process containment — scrubbed+pinned env and a forced cwd, but NO
+    /// kernel closure (net-deny is intent, `fs_read`/`fs_write` unenforced). The honest
+    /// probed tier is [`IsolationTier::Contained`] (INV-R7); it must never claim
+    /// `Hermetic` until a kernel backend lands.
+    fn isolation_tier(&self) -> nerve_core::provenance::IsolationTier {
+        nerve_core::provenance::IsolationTier::Contained
+    }
 }
 
 /// Build and spawn the contained child with the shared containment (forced cwd,

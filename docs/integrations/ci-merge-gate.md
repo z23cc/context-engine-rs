@@ -231,10 +231,24 @@ incident monitor records `nerve outcome incident --run "$NERVE_RUN_ID" --source 
 
 ## Honest limitations / follow-ups
 
-- **Hermetic isolation is partial.** Replay/re-run currently relies on the runner's
-  environment; the strong Landlock/seccomp sandbox closure (agent-exec-sandbox.md)
-  that makes replay bit-for-bit trustworthy is still being finished — it is
-  load-bearing, not optional.
+- **The isolation tier is signed into every receipt — require `hermetic` to enforce.**
+  Each receipt now carries a signed `provenance.isolation_tier` recording how the L2
+  verify re-run was actually contained (the probed FACT of the launcher that ran, never a
+  request; INV-R7). Today's best-effort `ProcessLauncher` honestly reports `contained`
+  (scrubbed+pinned env, forced cwd, fixed `LANG=C`/`LC_ALL=C`/`TZ=UTC`) — **no** kernel
+  closure is built yet, so nothing claims `hermetic`. An org that wants bit-for-bit
+  trustworthiness can enforce it:
+
+  ```bash
+  nerve gate --receipt receipt.json --require-isolation hermetic   # or NERVE_REQUIRE_ISOLATION=hermetic
+  ```
+
+  A receipt whose re-run was contained **below** the floor has its passing outcome
+  **downgraded to neutral** (exit 2) — never a fabricated pass, never an upgrade
+  (downgrade-only, reusing the merge-bar kernel). The strong Landlock/seccomp closure that
+  *earns* the `hermetic` tier on Linux CI is the next brick (`hermetic-replay-isolation.md`
+  bricks (b)/(c)); a macOS dev box is at best `contained`/`best-effort`, so
+  `--require-isolation hermetic` won't gate there — verification belongs on Linux CI.
 - **Issuer identity without a manual key pin** (sigstore-keyless) is the deferred
   upgrade — today, issuer identity requires `--trusted-key` / `NERVE_TRUSTED_RECEIPT_KEY`.
 

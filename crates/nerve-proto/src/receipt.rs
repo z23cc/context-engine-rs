@@ -30,6 +30,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::policy::{EvidenceRequirement, MergeBar};
+use crate::provenance::{IsolationTier, is_contained};
 use crate::verdict::{CheckKind, VerdictStatus};
 
 /// On-disk + on-wire receipt schema version. Bumped only for additive,
@@ -101,6 +102,16 @@ pub struct ReceiptProvenance {
     /// Optional pointer to the transparency-ledger entry committing the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger_ref: Option<LedgerRef>,
+    /// How strongly the L2 verify re-run that produced this receipt was contained — a
+    /// probed FACT, never a request; downgrade-only (INV-R7). It lands INSIDE the signed
+    /// statement (co-sealed, tamper-evident — INV-R5), so a verifier reading the receipt
+    /// offline learns the verdict AND how hermetic the re-run was, and a
+    /// `--require-isolation` gate floor can compare it. Omitted on the wire when
+    /// [`IsolationTier::Contained`] (the default), so a receipt sealed before
+    /// isolation-tier stamping is byte-identical and its `receipt_id` is unperturbed
+    /// (additive-invariance).
+    #[serde(default, skip_serializing_if = "is_contained")]
+    pub isolation_tier: IsolationTier,
 }
 
 /// The receipt's replay binding: the run schema version replayed, the recorded
@@ -223,6 +234,7 @@ mod tests {
                     entry_hash: "eh".into(),
                     prev_hash: "ph".into(),
                 }),
+                isolation_tier: IsolationTier::Contained,
             },
             checks: vec![ReceiptCheck {
                 name: "cargo test".into(),
@@ -297,13 +309,26 @@ mod tests {
             toolchain_digest: None,
             policy_version: None,
             ledger_ref: None,
+            isolation_tier: IsolationTier::Contained,
         };
         let value = serde_json::to_value(&prov).expect("prov json");
         assert!(value.get("toolchain_digest").is_none());
         assert!(value.get("policy_version").is_none());
         assert!(value.get("ledger_ref").is_none());
+        // v15→v16 additive-invariance: the default Contained tier is omitted, so a
+        // pre-isolation provenance is byte-identical and its receipt_id cannot churn.
+        assert!(
+            value.get("isolation_tier").is_none(),
+            "default Contained isolation tier must be omitted"
+        );
         let back: ReceiptProvenance = serde_json::from_value(value).expect("round-trip");
         assert_eq!(back, prov);
+        // A pre-isolation provenance (no field) deserializes to the weak honest default.
+        let legacy: ReceiptProvenance = serde_json::from_value(serde_json::json!({
+            "run_id": "r", "inputs_hash": "h"
+        }))
+        .expect("legacy provenance");
+        assert_eq!(legacy.isolation_tier, IsolationTier::Contained);
     }
 
     #[test]

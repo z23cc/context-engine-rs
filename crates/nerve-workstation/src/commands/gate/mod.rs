@@ -39,8 +39,9 @@ mod emit;
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use emit::select_emitter;
+use nerve_core::provenance::IsolationTier;
 use nerve_core::receipt::Receipt;
-use nerve_core::receipt_gate::{GateOutcome, enforce_merge_bar};
+use nerve_core::receipt_gate::{GateOutcome, enforce_isolation_floor, enforce_merge_bar};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -49,6 +50,12 @@ use std::path::PathBuf;
 /// flag nor this var is set, the gate verifies only self-consistency (tamper-evidence)
 /// and prints an advisory that issuer identity is not pinned.
 const TRUSTED_KEY_ENV: &str = "NERVE_TRUSTED_RECEIPT_KEY";
+
+/// The env-var fallback for `--require-isolation`: the minimum signed
+/// [`IsolationTier`] the gate requires (`hermetic|contained|best-effort|unconfined`).
+/// A receipt whose re-run was contained BELOW this floor has a passing outcome
+/// downgraded to neutral (INV-R7, §3.4). Unset → report-only (today's behavior).
+const REQUIRE_ISOLATION_ENV: &str = "NERVE_REQUIRE_ISOLATION";
 
 /// Exit code for a refused gate (mirrors the Inconclusive/Error neutral exit): a receipt
 /// that fails integrity / signature / trusted-key verification is never trusted.
@@ -110,6 +117,13 @@ pub(crate) struct GateArgs {
     /// advisory that issuer identity is not pinned.
     #[arg(long = "trusted-key")]
     trusted_key: Option<String>,
+    /// Require the receipt's SIGNED isolation tier to be at least this strong
+    /// (`hermetic|contained|best-effort|unconfined`; `NERVE_REQUIRE_ISOLATION` is the env
+    /// fallback). A receipt whose verify re-run was contained below the floor has a
+    /// passing outcome DOWNGRADED to neutral (exit 2) — never a fabricated pass, never an
+    /// upgrade (INV-R7). Unset → report-only (the tier is still printed).
+    #[arg(long = "require-isolation")]
+    require_isolation: Option<String>,
     /// Print the [`GateOutcome`] as JSON in addition to setting the exit code.
     #[arg(long)]
     json: bool,
@@ -136,6 +150,9 @@ pub(crate) fn verify(args: VerifyArgs) -> Result<i32> {
 /// commit status (INV-R1, court reporter: never fabricate a pass).
 pub(crate) fn gate(args: GateArgs) -> Result<i32> {
     let receipt = load_gate_receipt(&args)?;
+    // Resolve the optional isolation floor up front so a bad value fails fast (before any
+    // verification work) rather than after sealing a decision.
+    let require_isolation = resolve_required_isolation(&args)?;
     let trusted_key = resolve_trusted_key(&args);
     let verification = verify_gate_receipt(&receipt, trusted_key.as_deref());
     if !verification.trusted {
@@ -149,6 +166,10 @@ pub(crate) fn gate(args: GateArgs) -> Result<i32> {
     // and may only KEEP a pass or DOWNGRADE it (never upgrade). An empty (no-bar) receipt
     // passes through to `gate_outcome` unchanged.
     let outcome = enforce_merge_bar(&receipt);
+    // INV-R7 (§3.4): apply the OPTIONAL isolation-tier floor AFTER the signature verify +
+    // merge-bar enforcement, reusing the same downgrade-only kernel — a sub-floor tier
+    // downgrades a pass to neutral, never upgrades. `None` is a pure pass-through.
+    let outcome = enforce_isolation_floor(outcome, &receipt, require_isolation);
     // Best-effort L1 decision record: route the bar clearance to the evidence ledger if a
     // ledger is served (degrades to the no-op sink — never fails the gate).
     record_gate_decision(&args, &receipt, &outcome);
@@ -279,6 +300,38 @@ fn resolve_trusted_key(args: &GateArgs) -> Option<String> {
         .clone()
         .or_else(|| std::env::var(TRUSTED_KEY_ENV).ok())
         .filter(|k| !k.is_empty())
+}
+
+/// Resolve the optional isolation floor: the `--require-isolation` flag, else the
+/// `NERVE_REQUIRE_ISOLATION` env var (empty = unset). Returns `None` when no floor is
+/// requested (report-only); a malformed value is a hard error so the operator is told
+/// their config is wrong rather than silently getting no floor.
+fn resolve_required_isolation(args: &GateArgs) -> Result<Option<IsolationTier>> {
+    let raw = args
+        .require_isolation
+        .clone()
+        .or_else(|| std::env::var(REQUIRE_ISOLATION_ENV).ok())
+        .filter(|s| !s.is_empty());
+    match raw {
+        Some(spec) => Ok(Some(parse_isolation_tier(&spec)?)),
+        None => Ok(None),
+    }
+}
+
+/// Parse a `--require-isolation` tier spelling into an [`IsolationTier`]. Accepts the
+/// hyphenated CLI form (`best-effort`) and the serde snake_case form (`best_effort`),
+/// case-insensitively. A typo is a hard error listing the valid tiers.
+fn parse_isolation_tier(spec: &str) -> Result<IsolationTier> {
+    match spec.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "hermetic" => Ok(IsolationTier::Hermetic),
+        "contained" => Ok(IsolationTier::Contained),
+        "best-effort" => Ok(IsolationTier::BestEffort),
+        "unconfined" => Ok(IsolationTier::Unconfined),
+        other => Err(anyhow!(
+            "invalid --require-isolation '{other}': expected one of \
+             hermetic|contained|best-effort|unconfined"
+        )),
+    }
 }
 
 /// Resolve the sealed Receipt a `gate` invocation acts on: by explicit `--receipt`
@@ -479,6 +532,7 @@ mod tests {
                 toolchain_digest: None,
                 policy_version: None,
                 ledger_ref: None,
+                isolation_tier: nerve_core::provenance::IsolationTier::Contained,
             },
             checks: vec![],
             verdict,
@@ -597,6 +651,7 @@ mod tests {
             sha: None,
             repo: None,
             trusted_key,
+            require_isolation: None,
             json: false,
         }
     }
@@ -763,6 +818,51 @@ mod tests {
         );
     }
 
+    /// INV-R7 round-trip (§3.4): a sealed receipt carries `isolation_tier: contained`
+    /// (today's best-effort floor). `--require-isolation hermetic` downgrades its pass to
+    /// neutral (exit 2 — the re-run was not bit-for-bit); `--require-isolation contained`
+    /// is satisfied and the pass stands (exit 0). The receipt is genuinely signed, so this
+    /// is the floor overlay, NOT a tamper refusal.
+    #[test]
+    fn gate_require_isolation_downgrades_below_floor_and_passes_at_floor() {
+        let dir = tempdir().unwrap();
+        let receipt = receipt_for("iso", VerdictStatus::Passed);
+        // The default sealed tier is Contained (omitted on the wire, byte-identical).
+        assert_eq!(
+            receipt.statement.provenance.isolation_tier,
+            nerve_core::provenance::IsolationTier::Contained
+        );
+        let path = write_to_temp(dir.path(), &receipt);
+
+        let mut hermetic = args_for_path(path.clone(), None);
+        hermetic.require_isolation = Some("hermetic".to_string());
+        assert_eq!(
+            gate(hermetic).unwrap(),
+            2,
+            "a Contained re-run cannot clear a hermetic floor — neutral (exit 2), never a pass"
+        );
+
+        let mut contained = args_for_path(path, None);
+        contained.require_isolation = Some("contained".to_string());
+        assert_eq!(
+            gate(contained).unwrap(),
+            0,
+            "the floor is met (contained >= contained) so the pass stands"
+        );
+    }
+
+    /// A malformed `--require-isolation` value is a hard error (the operator is told their
+    /// config is wrong), never silently ignored into no floor.
+    #[test]
+    fn gate_rejects_a_bogus_isolation_tier() {
+        let dir = tempdir().unwrap();
+        let receipt = receipt_for("bogus-iso", VerdictStatus::Passed);
+        let path = write_to_temp(dir.path(), &receipt);
+        let mut args = args_for_path(path, None);
+        args.require_isolation = Some("super-hermetic".to_string());
+        assert!(gate(args).is_err(), "an invalid tier spelling errors");
+    }
+
     #[test]
     fn gate_maps_failed_to_exit_one() {
         let dir = tempdir().unwrap();
@@ -790,6 +890,7 @@ mod tests {
             sha: None,
             repo: None,
             trusted_key: None,
+            require_isolation: None,
             json: false,
         })
         .unwrap();
@@ -808,6 +909,7 @@ mod tests {
             sha: None,
             repo: None,
             trusted_key: None,
+            require_isolation: None,
             json: false,
         })
         .unwrap_err();

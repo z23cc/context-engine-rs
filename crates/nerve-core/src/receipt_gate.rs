@@ -22,6 +22,7 @@ pub use nerve_proto::receipt::Receipt;
 pub use nerve_proto::verdict::VerdictStatus;
 
 use nerve_proto::policy::{EvidenceRequirement, MergeBar};
+use nerve_proto::provenance::IsolationTier;
 use serde::{Deserialize, Serialize};
 
 /// The tri-state merge-gate decision derived from a receipt's aggregate verdict.
@@ -210,6 +211,63 @@ pub fn enforce_merge_bar(receipt: &Receipt) -> GateOutcome {
     }
 }
 
+/// Enforce an OPTIONAL **isolation-tier floor** over an already-decided gate outcome
+/// (INV-R7, `docs/designs/hermetic-replay-isolation.md` §3.4) — the org's
+/// `nerve gate --require-isolation <tier>` lever. Applied AFTER the wave-7 signature
+/// verify and the merge-bar enforcement, reusing the same **downgrade-only** kernel
+/// (INV-R1): if the receipt's signed `provenance.isolation_tier` is BELOW `required`,
+/// a passing outcome is downgraded to **neutral** (exit 2) with the shortfall as its
+/// summary — NEVER upgraded, never a fabricated pass; a non-success base is kept verbatim
+/// with the shortfall appended. `None` (no floor requested) and a met floor are pure
+/// pass-throughs (default report-only behavior, unchanged).
+///
+/// Pure: a function of the receipt + the required tier alone — no IO, no clock (INV-R2).
+#[must_use]
+pub fn enforce_isolation_floor(
+    base: GateOutcome,
+    receipt: &Receipt,
+    required: Option<IsolationTier>,
+) -> GateOutcome {
+    let Some(required) = required else {
+        return base; // no floor requested — report-only, unchanged.
+    };
+    let actual = receipt.statement.provenance.isolation_tier;
+    if actual >= required {
+        return base; // floor met — the tier is at or above the required strength.
+    }
+    let note = format!(
+        "isolation tier {} below required {}",
+        isolation_label(actual),
+        isolation_label(required),
+    );
+    // Downgrade-only (INV-R1/R7): NEVER upgrade a non-success base — keep it and append
+    // the shortfall so the floor's finding is still surfaced.
+    if base.exit_code != 0 {
+        return GateOutcome {
+            summary: format!("{} [{}]", base.summary, note),
+            ..base
+        };
+    }
+    // A success base under an unmet floor becomes neutral — a non-bit-for-bit re-run
+    // never clears a higher-tier requirement (never a fabricated pass).
+    GateOutcome {
+        exit_code: 2,
+        conclusion: "neutral".to_string(),
+        summary: note,
+    }
+}
+
+/// Lowercase, hyphenated label for an [`IsolationTier`] (for the human floor summary),
+/// matching the `--require-isolation` flag spelling.
+fn isolation_label(tier: IsolationTier) -> &'static str {
+    match tier {
+        IsolationTier::Hermetic => "hermetic",
+        IsolationTier::Contained => "contained",
+        IsolationTier::BestEffort => "best-effort",
+        IsolationTier::Unconfined => "unconfined",
+    }
+}
+
 /// Downgrade-only outcome for a checkspec-identity MISMATCH (INV-R1). The bar pinned a
 /// checkspec the receipt was **not** verified against, so the required-check names cannot
 /// be trusted. A success base is downgraded to neutral (exit 2); a non-success base is
@@ -335,6 +393,7 @@ mod tests {
                     toolchain_digest: None,
                     policy_version: None,
                     ledger_ref: None,
+                    isolation_tier: IsolationTier::Contained,
                 },
                 checks: vec![],
                 verdict,
@@ -764,6 +823,85 @@ mod tests {
             out.summary.contains("required checks cannot be trusted"),
             "{}",
             out.summary
+        );
+    }
+
+    // --- L? isolation-tier floor (enforce_isolation_floor, INV-R7) ---
+
+    /// A receipt with an explicit signed `provenance.isolation_tier`.
+    fn receipt_with_isolation(verdict: VerdictStatus, tier: IsolationTier) -> Receipt {
+        let mut receipt = receipt_with(verdict);
+        receipt.statement.provenance.isolation_tier = tier;
+        receipt
+    }
+
+    #[test]
+    fn no_floor_is_pure_passthrough() {
+        // `None` required tier never changes the outcome (default report-only behavior).
+        for tier in [IsolationTier::Unconfined, IsolationTier::Hermetic] {
+            let receipt = receipt_with_isolation(VerdictStatus::Passed, tier);
+            let base = gate_outcome(&receipt);
+            assert_eq!(enforce_isolation_floor(base.clone(), &receipt, None), base);
+        }
+    }
+
+    #[test]
+    fn met_floor_keeps_the_pass() {
+        // actual >= required => unchanged. Contained satisfies a Contained floor, and the
+        // stronger Hermetic satisfies it too.
+        for tier in [IsolationTier::Contained, IsolationTier::Hermetic] {
+            let receipt = receipt_with_isolation(VerdictStatus::Passed, tier);
+            let base = gate_outcome(&receipt);
+            let out = enforce_isolation_floor(base, &receipt, Some(IsolationTier::Contained));
+            assert_eq!(out.exit_code, 0, "{tier:?} clears a Contained floor");
+            assert_eq!(out.conclusion, "success");
+        }
+    }
+
+    #[test]
+    fn unmet_floor_downgrades_a_pass_to_neutral() {
+        // A Contained receipt under a Hermetic floor: the re-run was not bit-for-bit, so
+        // the pass is downgraded to neutral (exit 2) — never a fabricated pass (INV-R7).
+        let receipt = receipt_with_isolation(VerdictStatus::Passed, IsolationTier::Contained);
+        let base = gate_outcome(&receipt);
+        let out = enforce_isolation_floor(base, &receipt, Some(IsolationTier::Hermetic));
+        assert_eq!(out.exit_code, 2);
+        assert_eq!(out.conclusion, "neutral");
+        assert!(
+            out.summary
+                .contains("isolation tier contained below required hermetic"),
+            "{}",
+            out.summary
+        );
+    }
+
+    #[test]
+    fn unmet_floor_never_upgrades_a_failed_base() {
+        // NEVER-UPGRADE: a Failed base whose tier ALSO falls short stays exit 1 — the
+        // floor is downgrade-only and can never promote a non-success base.
+        let receipt = receipt_with_isolation(VerdictStatus::Failed, IsolationTier::Unconfined);
+        let base = gate_outcome(&receipt);
+        let out = enforce_isolation_floor(base.clone(), &receipt, Some(IsolationTier::Hermetic));
+        assert_eq!(out.exit_code, base.exit_code, "Failed base exit preserved");
+        assert_ne!(out.exit_code, 0, "a tier shortfall never fabricates a pass");
+        assert!(
+            out.summary.starts_with(&base.summary),
+            "base rationale preserved, shortfall appended"
+        );
+        assert!(
+            out.summary.contains("below required hermetic"),
+            "{}",
+            out.summary
+        );
+    }
+
+    #[test]
+    fn isolation_floor_is_deterministic() {
+        let receipt = receipt_with_isolation(VerdictStatus::Passed, IsolationTier::Contained);
+        let base = gate_outcome(&receipt);
+        assert_eq!(
+            enforce_isolation_floor(base.clone(), &receipt, Some(IsolationTier::Hermetic)),
+            enforce_isolation_floor(base, &receipt, Some(IsolationTier::Hermetic)),
         );
     }
 

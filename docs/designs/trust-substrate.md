@@ -188,6 +188,15 @@ in particular is preserved — see INV-R2).
 - **INV-R6 — Ride distribution; own nothing upstream.** The substrate runs *on top of* external agents
   and lands on incumbent rails (merge-gate, MCP, OTel). Never try to *be* the execution cloud, *be* the
   merge platform, or out-distribute the agents from a standing start.
+- **INV-R7 — Isolation is recorded as a probed fact, never an assumption.** A Run or Receipt may carry
+  the `Hermetic` (bit-for-bit) tier **only** if the launcher that produced it established kernel-enforced
+  isolation, confirmed by a runtime capability probe. The verify path stamps the tier the launcher
+  *actually achieved*, never the one requested; determination is downgrade-only and fail-closed (a probe
+  failure, an unsupported kernel, or a net-allowed run yields a *lower* tier). The tier is signed into the
+  receipt statement (INV-R5), so a verifier reads the verdict *and* how hermetic the re-run was; the
+  optional `nerve gate --require-isolation` floor may downgrade a sub-tier pass to neutral but **never**
+  present `Contained` work as `Hermetic`. (Shipped proto v16 — `docs/designs/hermetic-replay-isolation.md`
+  brick (a).)
 
 ---
 

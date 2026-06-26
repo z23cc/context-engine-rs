@@ -315,13 +315,14 @@ pub(crate) fn delegate_policy(cwd: &Path) -> SandboxPolicy {
     policy.timeout = DEFAULT_DELEGATE_TIMEOUT;
     // A GUI-launched daemon inherits a minimal launchd PATH; hand the delegated
     // agent a repaired PATH (see [`crate::agent_path`]) so it can find its own
-    // subtools (git, language toolchains) under that minimal environment.
-    policy.env_overrides = vec![(
+    // subtools (git, language toolchains) under that minimal environment. Pushed onto
+    // (not replacing) the determinism pins `for_root` set, so locale/TZ stay fixed.
+    policy.env_overrides.push((
         "PATH".to_string(),
         crate::agent_path::child_path()
             .to_string_lossy()
             .into_owned(),
-    )];
+    ));
     policy
 }
 

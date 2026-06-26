@@ -66,6 +66,11 @@ pub(crate) fn resolve_run_inputs(root: Option<&Path>) -> RunInputs {
         repo_snapshot_hash: String::new(),
         toolchain_digest,
         image_digest: None,
+        // A delegated agent run is contained by the best-effort `ProcessLauncher`
+        // (scrubbed env, forced cwd) — the honest `Contained` tier (INV-R7). No kernel
+        // closure is enforced yet, so nothing here may claim `Hermetic`. `Contained` is
+        // the default, so this is omitted on the wire (additive-invariance).
+        isolation_tier: nerve_core::provenance::IsolationTier::Contained,
     }
 }
 

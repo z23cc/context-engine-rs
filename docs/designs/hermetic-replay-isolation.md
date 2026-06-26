@@ -208,15 +208,15 @@ additive, fully-deterministic work that closes the *overclaim* even before any k
 
 | # | Brick | Effort | Value | Earns |
 |---|---|---|---|---|
-| **(a)** | **Honest tier + determinism pin** — add `IsolationTier` (proto, additive); each launcher reports its real tier; thread into `RunInputs` + signed `ReceiptProvenance`; force `LANG=C`/`LC_ALL=C`/`TZ=UTC`/`SOURCE_DATE_EPOCH`; populate `repo_snapshot_hash` on the delegate path; record tool versions. | **Low** | **Highest** — stops the lie; stabilizes evidence hashes | Pure + additive. Protocol bump, regen `docs/protocol/*`, drift test. **Do first.** |
+| **(a) ✅ SHIPPED (proto v16)** | **Honest tier + determinism pin** — added `IsolationTier` (proto, additive, `Unconfined < BestEffort < Contained[default] < Hermetic`); each launcher reports its real tier (`ProcessLauncher → Contained`, `RefuseLauncher → Unconfined`); threaded into `RunInputs` + the **signed** `ReceiptProvenance` (co-sealed in the DSSE statement); forced `LANG=C`/`LC_ALL=C`/`TZ=UTC` via `env_overrides`; added the optional downgrade-only `nerve gate --require-isolation` floor (+ `NERVE_REQUIRE_ISOLATION`). Both fields are `skip_serializing_if`-Contained so existing run `root_hash`es + `receipt_id`s are byte-identical (additive-invariance, zero golden churn). **Deferred to bricks (b)–(d):** `SOURCE_DATE_EPOCH` (no deterministic run-time value to borrow yet), populating `repo_snapshot_hash` on the delegate path, and recording tool versions. | **Low** | **Highest** — stops the lie; stabilizes evidence hashes | Pure + additive. Protocol bump (v15→v16), regen `docs/protocol/*`, drift test. **Done.** |
 | **(b)** | **Linux Landlock FS closure** — `LandlockLauncher` enforcing `fs_read`/`fs_write`; select it in `commands/verify.rs` + daemon roots via probe. | **Medium** | **High (CI is Linux)** | `Contained →` partial-`Hermetic` |
 | **(c)** | **Network namespace (+ seccomp)** — `unshare(CLONE_NEWNET)` for *enforced* net-deny (the biggest perturber + exfil vector); then a seccomp denylist. | **Medium** | **High** | reaches **`Hermetic`** on Linux |
 | **(d)** | **Closure depth — `EnvironmentPinner` (OCI image digest) + per-byte repo snapshot.** | **High** | **Medium** | strengthens what `Hermetic` *means* |
 | **(e)** | **macOS Seatbelt profile** — `SeatbeltLauncher`. | **Medium** | **Low** | `Unconfined → BestEffort` (dev box) |
 
-**Recommendation:** ship **(a)** as one green, additive changeset (the invariant-critical piece; it
-unblocks everything). Then **(b)+(c)** on Linux to actually earn `Hermetic` where CI seals receipts.
-**(d)** deepens the closure; **(e)** is a dev nicety, last.
+**Recommendation:** **(a) is shipped** (proto v16 — the invariant-critical piece is done; the INV-R1
+overclaim is closed and the `--require-isolation` lever exists). Next: **(b)+(c)** on Linux to actually
+earn `Hermetic` where CI seals receipts. **(d)** deepens the closure; **(e)** is a dev nicety, last.
 
 ---
 

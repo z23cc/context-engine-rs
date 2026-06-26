@@ -68,9 +68,19 @@ pub(crate) fn run_verify_flow(root: &Path, run_id: &str, reruns: Option<u32>) ->
     // absent/empty policy-plane.json embeds nothing (policy_version stays None), so the
     // receipt is byte-identical to pre-L3 (no golden churn).
     let bar = crate::policy_plane::PolicyPlane::resolve(Some(root)).sealed_bar();
-    seal_and_attest(&run, &verdict, &stores, &bar, &signer, now_ms())
-        .receipt
-        .ok_or_else(|| anyhow!("failed to seal/persist a Verification Receipt for run `{run_id}`"))
+    // Stamp the PROBED containment tier of the launcher that ran this verify re-run into
+    // the signed receipt (INV-R7) — today's best-effort `ProcessLauncher` is `Contained`.
+    seal_and_attest(
+        &run,
+        &verdict,
+        &stores,
+        &bar,
+        &signer,
+        launcher.isolation_tier(),
+        now_ms(),
+    )
+    .receipt
+    .ok_or_else(|| anyhow!("failed to seal/persist a Verification Receipt for run `{run_id}`"))
 }
 
 /// Wall-clock millis since the epoch — the host-supplied issuance timestamp threaded

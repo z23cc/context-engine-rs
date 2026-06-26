@@ -1209,6 +1209,31 @@
       ],
       "type": "object"
     },
+    "IsolationTier": {
+      "description": "How strongly the closure that produced an artifact was contained. A probed\n**fact** about the launcher that actually ran, never a request; **downgrade-only**\n— a probe failure, an unsupported kernel, or a net-allowed run yields a LOWER tier,\nnever a higher one (INV-R7). Orthogonal to [`Attestation`] (which is about *capture\ncompleteness*): this is about *execution containment*.\n\nVariants are declared from weakest to strongest so the derived [`Ord`] lets a\n`--require-isolation` floor compare with `>=`: `Unconfined < BestEffort < Contained\n< Hermetic`. The default is [`Self::Contained`] — the weaker honest claim — so any\npre-existing serialized Run/Receipt (no field) deserializes to it, never to a\nfabricated `Hermetic`. No floats, so the canonical JSON is byte-stable.",
+      "oneOf": [
+        {
+          "const": "unconfined",
+          "description": "No containment established (raw spawn / probe failed). Must not gate a pass.",
+          "type": "string"
+        },
+        {
+          "const": "best_effort",
+          "description": "Best-effort OS profile (e.g. macOS Seatbelt) — weaker than kernel-enforced Linux.",
+          "type": "string"
+        },
+        {
+          "const": "contained",
+          "description": "Process-level containment only (scrubbed+pinned env, forced cwd, group-kill,\nnet-deny INTENT) — today's `ProcessLauncher`. Replayable *modulo the host*. The\nfail-closed default for unknown/legacy records.",
+          "type": "string"
+        },
+        {
+          "const": "hermetic",
+          "description": "Kernel-enforced closure (Landlock FS + net namespace [+ seccomp]) AND a pinned\nclosure digest. The bit-for-bit claim is honest.",
+          "type": "string"
+        }
+      ]
+    },
     "Join": {
       "description": "How parallel/vote results are folded — always in **declared `Step` order**,\nnever completion order (design §3, the determinism invariant).",
       "oneOf": [
@@ -2085,6 +2110,10 @@
           "description": "Content hash of the run's pinned inputs (repo snapshot + toolchain).",
           "type": "string"
         },
+        "isolation_tier": {
+          "$ref": "#/$defs/IsolationTier",
+          "description": "How strongly the L2 verify re-run that produced this receipt was contained — a\nprobed FACT, never a request; downgrade-only (INV-R7). It lands INSIDE the signed\nstatement (co-sealed, tamper-evident — INV-R5), so a verifier reading the receipt\noffline learns the verdict AND how hermetic the re-run was, and a\n`--require-isolation` gate floor can compare it. Omitted on the wire when\n[`IsolationTier::Contained`] (the default), so a receipt sealed before\nisolation-tier stamping is byte-identical and its `receipt_id` is unperturbed\n(additive-invariance)."
+        },
         "ledger_ref": {
           "anyOf": [
             {
@@ -2402,6 +2431,10 @@
             "string",
             "null"
           ]
+        },
+        "isolation_tier": {
+          "$ref": "#/$defs/IsolationTier",
+          "description": "How strongly the launcher that ran this agent contained it — a probed FACT,\nnever a request; downgrade-only (INV-R7). Omitted on the wire when\n[`IsolationTier::Contained`] (the default), so a run captured before\nisolation-tier stamping deserializes to `Contained` and re-serializes\nbyte-identically — its `root_hash` is unperturbed (additive-invariance)."
         },
         "repo_snapshot_hash": {
           "type": "string"
